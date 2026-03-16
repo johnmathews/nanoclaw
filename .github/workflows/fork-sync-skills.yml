@@ -150,7 +150,7 @@ jobs:
               continue
             fi
 
-            npm ci
+            npm install
 
             if ! npm run build; then
               echo "::warning::Build failed for $BRANCH"
@@ -164,6 +164,12 @@ jobs:
               git reset --hard "origin/$BRANCH"
               FAILED="$FAILED $SKILL_NAME"
               continue
+            fi
+
+            # Commit lock file if npm install updated it
+            if ! git diff --quiet package-lock.json 2>/dev/null; then
+              git add package-lock.json
+              git commit -m "chore: update package-lock.json after merge from main"
             fi
 
             git push origin "$BRANCH"
