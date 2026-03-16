@@ -432,14 +432,19 @@ export async function processTaskIpc(
           );
           break;
         }
-        // Defense in depth: agent cannot set isMain via IPC
+        // Defense in depth: agent cannot set isMain via IPC.
+        // When re-registering an existing group, preserve isMain and
+        // requiresTrigger so that updating config (e.g. adding mounts)
+        // doesn't accidentally strip elevated privileges.
+        const existing = deps.registeredGroups()[data.jid];
         deps.registerGroup(data.jid, {
           name: data.name,
           folder: data.folder,
           trigger: data.trigger,
-          added_at: new Date().toISOString(),
+          added_at: existing?.added_at || new Date().toISOString(),
           containerConfig: data.containerConfig,
-          requiresTrigger: data.requiresTrigger,
+          requiresTrigger: data.requiresTrigger ?? existing?.requiresTrigger,
+          ...(existing?.isMain ? { isMain: true } : {}),
         });
       } else {
         logger.warn(
