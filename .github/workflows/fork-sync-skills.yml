@@ -112,6 +112,8 @@ jobs:
             echo ""
             echo "=== Processing $BRANCH ==="
 
+            git checkout -- . 2>/dev/null || true
+            git clean -fd 2>/dev/null || true
             git checkout -B "$BRANCH" "origin/$BRANCH"
 
             if ! git merge main --no-edit; then
