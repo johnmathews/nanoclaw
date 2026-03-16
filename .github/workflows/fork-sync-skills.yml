@@ -115,10 +115,30 @@ jobs:
             git checkout -B "$BRANCH" "origin/$BRANCH"
 
             if ! git merge main --no-edit; then
-              echo "::warning::Merge conflict in $BRANCH"
-              git merge --abort
-              FAILED="$FAILED $SKILL_NAME"
-              continue
+              # Check if only auto-generated files conflict
+              CONFLICTED=$(git diff --name-only --diff-filter=U)
+              AUTO_ONLY=true
+              while IFS= read -r f; do
+                case "$f" in
+                  package-lock.json|repo-tokens/badge.svg) ;;
+                  *) AUTO_ONLY=false; break ;;
+                esac
+              done <<< "$CONFLICTED"
+
+              if [ "$AUTO_ONLY" = "false" ]; then
+                echo "::warning::Merge conflict in $BRANCH (non-trivial conflicts)"
+                git merge --abort
+                FAILED="$FAILED $SKILL_NAME"
+                continue
+              fi
+
+              echo "Auto-resolving generated file conflicts in $BRANCH"
+              git checkout --theirs package-lock.json 2>/dev/null || true
+              git checkout --theirs repo-tokens/badge.svg 2>/dev/null || true
+              git add package-lock.json repo-tokens/badge.svg 2>/dev/null || true
+              npm install --package-lock-only --ignore-scripts
+              git add package-lock.json
+              git commit --no-edit
             fi
 
             # Check if there's anything new to push
