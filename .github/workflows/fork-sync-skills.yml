@@ -136,7 +136,7 @@ jobs:
               git checkout --theirs package-lock.json 2>/dev/null || true
               git checkout --theirs repo-tokens/badge.svg 2>/dev/null || true
               git add package-lock.json repo-tokens/badge.svg 2>/dev/null || true
-              npm install --package-lock-only
+              npm install --package-lock-only --ignore-scripts
               git add package-lock.json
               git commit --no-edit
             fi
