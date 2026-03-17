@@ -18,7 +18,7 @@ isolated filesystem and memory.
 | `src/ipc.ts`                        | IPC watcher and task processing                            |
 | `src/router.ts`                     | Message formatting and outbound routing                    |
 | `src/config.ts`                     | Trigger pattern, paths, intervals                          |
-| `src/container-runner.ts`           | Spawns agent containers with mounts                        |
+| `src/container-runner.ts`           | Spawns agent containers with mounts, parses progress       |
 | `src/task-scheduler.ts`             | Runs scheduled tasks                                       |
 | `src/db.ts`                         | SQLite operations                                          |
 | `groups/{name}/CLAUDE.md`           | Per-group memory (isolated)                                |
@@ -65,6 +65,19 @@ systemctl --user restart nanoclaw
 `/add-whatsapp` (or
 `git remote add whatsapp https://github.com/qwibitai/nanoclaw-whatsapp.git && git fetch whatsapp main && (git merge whatsapp/main || { git checkout --theirs package-lock.json && git add package-lock.json && git merge --continue; }) && npm run build`)
 to install it. Existing auth credentials and groups are preserved.
+
+## Slack Working Indicator
+
+Slack channels show live progress while the agent works. `setTyping(true)` posts a "_Working on it..._" placeholder,
+which updates in-place with tool descriptions ("Reading files...", "Running command...") as progress markers stream from
+the container. The first real response replaces the placeholder via `chat.update()`. Progress updates are rate-limited
+to one per 3 seconds. Other channels can opt in by implementing `updateWorkingIndicator()` on the Channel interface.
+
+## Agent-Runner Source Mount
+
+Container agents mount `data/sessions/{group}/agent-runner-src` over `/app/src`. The source is synced from
+`container/agent-runner/src/` on every container spawn, so changes to the agent-runner code take effect on the next
+agent invocation without needing to rebuild the container image (the entrypoint recompiles TypeScript at runtime).
 
 ## Container Build Cache
 
