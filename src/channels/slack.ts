@@ -17,8 +17,8 @@ import {
 // Messages exceeding this are split into sequential chunks.
 const MAX_MESSAGE_LENGTH = 4000;
 
-// Rate-limit working indicator progress updates to avoid Slack API throttling
-const PROGRESS_RATE_LIMIT_MS = 3000;
+// Emoji used as a reaction on the triggering message while the agent works
+const WORKING_REACTION = 'eyes';
 
 // The message subtypes we process. Bolt delivers all subtypes via app.event('message');
 // we filter to regular messages (GenericMessageEvent, subtype undefined) and bot messages
@@ -40,8 +40,7 @@ export class SlackChannel implements Channel {
   private outgoingQueue: Array<{ jid: string; text: string }> = [];
   private flushing = false;
   private userNameCache = new Map<string, string>();
-  private workingIndicators = new Map<string, string>(); // channelId → message ts
-  private lastProgressUpdate = new Map<string, number>(); // channelId → timestamp of last update
+  private workingReactions = new Map<string, string>(); // channelId → message ts (for removing reaction)
 
   private opts: SlackChannelOpts;
 
@@ -83,13 +82,25 @@ export class SlackChannel implements Channel {
       await ack();
 
       // Extract selected options from all checkbox blocks in the message state
-      const stateValues = (body as { state?: { values?: Record<string, Record<string, { selected_options?: Array<{ value: string }> }>> } }).state?.values;
+      const stateValues = (
+        body as {
+          state?: {
+            values?: Record<
+              string,
+              Record<string, { selected_options?: Array<{ value: string }> }>
+            >;
+          };
+        }
+      ).state?.values;
       if (!stateValues) return;
 
       const selectedBranches: string[] = [];
       for (const blockValues of Object.values(stateValues)) {
         for (const [actionId, action] of Object.entries(blockValues)) {
-          if (actionId.startsWith('nanoclaw_checkbox_') && action.selected_options) {
+          if (
+            actionId.startsWith('nanoclaw_checkbox_') &&
+            action.selected_options
+          ) {
             for (const opt of action.selected_options) {
               selectedBranches.push(opt.value);
             }
@@ -120,7 +131,8 @@ export class SlackChannel implements Channel {
         id: `action-${Date.now()}`,
         chat_jid: jid,
         sender: (body as { user?: { id?: string } }).user?.id || 'unknown',
-        sender_name: (body as { user?: { name?: string } }).user?.name || 'unknown',
+        sender_name:
+          (body as { user?: { name?: string } }).user?.name || 'unknown',
         content: syntheticText,
         timestamp: new Date().toISOString(),
         is_from_me: false,
@@ -236,33 +248,8 @@ export class SlackChannel implements Channel {
     }
 
     try {
-      // If there's a working indicator, update it with the first response
-      const indicatorTs = this.workingIndicators.get(channelId);
-      if (indicatorTs) {
-        this.workingIndicators.delete(channelId);
-        try {
-          if (text.length <= MAX_MESSAGE_LENGTH) {
-            await this.app.client.chat.update({ channel: channelId, ts: indicatorTs, text });
-          } else {
-            await this.app.client.chat.update({
-              channel: channelId,
-              ts: indicatorTs,
-              text: text.slice(0, MAX_MESSAGE_LENGTH),
-            });
-            for (let i = MAX_MESSAGE_LENGTH; i < text.length; i += MAX_MESSAGE_LENGTH) {
-              await this.app.client.chat.postMessage({
-                channel: channelId,
-                text: text.slice(i, i + MAX_MESSAGE_LENGTH),
-              });
-            }
-          }
-          logger.info({ jid, length: text.length }, 'Slack working indicator updated with response');
-          return;
-        } catch (err) {
-          logger.debug({ jid, err }, 'Failed to update working indicator, posting new message');
-          // Fall through to normal postMessage
-        }
-      }
+      // Remove the working reaction now that the real response is arriving
+      this.removeWorkingReaction(channelId);
 
       // Slack limits messages to ~4000 characters; split if needed
       if (text.length <= MAX_MESSAGE_LENGTH) {
@@ -285,34 +272,28 @@ export class SlackChannel implements Channel {
     }
   }
 
-  async sendBlocks(jid: string, blocks: unknown[], fallbackText: string): Promise<void> {
+  async sendBlocks(
+    jid: string,
+    blocks: unknown[],
+    fallbackText: string,
+  ): Promise<void> {
     const channelId = jid.replace(/^slack:/, '');
 
     if (!this.connected) {
       // Fall back to text-only when disconnected
-      this.outgoingQueue.push({ jid, text: fallbackText || 'Block Kit message (view in Slack)' });
-      logger.info({ jid }, 'Slack disconnected, blocks queued as text fallback');
+      this.outgoingQueue.push({
+        jid,
+        text: fallbackText || 'Block Kit message (view in Slack)',
+      });
+      logger.info(
+        { jid },
+        'Slack disconnected, blocks queued as text fallback',
+      );
       return;
     }
 
-    // If there's a working indicator, update it with the blocks
-    const indicatorTs = this.workingIndicators.get(channelId);
-    if (indicatorTs) {
-      this.workingIndicators.delete(channelId);
-      try {
-        await this.app.client.chat.update({
-          channel: channelId,
-          ts: indicatorTs,
-          text: fallbackText,
-          blocks: blocks as [],
-        });
-        logger.info({ jid }, 'Slack working indicator updated with blocks');
-        return;
-      } catch (err) {
-        logger.debug({ jid, err }, 'Failed to update indicator with blocks, posting new');
-        // Fall through to normal postMessage
-      }
-    }
+    // Remove the working reaction now that the real response is arriving
+    this.removeWorkingReaction(channelId);
 
     try {
       await this.app.client.chat.postMessage({
@@ -322,8 +303,14 @@ export class SlackChannel implements Channel {
       });
       logger.info({ jid }, 'Slack blocks message sent');
     } catch (err) {
-      logger.warn({ jid, err }, 'Failed to send Slack blocks, falling back to text');
-      await this.sendMessage(jid, fallbackText || 'Block Kit message failed to render.');
+      logger.warn(
+        { jid, err },
+        'Failed to send Slack blocks, falling back to text',
+      );
+      await this.sendMessage(
+        jid,
+        fallbackText || 'Block Kit message failed to render.',
+      );
     }
   }
 
@@ -340,58 +327,50 @@ export class SlackChannel implements Channel {
     await this.app.stop();
   }
 
-  async setTyping(jid: string, isTyping: boolean): Promise<void> {
+  async setTyping(
+    jid: string,
+    isTyping: boolean,
+    messageTs?: string,
+  ): Promise<void> {
     const channelId = jid.replace(/^slack:/, '');
 
     if (isTyping) {
-      // Post a "working..." placeholder that will be replaced by the actual response
+      // Add a reaction to the triggering message to indicate the agent is working.
+      // Reactions don't trigger notifications — unlike posting a message.
+      const ts = messageTs || this.workingReactions.get(channelId);
+      if (!ts) return;
       try {
-        const result = await this.app.client.chat.postMessage({
+        await this.app.client.reactions.add({
           channel: channelId,
-          text: '_Working on it..._',
+          timestamp: ts,
+          name: WORKING_REACTION,
         });
-        if (result.ts) {
-          this.workingIndicators.set(channelId, result.ts);
-        }
+        this.workingReactions.set(channelId, ts);
       } catch (err) {
-        logger.debug({ jid, err }, 'Failed to post working indicator');
+        logger.debug({ jid, err }, 'Failed to add working reaction');
       }
     } else {
-      // Agent finished — if placeholder still exists (no output was sent), delete it
-      const ts = this.workingIndicators.get(channelId);
-      if (ts) {
-        this.workingIndicators.delete(channelId);
-        try {
-          await this.app.client.chat.delete({ channel: channelId, ts });
-        } catch (err) {
-          logger.debug({ jid, err }, 'Failed to delete working indicator');
-        }
-      }
+      // Agent finished — remove the reaction
+      this.removeWorkingReaction(channelId);
     }
   }
 
   /**
-   * Update the working indicator with a progress message (e.g. "Reading files...").
-   * Rate-limited to at most one update per PROGRESS_RATE_LIMIT_MS.
+   * Remove the working reaction from the triggering message (fire-and-forget).
    */
-  updateWorkingIndicator(jid: string, text: string): void {
-    const channelId = jid.replace(/^slack:/, '');
-    const ts = this.workingIndicators.get(channelId);
-    if (!ts || !this.connected) return;
-
-    const now = Date.now();
-    const last = this.lastProgressUpdate.get(channelId) || 0;
-    if (now - last < PROGRESS_RATE_LIMIT_MS) return;
-    this.lastProgressUpdate.set(channelId, now);
-
-    // Fire-and-forget — don't block the caller
-    this.app.client.chat.update({
-      channel: channelId,
-      ts,
-      text: `_${text}..._`,
-    }).catch((err) => {
-      logger.debug({ jid, err }, 'Failed to update working indicator progress');
-    });
+  private removeWorkingReaction(channelId: string): void {
+    const ts = this.workingReactions.get(channelId);
+    if (!ts) return;
+    this.workingReactions.delete(channelId);
+    this.app.client.reactions
+      .remove({
+        channel: channelId,
+        timestamp: ts,
+        name: WORKING_REACTION,
+      })
+      .catch((err) => {
+        logger.debug({ channelId, err }, 'Failed to remove working reaction');
+      });
   }
 
   /**
