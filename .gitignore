@@ -21,6 +21,12 @@ groups/
 
 # OS
 .DS_Store
+._.DS_Store
+*/._.DS_Store
+
+# Syncthing
+.stfolder/
+.stignore
 
 # IDE
 .idea/

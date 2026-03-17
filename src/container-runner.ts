@@ -33,6 +33,8 @@ import { RegisteredGroup } from './types.js';
 // Sentinel markers for robust output parsing (must match agent-runner)
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
+const PROGRESS_START_MARKER = '---NANOCLAW_PROGRESS_START---';
+const PROGRESS_END_MARKER = '---NANOCLAW_PROGRESS_END---';
 
 export interface ContainerInput {
   prompt: string;
@@ -202,7 +204,7 @@ function buildVolumeMounts(
     group.folder,
     'agent-runner-src',
   );
-  if (!fs.existsSync(groupAgentRunnerDir) && fs.existsSync(agentRunnerSrc)) {
+  if (fs.existsSync(agentRunnerSrc)) {
     fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
   }
   mounts.push({
@@ -281,6 +283,7 @@ export async function runContainerAgent(
   input: ContainerInput,
   onProcess: (proc: ChildProcess, containerName: string) => void,
   onOutput?: (output: ContainerOutput) => Promise<void>,
+  onProgress?: (text: string) => void,
 ): Promise<ContainerOutput> {
   const startTime = Date.now();
 
@@ -356,35 +359,63 @@ export async function runContainerAgent(
         }
       }
 
-      // Stream-parse for output markers
-      if (onOutput) {
+      // Stream-parse for output and progress markers
+      if (onOutput || onProgress) {
         parseBuffer += chunk;
-        let startIdx: number;
-        while ((startIdx = parseBuffer.indexOf(OUTPUT_START_MARKER)) !== -1) {
-          const endIdx = parseBuffer.indexOf(OUTPUT_END_MARKER, startIdx);
-          if (endIdx === -1) break; // Incomplete pair, wait for more data
 
-          const jsonStr = parseBuffer
-            .slice(startIdx + OUTPUT_START_MARKER.length, endIdx)
-            .trim();
-          parseBuffer = parseBuffer.slice(endIdx + OUTPUT_END_MARKER.length);
+        // Parse progress markers first (they arrive before output markers)
+        if (onProgress) {
+          let progStart: number;
+          while ((progStart = parseBuffer.indexOf(PROGRESS_START_MARKER)) !== -1) {
+            const progEnd = parseBuffer.indexOf(PROGRESS_END_MARKER, progStart);
+            if (progEnd === -1) break;
 
-          try {
-            const parsed: ContainerOutput = JSON.parse(jsonStr);
-            if (parsed.newSessionId) {
-              newSessionId = parsed.newSessionId;
+            const progJson = parseBuffer
+              .slice(progStart + PROGRESS_START_MARKER.length, progEnd)
+              .trim();
+            parseBuffer = parseBuffer.slice(progEnd + PROGRESS_END_MARKER.length);
+
+            try {
+              const parsed = JSON.parse(progJson) as { text: string };
+              if (parsed.text) {
+                logger.info({ group: group.name, progress: parsed.text }, 'Agent progress');
+                onProgress(parsed.text);
+              }
+            } catch {
+              // Ignore malformed progress markers
             }
-            hadStreamingOutput = true;
-            // Activity detected — reset the hard timeout
-            resetTimeout();
-            // Call onOutput for all markers (including null results)
-            // so idle timers start even for "silent" query completions.
-            outputChain = outputChain.then(() => onOutput(parsed));
-          } catch (err) {
-            logger.warn(
-              { group: group.name, error: err },
-              'Failed to parse streamed output chunk',
-            );
+          }
+        }
+
+        // Parse output markers
+        if (onOutput) {
+          let startIdx: number;
+          while ((startIdx = parseBuffer.indexOf(OUTPUT_START_MARKER)) !== -1) {
+            const endIdx = parseBuffer.indexOf(OUTPUT_END_MARKER, startIdx);
+            if (endIdx === -1) break; // Incomplete pair, wait for more data
+
+            const jsonStr = parseBuffer
+              .slice(startIdx + OUTPUT_START_MARKER.length, endIdx)
+              .trim();
+            parseBuffer = parseBuffer.slice(endIdx + OUTPUT_END_MARKER.length);
+
+            try {
+              const parsed: ContainerOutput = JSON.parse(jsonStr);
+              if (parsed.newSessionId) {
+                newSessionId = parsed.newSessionId;
+              }
+              hadStreamingOutput = true;
+              // Activity detected — reset the hard timeout
+              resetTimeout();
+              // Call onOutput for all markers (including null results)
+              // so idle timers start even for "silent" query completions.
+              outputChain = outputChain.then(() => onOutput(parsed));
+            } catch (err) {
+              logger.warn(
+                { group: group.name, error: err },
+                'Failed to parse streamed output chunk',
+              );
+            }
           }
         }
       }

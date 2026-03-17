@@ -279,6 +279,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (result.status === 'error') {
       hadError = true;
     }
+  }, (text) => {
+    channel.updateWorkingIndicator?.(chatJid, text);
   });
 
   await channel.setTyping?.(chatJid, false);
@@ -312,6 +314,7 @@ async function runAgent(
   prompt: string,
   chatJid: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
+  onProgress?: (text: string) => void,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
   const sessionId = sessions[group.folder];
@@ -366,6 +369,7 @@ async function runAgent(
       (proc, containerName) =>
         queue.registerProcess(chatJid, proc, containerName, group.folder),
       wrappedOnOutput,
+      onProgress,
     );
 
     if (output.newSessionId) {
@@ -688,6 +692,15 @@ async function main(): Promise<void> {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
       return channel.sendMessage(jid, text);
+    },
+    sendBlocks: (jid, blocks, fallbackText) => {
+      const channel = findChannel(channels, jid);
+      if (!channel) throw new Error(`No channel for JID: ${jid}`);
+      // Duck-type: if the channel supports sendBlocks, use it; otherwise fall back to text
+      if ('sendBlocks' in channel && typeof (channel as { sendBlocks: Function }).sendBlocks === 'function') {
+        return (channel as { sendBlocks: (jid: string, blocks: unknown[], fallbackText: string) => Promise<void> }).sendBlocks(jid, blocks, fallbackText);
+      }
+      return channel.sendMessage(jid, fallbackText);
     },
     registeredGroups: () => registeredGroups,
     registerGroup,

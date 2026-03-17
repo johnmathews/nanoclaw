@@ -106,11 +106,50 @@ async function readStdin(): Promise<string> {
 
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
 const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
+const PROGRESS_START_MARKER = '---NANOCLAW_PROGRESS_START---';
+const PROGRESS_END_MARKER = '---NANOCLAW_PROGRESS_END---';
 
 function writeOutput(output: ContainerOutput): void {
   console.log(OUTPUT_START_MARKER);
   console.log(JSON.stringify(output));
   console.log(OUTPUT_END_MARKER);
+}
+
+const TOOL_LABELS: Record<string, string> = {
+  Read: 'Reading files',
+  Write: 'Writing code',
+  Edit: 'Editing code',
+  Bash: 'Running command',
+  Grep: 'Searching codebase',
+  Glob: 'Searching for files',
+  WebSearch: 'Searching the web',
+  WebFetch: 'Fetching web content',
+  Task: 'Managing tasks',
+  TaskOutput: 'Reading task output',
+  TodoWrite: 'Updating todos',
+  NotebookEdit: 'Editing notebook',
+  TeamCreate: 'Starting subagent',
+  SendMessage: 'Messaging subagent',
+  ToolSearch: 'Looking up tools',
+  Skill: 'Running skill',
+};
+
+function writeProgress(toolName: string): void {
+  // Map tool name to a friendly label
+  let label: string;
+  if (toolName.startsWith('mcp__')) {
+    // MCP tools: mcp__server__tool_name → use the tool part
+    const parts = toolName.split('__');
+    const server = parts[1] || '';
+    const tool = parts.slice(2).join('__');
+    label = `Using ${server}: ${tool}`;
+  } else {
+    label = TOOL_LABELS[toolName] || `Using ${toolName}`;
+  }
+
+  console.log(PROGRESS_START_MARKER);
+  console.log(JSON.stringify({ text: label }));
+  console.log(PROGRESS_END_MARKER);
 }
 
 function log(message: string): void {
@@ -445,6 +484,16 @@ async function runQuery(
 
     if (message.type === 'assistant' && 'uuid' in message) {
       lastAssistantUuid = (message as { uuid: string }).uuid;
+
+      // Emit progress for tool use blocks so the host can update the working indicator
+      const content = (message as { message?: { content?: Array<{ type: string; name?: string }> } }).message?.content;
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block.type === 'tool_use' && block.name) {
+            writeProgress(block.name);
+          }
+        }
+      }
     }
 
     if (message.type === 'system' && message.subtype === 'init') {
