@@ -63,6 +63,45 @@ server.tool(
 );
 
 server.tool(
+  'send_blocks',
+  "Send a Slack Block Kit message with interactive elements (checkboxes, buttons, etc). Use this for structured reports where users need to select options and confirm actions. Falls back to plain text on non-Slack channels.",
+  {
+    blocks: z.string().describe('JSON string of Slack Block Kit blocks array'),
+    fallback_text: z.string().describe('Plain text fallback for notifications and non-Slack channels'),
+  },
+  async (args) => {
+    let parsedBlocks: unknown[];
+    try {
+      parsedBlocks = JSON.parse(args.blocks);
+      if (!Array.isArray(parsedBlocks)) {
+        return {
+          content: [{ type: 'text' as const, text: 'blocks must be a JSON array.' }],
+          isError: true,
+        };
+      }
+    } catch {
+      return {
+        content: [{ type: 'text' as const, text: `Invalid JSON in blocks: ${args.blocks.slice(0, 100)}...` }],
+        isError: true,
+      };
+    }
+
+    const data = {
+      type: 'blocks',
+      chatJid,
+      blocks: parsedBlocks,
+      fallbackText: args.fallback_text,
+      groupFolder,
+      timestamp: new Date().toISOString(),
+    };
+
+    writeIpcFile(MESSAGES_DIR, data);
+
+    return { content: [{ type: 'text' as const, text: 'Block Kit message sent.' }] };
+  },
+);
+
+server.tool(
   'schedule_task',
   `Schedule a recurring or one-time task. The task will run as a full agent with access to all tools. Returns the task ID for future reference. To modify an existing task, use update_task instead.
 

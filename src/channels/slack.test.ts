@@ -64,8 +64,15 @@ vi.mock('@slack/bolt', () => ({
       appRef.current = this;
     }
 
+    actionHandlers = new Map<string, Handler>();
+
     event(name: string, handler: Handler) {
       this.eventHandlers.set(name, handler);
+    }
+
+    action(pattern: string | RegExp, handler: Handler) {
+      const key = pattern instanceof RegExp ? pattern.source : pattern;
+      this.actionHandlers.set(key, handler);
     }
 
     async start() {}
