@@ -73,3 +73,6 @@ Add optional `SLACK_USER_TOKEN` (`xoxp-`) support. When present, use it for `cha
 Relevant file: `src/channels/slack.ts` — token init (~lines 51–64) and all `chat.postMessage` calls (~lines 253, 269, 272, 318, 349).
 
 A terminal-based Claude Code session was started to implement this fix.
+
+### Resolution
+Fix implemented in a separate terminal Claude Code session and deployed. Confirmed working at ~16:39 — Slack channels now go bold and show unread indicators when the agent posts.

@@ -327,7 +327,11 @@ export class SlackChannel implements Channel {
     await this.app.stop();
   }
 
-  async setTyping(jid: string, isTyping: boolean, messageTs?: string): Promise<void> {
+  async setTyping(
+    jid: string,
+    isTyping: boolean,
+    messageTs?: string,
+  ): Promise<void> {
     const channelId = jid.replace(/^slack:/, '');
 
     if (isTyping) {
