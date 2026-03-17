@@ -366,19 +366,26 @@ export async function runContainerAgent(
         // Parse progress markers first (they arrive before output markers)
         if (onProgress) {
           let progStart: number;
-          while ((progStart = parseBuffer.indexOf(PROGRESS_START_MARKER)) !== -1) {
+          while (
+            (progStart = parseBuffer.indexOf(PROGRESS_START_MARKER)) !== -1
+          ) {
             const progEnd = parseBuffer.indexOf(PROGRESS_END_MARKER, progStart);
             if (progEnd === -1) break;
 
             const progJson = parseBuffer
               .slice(progStart + PROGRESS_START_MARKER.length, progEnd)
               .trim();
-            parseBuffer = parseBuffer.slice(progEnd + PROGRESS_END_MARKER.length);
+            parseBuffer = parseBuffer.slice(
+              progEnd + PROGRESS_END_MARKER.length,
+            );
 
             try {
               const parsed = JSON.parse(progJson) as { text: string };
               if (parsed.text) {
-                logger.info({ group: group.name, progress: parsed.text }, 'Agent progress');
+                logger.info(
+                  { group: group.name, progress: parsed.text },
+                  'Agent progress',
+                );
                 onProgress(parsed.text);
               }
             } catch {
