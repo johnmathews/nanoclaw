@@ -68,10 +68,11 @@ to install it. Existing auth credentials and groups are preserved.
 
 ## Slack Working Indicator
 
-Slack channels show live progress while the agent works. `setTyping(true)` posts a "_Working on it..._" placeholder,
-which updates in-place with tool descriptions ("Reading files...", "Running command...") as progress markers stream from
-the container. The first real response replaces the placeholder via `chat.update()`. Progress updates are rate-limited
-to one per 3 seconds. Other channels can opt in by implementing `updateWorkingIndicator()` on the Channel interface.
+Slack channels show an :eyes: reaction on the triggering message while the agent works. The reaction is added via
+`setTyping(true, messageTs)` and removed when the first response is sent or `setTyping(false)` is called. Reactions
+don't trigger unread notifications — unlike posting a placeholder message, which does. The bot needs the
+`reactions:write` scope. The `setTyping` interface accepts an optional `messageTs` parameter (the Slack message
+timestamp to react to).
 
 ## Agent-Runner Source Mount
 

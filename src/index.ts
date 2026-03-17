@@ -250,7 +250,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     }, IDLE_TIMEOUT);
   };
 
-  await channel.setTyping?.(chatJid, true);
+  // Pass the last message's ID so Slack can react to it (instead of posting a message)
+  const lastMessageId = missedMessages[missedMessages.length - 1]?.id;
+  await channel.setTyping?.(chatJid, true, lastMessageId);
   let hadError = false;
   let outputSentToUser = false;
 
@@ -511,8 +513,9 @@ async function startMessageLoop(): Promise<void> {
               messagesToSend[messagesToSend.length - 1].timestamp;
             saveState();
             // Show typing indicator while the container processes the piped message
+            const lastMsgId = messagesToSend[messagesToSend.length - 1]?.id;
             channel
-              .setTyping?.(chatJid, true)
+              .setTyping?.(chatJid, true, lastMsgId)
               ?.catch((err) =>
                 logger.warn({ chatJid, err }, 'Failed to set typing indicator'),
               );

@@ -87,7 +87,7 @@ export interface Channel {
   ownsJid(jid: string): boolean;
   disconnect(): Promise<void>;
   // Optional: typing indicator. Channels that support it implement it.
-  setTyping?(jid: string, isTyping: boolean): Promise<void>;
+  setTyping?(jid: string, isTyping: boolean, messageTs?: string): Promise<void>;
   // Optional: update working indicator with progress text (e.g. "Reading files...")
   updateWorkingIndicator?(jid: string, text: string): void;
   // Optional: sync group/chat names from the platform.
