@@ -1,4 +1,5 @@
 import { App, LogLevel } from '@slack/bolt';
+import { WebClient } from '@slack/web-api';
 import type { GenericMessageEvent, BotMessageEvent } from '@slack/types';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
@@ -35,7 +36,9 @@ export class SlackChannel implements Channel {
   name = 'slack';
 
   private app: App;
+  private messageClient: WebClient; // user token client for posting messages (triggers notifications)
   private botUserId: string | undefined;
+  private sentMessageTimestamps = new Set<string>(); // ts values of messages we posted (for self-message detection)
   private connected = false;
   private outgoingQueue: Array<{ jid: string; text: string }> = [];
   private flushing = false;
@@ -50,9 +53,14 @@ export class SlackChannel implements Channel {
 
     // Read tokens from .env (not process.env — keeps secrets off the environment
     // so they don't leak to child processes, matching NanoClaw's security pattern)
-    const env = readEnvFile(['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN']);
+    const env = readEnvFile([
+      'SLACK_BOT_TOKEN',
+      'SLACK_APP_TOKEN',
+      'SLACK_BOT_USER_OAUTH_TOKEN',
+    ]);
     const botToken = env.SLACK_BOT_TOKEN;
     const appToken = env.SLACK_APP_TOKEN;
+    const userToken = env.SLACK_BOT_USER_OAUTH_TOKEN;
 
     if (!botToken || !appToken) {
       throw new Error(
@@ -66,6 +74,16 @@ export class SlackChannel implements Channel {
       socketMode: true,
       logLevel: LogLevel.ERROR,
     });
+
+    // Use user token for posting messages (triggers unread/bold notifications).
+    // Fall back to bot token if SLACK_USER_TOKEN is not set.
+    if (userToken) {
+      this.messageClient = new WebClient(userToken);
+      logger.info('Slack: using SLACK_BOT_USER_OAUTH_TOKEN for message posting (notifications enabled)');
+    } else {
+      this.messageClient = this.app.client;
+      logger.info('Slack: using bot token for message posting (no SLACK_BOT_USER_OAUTH_TOKEN set)');
+    }
 
     this.setupEventHandlers();
   }
@@ -83,13 +101,25 @@ export class SlackChannel implements Channel {
       await ack();
 
       // Extract selected options from all checkbox blocks in the message state
-      const stateValues = (body as { state?: { values?: Record<string, Record<string, { selected_options?: Array<{ value: string }> }>> } }).state?.values;
+      const stateValues = (
+        body as {
+          state?: {
+            values?: Record<
+              string,
+              Record<string, { selected_options?: Array<{ value: string }> }>
+            >;
+          };
+        }
+      ).state?.values;
       if (!stateValues) return;
 
       const selectedBranches: string[] = [];
       for (const blockValues of Object.values(stateValues)) {
         for (const [actionId, action] of Object.entries(blockValues)) {
-          if (actionId.startsWith('nanoclaw_checkbox_') && action.selected_options) {
+          if (
+            actionId.startsWith('nanoclaw_checkbox_') &&
+            action.selected_options
+          ) {
             for (const opt of action.selected_options) {
               selectedBranches.push(opt.value);
             }
@@ -120,7 +150,8 @@ export class SlackChannel implements Channel {
         id: `action-${Date.now()}`,
         chat_jid: jid,
         sender: (body as { user?: { id?: string } }).user?.id || 'unknown',
-        sender_name: (body as { user?: { name?: string } }).user?.name || 'unknown',
+        sender_name:
+          (body as { user?: { name?: string } }).user?.name || 'unknown',
         content: syntheticText,
         timestamp: new Date().toISOString(),
         is_from_me: false,
@@ -161,7 +192,10 @@ export class SlackChannel implements Channel {
       const groups = this.opts.registeredGroups();
       if (!groups[jid]) return;
 
-      const isBotMessage = !!msg.bot_id || msg.user === this.botUserId;
+      const isBotMessage =
+        !!msg.bot_id ||
+        msg.user === this.botUserId ||
+        this.sentMessageTimestamps.delete(msg.ts);
 
       let senderName: string;
       if (isBotMessage) {
@@ -214,6 +248,17 @@ export class SlackChannel implements Channel {
       logger.warn({ err }, 'Connected to Slack but failed to get bot user ID');
     }
 
+    // Validate user token if configured
+    if (this.messageClient !== this.app.client) {
+      try {
+        const msgAuth = await this.messageClient.auth.test();
+        logger.info({ messageUserId: msgAuth.user_id }, 'Slack user token authenticated');
+      } catch (err) {
+        logger.warn({ err }, 'Failed to authenticate SLACK_BOT_USER_OAUTH_TOKEN — falling back to bot token');
+        this.messageClient = this.app.client;
+      }
+    }
+
     this.connected = true;
 
     // Flush any messages queued before connection
@@ -236,43 +281,30 @@ export class SlackChannel implements Channel {
     }
 
     try {
-      // If there's a working indicator, update it with the first response
+      // If there's a working indicator, delete it before posting the real response.
+      // The indicator is posted by bot token; the response goes via messageClient
+      // (user token when available) so it triggers unread notifications.
       const indicatorTs = this.workingIndicators.get(channelId);
       if (indicatorTs) {
         this.workingIndicators.delete(channelId);
-        try {
-          if (text.length <= MAX_MESSAGE_LENGTH) {
-            await this.app.client.chat.update({ channel: channelId, ts: indicatorTs, text });
-          } else {
-            await this.app.client.chat.update({
-              channel: channelId,
-              ts: indicatorTs,
-              text: text.slice(0, MAX_MESSAGE_LENGTH),
-            });
-            for (let i = MAX_MESSAGE_LENGTH; i < text.length; i += MAX_MESSAGE_LENGTH) {
-              await this.app.client.chat.postMessage({
-                channel: channelId,
-                text: text.slice(i, i + MAX_MESSAGE_LENGTH),
-              });
-            }
-          }
-          logger.info({ jid, length: text.length }, 'Slack working indicator updated with response');
-          return;
-        } catch (err) {
-          logger.debug({ jid, err }, 'Failed to update working indicator, posting new message');
-          // Fall through to normal postMessage
-        }
+        this.app.client.chat
+          .delete({ channel: channelId, ts: indicatorTs })
+          .catch((err) => {
+            logger.debug({ jid, err }, 'Failed to delete working indicator');
+          });
       }
 
       // Slack limits messages to ~4000 characters; split if needed
       if (text.length <= MAX_MESSAGE_LENGTH) {
-        await this.app.client.chat.postMessage({ channel: channelId, text });
+        const res = await this.messageClient.chat.postMessage({ channel: channelId, text });
+        if (res.ts) this.sentMessageTimestamps.add(res.ts);
       } else {
         for (let i = 0; i < text.length; i += MAX_MESSAGE_LENGTH) {
-          await this.app.client.chat.postMessage({
+          const res = await this.messageClient.chat.postMessage({
             channel: channelId,
             text: text.slice(i, i + MAX_MESSAGE_LENGTH),
           });
+          if (res.ts) this.sentMessageTimestamps.add(res.ts);
         }
       }
       logger.info({ jid, length: text.length }, 'Slack message sent');
@@ -285,45 +317,54 @@ export class SlackChannel implements Channel {
     }
   }
 
-  async sendBlocks(jid: string, blocks: unknown[], fallbackText: string): Promise<void> {
+  async sendBlocks(
+    jid: string,
+    blocks: unknown[],
+    fallbackText: string,
+  ): Promise<void> {
     const channelId = jid.replace(/^slack:/, '');
 
     if (!this.connected) {
       // Fall back to text-only when disconnected
-      this.outgoingQueue.push({ jid, text: fallbackText || 'Block Kit message (view in Slack)' });
-      logger.info({ jid }, 'Slack disconnected, blocks queued as text fallback');
+      this.outgoingQueue.push({
+        jid,
+        text: fallbackText || 'Block Kit message (view in Slack)',
+      });
+      logger.info(
+        { jid },
+        'Slack disconnected, blocks queued as text fallback',
+      );
       return;
     }
 
-    // If there's a working indicator, update it with the blocks
+    // Delete working indicator before posting the real response
     const indicatorTs = this.workingIndicators.get(channelId);
     if (indicatorTs) {
       this.workingIndicators.delete(channelId);
-      try {
-        await this.app.client.chat.update({
-          channel: channelId,
-          ts: indicatorTs,
-          text: fallbackText,
-          blocks: blocks as [],
+      this.app.client.chat
+        .delete({ channel: channelId, ts: indicatorTs })
+        .catch((err) => {
+          logger.debug({ jid, err }, 'Failed to delete working indicator');
         });
-        logger.info({ jid }, 'Slack working indicator updated with blocks');
-        return;
-      } catch (err) {
-        logger.debug({ jid, err }, 'Failed to update indicator with blocks, posting new');
-        // Fall through to normal postMessage
-      }
     }
 
     try {
-      await this.app.client.chat.postMessage({
+      const res = await this.messageClient.chat.postMessage({
         channel: channelId,
         text: fallbackText,
         blocks: blocks as [],
       });
+      if (res.ts) this.sentMessageTimestamps.add(res.ts);
       logger.info({ jid }, 'Slack blocks message sent');
     } catch (err) {
-      logger.warn({ jid, err }, 'Failed to send Slack blocks, falling back to text');
-      await this.sendMessage(jid, fallbackText || 'Block Kit message failed to render.');
+      logger.warn(
+        { jid, err },
+        'Failed to send Slack blocks, falling back to text',
+      );
+      await this.sendMessage(
+        jid,
+        fallbackText || 'Block Kit message failed to render.',
+      );
     }
   }
 
@@ -385,13 +426,18 @@ export class SlackChannel implements Channel {
     this.lastProgressUpdate.set(channelId, now);
 
     // Fire-and-forget — don't block the caller
-    this.app.client.chat.update({
-      channel: channelId,
-      ts,
-      text: `_${text}..._`,
-    }).catch((err) => {
-      logger.debug({ jid, err }, 'Failed to update working indicator progress');
-    });
+    this.app.client.chat
+      .update({
+        channel: channelId,
+        ts,
+        text: `_${text}..._`,
+      })
+      .catch((err) => {
+        logger.debug(
+          { jid, err },
+          'Failed to update working indicator progress',
+        );
+      });
   }
 
   /**
@@ -456,10 +502,11 @@ export class SlackChannel implements Channel {
       while (this.outgoingQueue.length > 0) {
         const item = this.outgoingQueue.shift()!;
         const channelId = item.jid.replace(/^slack:/, '');
-        await this.app.client.chat.postMessage({
+        const res = await this.messageClient.chat.postMessage({
           channel: channelId,
           text: item.text,
         });
+        if (res.ts) this.sentMessageTimestamps.add(res.ts);
         logger.info(
           { jid: item.jid, length: item.text.length },
           'Queued Slack message sent',
