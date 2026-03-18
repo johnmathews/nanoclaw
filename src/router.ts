@@ -1,3 +1,4 @@
+import type { Reaction } from './db.js';
 import { Channel, NewMessage } from './types.js';
 import { formatLocalTime } from './timezone.js';
 
@@ -10,13 +11,42 @@ export function escapeXml(s: string): string {
     .replace(/"/g, '&quot;');
 }
 
+/**
+ * Format a list of reactions compactly, grouped by emoji.
+ * e.g. "👍 Alice, Bob; ❤️ Carol"
+ */
+function formatReactionAnnotation(reactions: Reaction[]): string {
+  // Group by emoji, preserving insertion order
+  const byEmoji = new Map<string, string[]>();
+  for (const r of reactions) {
+    const name = r.reactor_name || r.reactor_jid.split('@')[0];
+    const names = byEmoji.get(r.emoji);
+    if (names) {
+      names.push(name);
+    } else {
+      byEmoji.set(r.emoji, [name]);
+    }
+  }
+  const parts: string[] = [];
+  for (const [emoji, names] of byEmoji) {
+    parts.push(`${emoji} ${names.map((n) => escapeXml(n)).join(', ')}`);
+  }
+  return parts.join('; ');
+}
+
 export function formatMessages(
   messages: NewMessage[],
   timezone: string,
+  reactions?: Map<string, Reaction[]>,
 ): string {
   const lines = messages.map((m) => {
     const displayTime = formatLocalTime(m.timestamp, timezone);
-    return `<message sender="${escapeXml(m.sender_name)}" time="${escapeXml(displayTime)}">${escapeXml(m.content)}</message>`;
+    const msgReactions = reactions?.get(m.id);
+    const reactionSuffix =
+      msgReactions && msgReactions.length > 0
+        ? `\n  <reactions>${formatReactionAnnotation(msgReactions)}</reactions>`
+        : '';
+    return `<message sender="${escapeXml(m.sender_name)}" time="${escapeXml(displayTime)}">${escapeXml(m.content)}${reactionSuffix}</message>`;
   });
 
   const header = `<context timezone="${escapeXml(timezone)}" />\n`;

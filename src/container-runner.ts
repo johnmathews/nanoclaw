@@ -769,3 +769,37 @@ export function writeGroupsSnapshot(
     ),
   );
 }
+
+/**
+ * Write reactions snapshot for the container to read.
+ * Includes recent reactions for the chat, joined with message context.
+ */
+export function writeReactionsSnapshot(
+  groupFolder: string,
+  chatJid: string,
+  reactions: Array<{
+    message_id: string;
+    message_preview: string;
+    message_sender: string;
+    reactor_name: string;
+    emoji: string;
+    timestamp: string;
+  }>,
+): void {
+  const groupIpcDir = resolveGroupIpcPath(groupFolder);
+  fs.mkdirSync(groupIpcDir, { recursive: true });
+
+  const reactionsFile = path.join(groupIpcDir, 'current_reactions.json');
+  fs.writeFileSync(
+    reactionsFile,
+    JSON.stringify(
+      {
+        chatJid,
+        reactions,
+        lastSync: new Date().toISOString(),
+      },
+      null,
+      2,
+    ),
+  );
+}

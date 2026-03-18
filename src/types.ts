@@ -109,6 +109,22 @@ export interface Channel {
 // Callback type that channels use to deliver inbound messages
 export type OnInboundMessage = (chatJid: string, message: NewMessage) => void;
 
+// Inbound reaction from a channel
+export interface InboundReaction {
+  message_id: string;
+  reactor_jid: string;
+  reactor_name: string;
+  emoji: string;
+  timestamp: string;
+  is_from_me: boolean;
+}
+
+// Callback type for inbound reactions
+export type OnInboundReaction = (
+  chatJid: string,
+  reaction: InboundReaction,
+) => void;
+
 // Callback for chat metadata discovery.
 // name is optional — channels that deliver names inline (Telegram) pass it here;
 // channels that sync names separately (via syncGroups) omit it.

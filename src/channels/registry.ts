@@ -1,6 +1,7 @@
 import {
   Channel,
   OnInboundMessage,
+  OnInboundReaction,
   OnChatMetadata,
   RegisteredGroup,
 } from '../types.js';
@@ -8,6 +9,7 @@ import {
 export interface ChannelOpts {
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
+  onReaction?: OnInboundReaction;
   registeredGroups: () => Record<string, RegisteredGroup>;
 }
 

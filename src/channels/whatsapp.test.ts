@@ -1286,4 +1286,170 @@ describe('WhatsAppChannel', () => {
       expect('prefixAssistantName' in channel).toBe(false);
     });
   });
+
+  // --- Reaction handling ---
+
+  describe('reaction handling', () => {
+    it('calls onReaction callback when a reaction is received', async () => {
+      const onReaction = vi.fn();
+      const opts = createTestOpts({ onReaction });
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      fakeSocket._ev.emit('messages.reaction', [
+        {
+          key: { id: 'msg-react-1', remoteJid: 'registered@g.us' },
+          reaction: {
+            key: { remoteJid: '5551234@s.whatsapp.net' },
+            text: '👍',
+            senderTimestampMs: BigInt(Date.now()),
+          },
+        },
+      ]);
+
+      // Flush microtasks
+      await new Promise((r) => setTimeout(r, 0));
+
+      expect(onReaction).toHaveBeenCalledWith(
+        'registered@g.us',
+        expect.objectContaining({
+          message_id: 'msg-react-1',
+          emoji: '👍',
+          is_from_me: false,
+        }),
+      );
+    });
+
+    it('ignores reactions for unregistered groups', async () => {
+      const onReaction = vi.fn();
+      const opts = createTestOpts({ onReaction });
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      fakeSocket._ev.emit('messages.reaction', [
+        {
+          key: { id: 'msg-react-2', remoteJid: 'unregistered@g.us' },
+          reaction: {
+            key: { remoteJid: '5551234@s.whatsapp.net' },
+            text: '👍',
+            senderTimestampMs: BigInt(Date.now()),
+          },
+        },
+      ]);
+
+      await new Promise((r) => setTimeout(r, 0));
+
+      expect(onReaction).not.toHaveBeenCalled();
+    });
+
+    it('ignores reactions on status@broadcast', async () => {
+      const onReaction = vi.fn();
+      const opts = createTestOpts({ onReaction });
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      fakeSocket._ev.emit('messages.reaction', [
+        {
+          key: { id: 'msg-react-3', remoteJid: 'status@broadcast' },
+          reaction: {
+            key: { remoteJid: '5551234@s.whatsapp.net' },
+            text: '👍',
+            senderTimestampMs: BigInt(Date.now()),
+          },
+        },
+      ]);
+
+      await new Promise((r) => setTimeout(r, 0));
+
+      expect(onReaction).not.toHaveBeenCalled();
+    });
+
+    it('passes empty emoji for reaction removal', async () => {
+      const onReaction = vi.fn();
+      const opts = createTestOpts({ onReaction });
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      fakeSocket._ev.emit('messages.reaction', [
+        {
+          key: { id: 'msg-react-4', remoteJid: 'registered@g.us' },
+          reaction: {
+            key: { remoteJid: '5551234@s.whatsapp.net' },
+            text: '',
+            senderTimestampMs: BigInt(Date.now()),
+          },
+        },
+      ]);
+
+      await new Promise((r) => setTimeout(r, 0));
+
+      expect(onReaction).toHaveBeenCalledWith(
+        'registered@g.us',
+        expect.objectContaining({
+          emoji: '',
+        }),
+      );
+    });
+
+    it('falls back to storeReaction when onReaction is not provided', async () => {
+      const { storeReaction: mockStoreReaction } = await import('../db.js');
+      const opts = createTestOpts(); // no onReaction
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      fakeSocket._ev.emit('messages.reaction', [
+        {
+          key: { id: 'msg-react-5', remoteJid: 'registered@g.us' },
+          reaction: {
+            key: { remoteJid: '5551234@s.whatsapp.net' },
+            text: '🔥',
+            senderTimestampMs: BigInt(Date.now()),
+          },
+        },
+      ]);
+
+      await new Promise((r) => setTimeout(r, 0));
+
+      expect(mockStoreReaction).toHaveBeenCalledWith(
+        expect.objectContaining({
+          message_id: 'msg-react-5',
+          emoji: '🔥',
+        }),
+      );
+    });
+
+    it('detects bot own reactions as is_from_me', async () => {
+      const onReaction = vi.fn();
+      const opts = createTestOpts({ onReaction });
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      // The bot's phone JID is 1234567890@s.whatsapp.net (from fakeSocket.user.id)
+      fakeSocket._ev.emit('messages.reaction', [
+        {
+          key: { id: 'msg-react-6', remoteJid: 'registered@g.us' },
+          reaction: {
+            key: { remoteJid: '1234567890@s.whatsapp.net' },
+            text: '✅',
+            senderTimestampMs: BigInt(Date.now()),
+          },
+        },
+      ]);
+
+      await new Promise((r) => setTimeout(r, 0));
+
+      expect(onReaction).toHaveBeenCalledWith(
+        'registered@g.us',
+        expect.objectContaining({
+          is_from_me: true,
+        }),
+      );
+    });
+  });
 });
