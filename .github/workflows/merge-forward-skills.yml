@@ -50,12 +50,31 @@ jobs:
             # Checkout the skill branch
             git checkout -B "$BRANCH" "origin/$BRANCH"
 
-            # Attempt merge
+            # Attempt merge — auto-resolve generated files that conflict trivially
             if ! git merge main --no-edit; then
-              echo "::warning::Merge conflict in $BRANCH"
-              git merge --abort
-              FAILED="$FAILED $SKILL_NAME"
-              continue
+              # Check if only auto-generated files are conflicted
+              CONFLICTED=$(git diff --name-only --diff-filter=U)
+              AUTO_RESOLVABLE=true
+              for CFILE in $CONFLICTED; do
+                case "$CFILE" in
+                  repo-tokens/*|package-lock.json) ;;
+                  *) AUTO_RESOLVABLE=false; break ;;
+                esac
+              done
+
+              if $AUTO_RESOLVABLE && [ -n "$CONFLICTED" ]; then
+                echo "Auto-resolving generated files: $CONFLICTED"
+                for CFILE in $CONFLICTED; do
+                  git checkout --theirs "$CFILE"
+                  git add "$CFILE"
+                done
+                git commit --no-edit
+              else
+                echo "::warning::Merge conflict in $BRANCH"
+                git merge --abort
+                FAILED="$FAILED $SKILL_NAME"
+                continue
+              fi
             fi
 
             # Check if there's anything new to push
@@ -82,8 +101,13 @@ jobs:
               continue
             fi
 
-            # Push the updated branch
-            git push origin "$BRANCH"
+            # Push the updated branch (force-with-lease handles race with other workflows)
+            if ! git push --force-with-lease origin "$BRANCH"; then
+              echo "::warning::Push failed for $BRANCH (concurrent update)"
+              git reset --hard "origin/$BRANCH"
+              FAILED="$FAILED $SKILL_NAME"
+              continue
+            fi
             SUCCEEDED="$SUCCEEDED $SKILL_NAME"
             echo "$BRANCH merged and pushed successfully."
           done
