@@ -504,22 +504,13 @@ export class SlackChannel implements Channel {
       const mime = file.mimetype || '';
 
       if (mime.startsWith('audio/')) {
-        // Audio: use Slack's transcript if available, otherwise Whisper
-        const slackTranscript =
-          file.transcription?.status === 'complete'
-            ? file.transcription.preview?.content
-            : undefined;
-
-        if (slackTranscript) {
-          content += `\n[Voice note: ${slackTranscript}]`;
-        } else {
-          const buffer = await this.downloadSlackFile(file);
-          if (buffer) {
-            const transcript = await transcribeAudioBuffer(buffer);
-            content += transcript
-              ? `\n[Voice note: ${transcript}]`
-              : '\n[Voice note: transcription unavailable]';
-          }
+        // Audio: always use Whisper for reliable transcription
+        const buffer = await this.downloadSlackFile(file);
+        if (buffer) {
+          const transcript = await transcribeAudioBuffer(buffer);
+          content += transcript
+            ? `\n[Voice note: ${transcript}]`
+            : '\n[Voice note: transcription unavailable]';
         }
       } else if (mime.startsWith('image/')) {
         // Image: save to attachments dir for agent vision
