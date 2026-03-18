@@ -477,12 +477,17 @@ export class SlackChannel implements Channel {
       });
       if (!resp.ok) {
         logger.warn(
-          { fileId: file.id, status: resp.status },
+          { fileId: file.id, name: file.name, status: resp.status },
           'Failed to download Slack file',
         );
         return null;
       }
-      return Buffer.from(await resp.arrayBuffer());
+      const buffer = Buffer.from(await resp.arrayBuffer());
+      logger.info(
+        { fileId: file.id, name: file.name, bytes: buffer.length },
+        'Downloaded Slack file',
+      );
+      return buffer;
     } catch (err) {
       logger.warn({ fileId: file.id, err }, 'Error downloading Slack file');
       return null;
@@ -500,36 +505,68 @@ export class SlackChannel implements Channel {
     const groupDir = resolveGroupFolderPath(groupFolder);
     const attachDir = path.join(groupDir, 'attachments');
 
+    logger.info(
+      { groupFolder, fileCount: files.length },
+      'Processing Slack file attachments',
+    );
+
     for (const file of files) {
       const mime = file.mimetype || '';
 
       if (mime.startsWith('audio/')) {
-        // Audio: always use Whisper for reliable transcription
+        logger.info(
+          { fileId: file.id, name: file.name, mime },
+          'Processing Slack audio file via Whisper',
+        );
         const buffer = await this.downloadSlackFile(file);
         if (buffer) {
           const transcript = await transcribeAudioBuffer(buffer);
-          content += transcript
-            ? `\n[Voice note: ${transcript}]`
-            : '\n[Voice note: transcription unavailable]';
+          if (transcript) {
+            logger.info(
+              { fileId: file.id, transcriptLength: transcript.length },
+              'Slack audio transcribed successfully',
+            );
+            content += `\n[Voice note: ${transcript}]`;
+          } else {
+            logger.warn(
+              { fileId: file.id, name: file.name },
+              'Slack audio transcription returned no result',
+            );
+            content += '\n[Voice note: transcription unavailable]';
+          }
         }
       } else if (mime.startsWith('image/')) {
-        // Image: save to attachments dir for agent vision
+        logger.info(
+          { fileId: file.id, name: file.name, mime },
+          'Processing Slack image attachment',
+        );
         const buffer = await this.downloadSlackFile(file);
         if (buffer) {
           fs.mkdirSync(attachDir, { recursive: true });
           const ext = file.name?.split('.').pop() || 'png';
           const filename = `img-${Date.now()}-${file.id}.${ext}`;
           fs.writeFileSync(path.join(attachDir, filename), buffer);
+          logger.info(
+            { fileId: file.id, filename, bytes: buffer.length },
+            'Slack image saved to attachments',
+          );
           content += `\n[Image attached: attachments/${filename}]`;
         }
       } else {
-        // Other files: save to attachments dir
+        logger.info(
+          { fileId: file.id, name: file.name, mime, size: file.size },
+          'Processing Slack document attachment',
+        );
         const buffer = await this.downloadSlackFile(file);
         if (buffer) {
           fs.mkdirSync(attachDir, { recursive: true });
           const filename = `${file.id}-${file.name || 'file'}`;
           fs.writeFileSync(path.join(attachDir, filename), buffer);
           const size = formatFileSize(file.size || buffer.length);
+          logger.info(
+            { fileId: file.id, filename, bytes: buffer.length },
+            'Slack document saved to attachments',
+          );
           content += `\n[File attached: attachments/${filename}] (${file.pretty_type || mime}, ${size})`;
         }
       }
