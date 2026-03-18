@@ -484,6 +484,80 @@ export function getReactionStats(chatJid?: string): Array<{
     : (db.prepare(sql).all() as Result[]);
 }
 
+/**
+ * Batch-query reactions for multiple message IDs in a single chat.
+ * Used to annotate conversation context with reactions (Flow 3).
+ */
+export function getReactionsForMessages(
+  messageIds: string[],
+  chatJid: string,
+): Reaction[] {
+  if (messageIds.length === 0) return [];
+  const placeholders = messageIds.map(() => '?').join(', ');
+  const sql = `
+    SELECT * FROM reactions
+    WHERE message_id IN (${placeholders}) AND message_chat_jid = ?
+    ORDER BY timestamp
+  `;
+  return db.prepare(sql).all(...messageIds, chatJid) as Reaction[];
+}
+
+/**
+ * Look up the content of a specific message.
+ * Used to build context for synthetic reaction-trigger messages (Flow 4).
+ */
+export function getMessageContent(
+  messageId: string,
+  chatJid: string,
+): string | undefined {
+  const row = db
+    .prepare(
+      `SELECT content FROM messages WHERE id = ? AND chat_jid = ? LIMIT 1`,
+    )
+    .get(messageId, chatJid) as { content: string } | undefined;
+  return row?.content;
+}
+
+/**
+ * Get recent reactions for a chat, joined with message context.
+ * Used for the reactions snapshot file (Flow 5).
+ */
+export function getReactionsForChat(
+  chatJid: string,
+  limit: number = 100,
+): Array<{
+  message_id: string;
+  message_preview: string;
+  message_sender: string;
+  reactor_name: string;
+  emoji: string;
+  timestamp: string;
+}> {
+  const sql = `
+    SELECT
+      r.message_id,
+      substr(m.content, 1, 80) as message_preview,
+      m.sender_name as message_sender,
+      COALESCE(r.reactor_name, substr(r.reactor_jid, 1, instr(r.reactor_jid, '@') - 1)) as reactor_name,
+      r.emoji,
+      r.timestamp
+    FROM reactions r
+    JOIN messages m ON r.message_id = m.id AND r.message_chat_jid = m.chat_jid
+    WHERE r.message_chat_jid = ?
+    ORDER BY r.timestamp DESC
+    LIMIT ?
+  `;
+  type Result = {
+    message_id: string;
+    message_preview: string;
+    message_sender: string;
+    reactor_name: string;
+    emoji: string;
+    timestamp: string;
+  };
+  return db.prepare(sql).all(chatJid, limit) as Result[];
+}
+
 export function createTask(
   task: Omit<ScheduledTask, 'last_run' | 'last_result'>,
 ): void {

@@ -343,6 +343,98 @@ server.tool(
 );
 
 server.tool(
+  'query_reactions',
+  'Query emoji reactions on messages in this chat. Returns recent reactions with message context. Use to see who reacted to what and with which emoji.',
+  {
+    emoji: z
+      .string()
+      .optional()
+      .describe('Filter by specific emoji (e.g. "👍", "❤️")'),
+    reactor: z
+      .string()
+      .optional()
+      .describe('Filter by reactor name (partial match)'),
+    message_id: z
+      .string()
+      .optional()
+      .describe('Get reactions for a specific message ID'),
+  },
+  async (args) => {
+    const reactionsFile = path.join(IPC_DIR, 'current_reactions.json');
+
+    try {
+      if (!fs.existsSync(reactionsFile)) {
+        return {
+          content: [
+            { type: 'text' as const, text: 'No reactions data available.' },
+          ],
+        };
+      }
+
+      const data = JSON.parse(fs.readFileSync(reactionsFile, 'utf-8'));
+      let reactions: Array<{
+        message_id: string;
+        message_preview: string;
+        message_sender: string;
+        reactor_name: string;
+        emoji: string;
+        timestamp: string;
+      }> = data.reactions || [];
+
+      // Apply filters
+      if (args.emoji) {
+        reactions = reactions.filter((r) => r.emoji === args.emoji);
+      }
+      if (args.reactor) {
+        const needle = args.reactor.toLowerCase();
+        reactions = reactions.filter((r) =>
+          r.reactor_name.toLowerCase().includes(needle),
+        );
+      }
+      if (args.message_id) {
+        reactions = reactions.filter((r) => r.message_id === args.message_id);
+      }
+
+      if (reactions.length === 0) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: 'No reactions found matching the criteria.',
+            },
+          ],
+        };
+      }
+
+      const formatted = reactions
+        .map(
+          (r) =>
+            `${r.emoji} by ${r.reactor_name} on "${r.message_preview}" (from ${r.message_sender}, ${r.timestamp})`,
+        )
+        .join('\n');
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Reactions (${reactions.length}):\n${formatted}`,
+          },
+        ],
+      };
+    } catch (err) {
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: `Error reading reactions: ${err instanceof Error ? err.message : String(err)}`,
+          },
+        ],
+      };
+    }
+  },
+);
+
+server.tool(
   'pause_task',
   'Pause a scheduled task. It will not run until resumed.',
   { task_id: z.string().describe('The task ID to pause') },

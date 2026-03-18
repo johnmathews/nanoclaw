@@ -31,6 +31,7 @@ import { isVoiceMessage, transcribeAudioMessage } from '../transcription.js';
 import {
   Channel,
   OnInboundMessage,
+  OnInboundReaction,
   OnChatMetadata,
   RegisteredGroup,
 } from '../types.js';
@@ -41,6 +42,7 @@ const GROUP_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 export interface WhatsAppChannelOpts {
   onMessage: OnInboundMessage;
   onChatMetadata: OnChatMetadata;
+  onReaction?: OnInboundReaction;
   registeredGroups: () => Record<string, RegisteredGroup>;
 }
 
@@ -319,14 +321,37 @@ export class WhatsAppChannel implements Channel {
           const timestamp = reaction.senderTimestampMs
             ? new Date(Number(reaction.senderTimestampMs)).toISOString()
             : new Date().toISOString();
-          storeReaction({
-            message_id: messageId,
-            message_chat_jid: chatJid,
-            reactor_jid: reactorJid,
-            reactor_name: reactorJid.split('@')[0],
-            emoji,
-            timestamp,
-          });
+
+          // Detect if the reactor is the bot itself
+          const botPhoneJid = this.sock.user?.id
+            ?.replace(/:.*@/, '@')
+            ?.replace('@lid', '@s.whatsapp.net');
+          const botLid = this.sock.user?.lid?.replace(/:.*@/, '@');
+          const isFromMe =
+            reactorJid === botPhoneJid ||
+            reactorJid === botLid ||
+            reactorJid.replace(/:.*@/, '@') === botPhoneJid;
+
+          if (this.opts.onReaction) {
+            this.opts.onReaction(chatJid, {
+              message_id: messageId,
+              reactor_jid: reactorJid,
+              reactor_name: reactorJid.split('@')[0],
+              emoji,
+              timestamp,
+              is_from_me: isFromMe,
+            });
+          } else {
+            // Fallback: store directly if no callback registered
+            storeReaction({
+              message_id: messageId,
+              message_chat_jid: chatJid,
+              reactor_jid: reactorJid,
+              reactor_name: reactorJid.split('@')[0],
+              emoji,
+              timestamp,
+            });
+          }
           logger.info(
             {
               chatJid,

@@ -1,19 +1,25 @@
 ---
 name: reactions
-description: React to WhatsApp messages with emoji. Use when the user asks you to react, when acknowledging a message with a reaction makes sense, or when you want to express a quick response without sending a full message.
+description: Send and query emoji reactions on messages. Reactions you receive appear in conversation context automatically. Use tools to send reactions or query reaction history.
 ---
 
 # Reactions
 
-React to messages with emoji using the `mcp__nanoclaw__react_to_message` tool.
+## Seeing reactions
 
-## When to use
+Incoming reactions from users appear automatically in your conversation context as `<reactions>` annotations on messages. For example:
 
-- User explicitly asks you to react ("react with a thumbs up", "heart that message")
-- Quick acknowledgment is more appropriate than a full text reply
-- Expressing agreement, approval, or emotion about a specific message
+```xml
+<message sender="Alice" time="Jan 1, 2:30 PM">great idea
+  <reactions>👍 Bob; ❤️ Carol</reactions>
+</message>
+```
 
-## How to use
+Reactions can also trigger your invocation — if a user reacts to a message, you may see a synthetic message like `[Reacted 👍 to "great idea"]`.
+
+## Sending reactions
+
+Use `mcp__nanoclaw__react_to_message` to react to messages.
 
 ### React to the latest message
 
@@ -21,32 +27,44 @@ React to messages with emoji using the `mcp__nanoclaw__react_to_message` tool.
 mcp__nanoclaw__react_to_message(emoji: "👍")
 ```
 
-Omitting `message_id` reacts to the most recent message in the chat.
-
 ### React to a specific message
 
 ```
 mcp__nanoclaw__react_to_message(emoji: "❤️", message_id: "3EB0F4C9E7...")
 ```
 
-Pass a `message_id` to react to a specific message. You can find message IDs by querying the messages database:
-
-```bash
-sqlite3 /workspace/project/store/messages.db "
-  SELECT id, sender_name, substr(content, 1, 80), timestamp
-  FROM messages
-  WHERE chat_jid = '<chat_jid>'
-  ORDER BY timestamp DESC
-  LIMIT 5;
-"
-```
-
 ### Remove a reaction
-
-Send an empty string to remove your reaction:
 
 ```
 mcp__nanoclaw__react_to_message(emoji: "")
+```
+
+## Querying reactions
+
+Use `mcp__nanoclaw__query_reactions` to search reaction history.
+
+### All recent reactions
+
+```
+mcp__nanoclaw__query_reactions()
+```
+
+### Filter by emoji
+
+```
+mcp__nanoclaw__query_reactions(emoji: "👍")
+```
+
+### Filter by reactor
+
+```
+mcp__nanoclaw__query_reactions(reactor: "Alice")
+```
+
+### Reactions on a specific message
+
+```
+mcp__nanoclaw__query_reactions(message_id: "3EB0F4C9E7...")
 ```
 
 ## Common emoji
