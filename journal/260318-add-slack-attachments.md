@@ -28,11 +28,18 @@ See [docs/SLACK-ATTACHMENTS.md](../docs/SLACK-ATTACHMENTS.md) for full details.
 **`src/transcription.ts`**:
 
 - Exported new `transcribeAudioBuffer(buffer)` — channel-agnostic Whisper wrapper
+- Replaced all `console.*` calls with structured `logger.*` (was going to stderr, not the log file)
+- Added logging: model used, audio size, transcript length, errors
 - WhatsApp's `transcribeAudioMessage` continues to work unchanged
 
 **`src/container-runner.ts`**:
 
 - Added attachment directory cleanup before each container spawn
+
+**`src/channels/slack.test.ts`**:
+
+- 10 new tests: file_share subtype, file-only messages, image/audio/document processing, download failures,
+  multi-file messages, bot file exclusion
 
 ## Why
 
@@ -45,8 +52,8 @@ The Slack channel was silently dropping all file attachments due to two filters:
 
 - **Files saved to group folder** (`groups/{folder}/attachments/`) — already mounted in the container, no new mount
   needed
-- **Audio transcription done host-side** — consistent with WhatsApp voice pattern; Slack's own transcript used when
-  available (faster, free), Whisper as fallback
+- **Audio always uses Whisper** — Slack's built-in transcription quality is unknown; Whisper is reliable and cheap
+  (~$0.006/min). Consistent with WhatsApp voice pattern.
 - **No changes to types.ts** — file references embedded in `content` string for backward compatibility
 - **No changes to agent-runner** — agent already has Read (vision) and Bash tools
 - **Attachment cleanup per run** — safe because GroupQueue serializes container runs per group
