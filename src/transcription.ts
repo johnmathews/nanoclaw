@@ -2,6 +2,7 @@ import { downloadMediaMessage } from '@whiskeysockets/baileys';
 import { WAMessage, WASocket } from '@whiskeysockets/baileys';
 
 import { readEnvFile } from './env.js';
+import { logger } from './logger.js';
 
 interface TranscriptionConfig {
   model: string;
@@ -23,7 +24,7 @@ async function transcribeWithOpenAI(
   const apiKey = env.OPENAI_API_KEY;
 
   if (!apiKey) {
-    console.warn('OPENAI_API_KEY not set in .env');
+    logger.warn('OPENAI_API_KEY not set in .env, transcription unavailable');
     return null;
   }
 
@@ -38,16 +39,26 @@ async function transcribeWithOpenAI(
       type: 'audio/ogg',
     });
 
+    logger.info(
+      { model: config.model, audioBytes: audioBuffer.length },
+      'Sending audio to OpenAI Whisper API',
+    );
+
     const transcription = await openai.audio.transcriptions.create({
       file: file,
       model: config.model,
       response_format: 'text',
     });
 
-    // When response_format is 'text', the API returns a plain string
-    return transcription as unknown as string;
+    const result = transcription as unknown as string;
+    logger.info(
+      { model: config.model, transcriptLength: result?.length ?? 0 },
+      'Whisper transcription complete',
+    );
+
+    return result;
   } catch (err) {
-    console.error('OpenAI transcription failed:', err);
+    logger.error({ err, model: config.model }, 'OpenAI Whisper transcription failed');
     return null;
   }
 }
@@ -86,11 +97,11 @@ export async function transcribeAudioMessage(
     )) as Buffer;
 
     if (!buffer || buffer.length === 0) {
-      console.error('Failed to download audio message');
+      logger.error('Failed to download WhatsApp audio message');
       return config.fallbackMessage;
     }
 
-    console.log(`Downloaded audio message: ${buffer.length} bytes`);
+    logger.info({ bytes: buffer.length }, 'Downloaded WhatsApp audio message');
 
     const transcript = await transcribeWithOpenAI(buffer, config);
 
@@ -100,7 +111,7 @@ export async function transcribeAudioMessage(
 
     return transcript.trim();
   } catch (err) {
-    console.error('Transcription error:', err);
+    logger.error({ err }, 'WhatsApp transcription error');
     return config.fallbackMessage;
   }
 }

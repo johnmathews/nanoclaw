@@ -26,6 +26,21 @@ vi.mock('../db.js', () => ({
   updateChatName: vi.fn(),
 }));
 
+// Mock group-folder
+vi.mock('../group-folder.js', () => ({
+  resolveGroupFolderPath: vi.fn((folder: string) => `/fake/groups/${folder}`),
+}));
+
+// Mock transcription
+const mockTranscribeAudioBuffer = vi.fn();
+vi.mock('../transcription.js', () => ({
+  transcribeAudioBuffer: (...args: any[]) => mockTranscribeAudioBuffer(...args),
+}));
+
+// Mock global fetch for Slack file downloads
+const mockFetch = vi.fn();
+vi.stubGlobal('fetch', mockFetch);
+
 // --- @slack/bolt mock ---
 
 type Handler = (...args: any[]) => any;
@@ -89,6 +104,8 @@ vi.mock('../env.js', () => ({
   }),
 }));
 
+import fs from 'fs';
+
 import { SlackChannel, SlackChannelOpts } from './slack.js';
 import { updateChatName } from '../db.js';
 import { readEnvFile } from '../env.js';
@@ -122,6 +139,18 @@ function createMessageEvent(overrides: {
   threadTs?: string;
   subtype?: string;
   botId?: string;
+  files?: Array<{
+    id: string;
+    name?: string;
+    mimetype?: string;
+    size?: number;
+    url_private_download?: string;
+    pretty_type?: string;
+    transcription?: {
+      status?: string;
+      preview?: { content?: string };
+    };
+  }>;
 }) {
   return {
     channel: overrides.channel ?? 'C0123456789',
@@ -132,6 +161,7 @@ function createMessageEvent(overrides: {
     thread_ts: overrides.threadTs,
     subtype: overrides.subtype,
     bot_id: overrides.botId,
+    files: overrides.files,
   };
 }
 
@@ -279,7 +309,7 @@ describe('SlackChannel', () => {
       expect(opts.onChatMetadata).toHaveBeenCalled();
     });
 
-    it('skips messages with no text', async () => {
+    it('skips messages with no text and no files', async () => {
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);
       await channel.connect();
@@ -488,6 +518,344 @@ describe('SlackChannel', () => {
       await triggerMessageEvent(event);
 
       expect(opts.onMessage).toHaveBeenCalled();
+    });
+  });
+
+  // --- File attachment processing ---
+
+  describe('file attachment processing', () => {
+    let writeFileSpy: ReturnType<typeof vi.spyOn>;
+    let mkdirSpy: ReturnType<typeof vi.spyOn>;
+
+    function mockFetchResponse(buffer: Buffer) {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        arrayBuffer: () =>
+          Promise.resolve(
+            buffer.buffer.slice(
+              buffer.byteOffset,
+              buffer.byteOffset + buffer.byteLength,
+            ),
+          ),
+      });
+    }
+
+    function mockFetchFailure(status = 403) {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status,
+      });
+    }
+
+    beforeEach(() => {
+      mockFetch.mockReset();
+      mockTranscribeAudioBuffer.mockReset();
+      writeFileSpy = vi.spyOn(fs, 'writeFileSync').mockImplementation(() => {});
+      mkdirSpy = vi.spyOn(fs, 'mkdirSync').mockImplementation(
+        () => '' as any,
+      );
+    });
+
+    afterEach(() => {
+      writeFileSpy.mockRestore();
+      mkdirSpy.mockRestore();
+    });
+
+    it('allows file_share subtype through', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      mockFetchResponse(Buffer.from('image-data'));
+
+      const event = createMessageEvent({
+        subtype: 'file_share',
+        text: 'Check this out',
+        files: [
+          {
+            id: 'F001',
+            name: 'photo.png',
+            mimetype: 'image/png',
+            size: 1024,
+            url_private_download: 'https://files.slack.com/F001/photo.png',
+          },
+        ],
+      });
+      await triggerMessageEvent(event);
+
+      expect(opts.onMessage).toHaveBeenCalled();
+    });
+
+    it('accepts file-only messages with no text', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      mockFetchResponse(Buffer.from('image-data'));
+
+      const event = createMessageEvent({
+        subtype: 'file_share',
+        text: undefined as any,
+        files: [
+          {
+            id: 'F001',
+            name: 'photo.png',
+            mimetype: 'image/png',
+            size: 2048,
+            url_private_download: 'https://files.slack.com/F001/photo.png',
+          },
+        ],
+      });
+      await triggerMessageEvent(event);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'slack:C0123456789',
+        expect.objectContaining({
+          content: expect.stringContaining('[Image attached: attachments/'),
+        }),
+      );
+    });
+
+    it('downloads and saves image files to attachments dir', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      const imageBuffer = Buffer.from('fake-png-data');
+      mockFetchResponse(imageBuffer);
+
+      const event = createMessageEvent({
+        text: 'Look at this',
+        files: [
+          {
+            id: 'F_IMG',
+            name: 'screenshot.png',
+            mimetype: 'image/png',
+            size: 4096,
+            url_private_download: 'https://files.slack.com/F_IMG/screenshot.png',
+          },
+        ],
+      });
+      await triggerMessageEvent(event);
+
+      // File downloaded with auth header
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://files.slack.com/F_IMG/screenshot.png',
+        { headers: { Authorization: 'Bearer xoxb-test-token' } },
+      );
+
+      // Directory created
+      expect(mkdirSpy).toHaveBeenCalledWith(
+        '/fake/groups/test-channel/attachments',
+        { recursive: true },
+      );
+
+      // File written
+      expect(writeFileSpy).toHaveBeenCalledWith(
+        expect.stringMatching(
+          /\/fake\/groups\/test-channel\/attachments\/img-\d+-F_IMG\.png$/,
+        ),
+        imageBuffer,
+      );
+
+      // Content includes image reference
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'slack:C0123456789',
+        expect.objectContaining({
+          content: expect.stringContaining('[Image attached: attachments/img-'),
+        }),
+      );
+    });
+
+    it('transcribes audio files via Whisper', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      const audioBuffer = Buffer.from('fake-audio');
+      mockFetchResponse(audioBuffer);
+      mockTranscribeAudioBuffer.mockResolvedValueOnce(
+        'Hello, this is a voice note',
+      );
+
+      const event = createMessageEvent({
+        text: '',
+        files: [
+          {
+            id: 'F_AUD',
+            name: 'voice.ogg',
+            mimetype: 'audio/ogg',
+            url_private_download: 'https://files.slack.com/F_AUD/voice.ogg',
+          },
+        ],
+      });
+      await triggerMessageEvent(event);
+
+      expect(mockTranscribeAudioBuffer).toHaveBeenCalledWith(audioBuffer);
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'slack:C0123456789',
+        expect.objectContaining({
+          content: expect.stringContaining(
+            '[Voice note: Hello, this is a voice note]',
+          ),
+        }),
+      );
+    });
+
+    it('shows fallback when audio transcription fails', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      mockFetchResponse(Buffer.from('audio-data'));
+      mockTranscribeAudioBuffer.mockResolvedValueOnce(null);
+
+      const event = createMessageEvent({
+        text: '',
+        files: [
+          {
+            id: 'F_AUD2',
+            name: 'clip.mp3',
+            mimetype: 'audio/mpeg',
+            url_private_download: 'https://files.slack.com/F_AUD2/clip.mp3',
+          },
+        ],
+      });
+      await triggerMessageEvent(event);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'slack:C0123456789',
+        expect.objectContaining({
+          content: expect.stringContaining(
+            '[Voice note: transcription unavailable]',
+          ),
+        }),
+      );
+    });
+
+    it('saves document files with metadata', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      const xlsBuffer = Buffer.from('fake-excel');
+      mockFetchResponse(xlsBuffer);
+
+      const event = createMessageEvent({
+        text: 'Here is the report',
+        files: [
+          {
+            id: 'F_DOC',
+            name: 'report.xlsx',
+            mimetype:
+              'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            size: 25600,
+            pretty_type: 'Excel Spreadsheet',
+            url_private_download: 'https://files.slack.com/F_DOC/report.xlsx',
+          },
+        ],
+      });
+      await triggerMessageEvent(event);
+
+      expect(writeFileSpy).toHaveBeenCalledWith(
+        '/fake/groups/test-channel/attachments/F_DOC-report.xlsx',
+        xlsBuffer,
+      );
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'slack:C0123456789',
+        expect.objectContaining({
+          content: expect.stringContaining(
+            '[File attached: attachments/F_DOC-report.xlsx] (Excel Spreadsheet, 25.0 KB)',
+          ),
+        }),
+      );
+    });
+
+    it('handles multiple files in one message', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      mockFetchResponse(Buffer.from('img1'));
+      mockFetchResponse(Buffer.from('img2'));
+
+      const event = createMessageEvent({
+        text: 'Two images',
+        files: [
+          {
+            id: 'F1',
+            name: 'a.png',
+            mimetype: 'image/png',
+            size: 100,
+            url_private_download: 'https://files.slack.com/F1/a.png',
+          },
+          {
+            id: 'F2',
+            name: 'b.jpg',
+            mimetype: 'image/jpeg',
+            size: 200,
+            url_private_download: 'https://files.slack.com/F2/b.jpg',
+          },
+        ],
+      });
+      await triggerMessageEvent(event);
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      expect(writeFileSpy).toHaveBeenCalledTimes(2);
+    });
+
+    it('gracefully handles download failure', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      mockFetchFailure(403);
+
+      const event = createMessageEvent({
+        text: 'Check this file',
+        files: [
+          {
+            id: 'F_FAIL',
+            name: 'secret.pdf',
+            mimetype: 'application/pdf',
+            url_private_download: 'https://files.slack.com/F_FAIL/secret.pdf',
+          },
+        ],
+      });
+      await triggerMessageEvent(event);
+
+      // Message still delivered with original text, no file reference
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'slack:C0123456789',
+        expect.objectContaining({
+          content: 'Check this file',
+        }),
+      );
+      expect(writeFileSpy).not.toHaveBeenCalled();
+    });
+
+    it('does not process files from bot messages', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      const event = createMessageEvent({
+        subtype: 'bot_message',
+        botId: 'B_BOT',
+        text: 'Bot shared a file',
+        files: [
+          {
+            id: 'F_BOT',
+            name: 'bot-file.png',
+            mimetype: 'image/png',
+            url_private_download: 'https://files.slack.com/F_BOT/bot-file.png',
+          },
+        ],
+      });
+      await triggerMessageEvent(event);
+
+      expect(mockFetch).not.toHaveBeenCalled();
     });
   });
 
