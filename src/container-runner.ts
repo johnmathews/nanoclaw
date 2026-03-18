@@ -290,6 +290,14 @@ export async function runContainerAgent(
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
 
+  // Clear stale attachments from previous runs (safe: GroupQueue serializes per group)
+  const attachDir = path.join(groupDir, 'attachments');
+  if (fs.existsSync(attachDir)) {
+    for (const file of fs.readdirSync(attachDir)) {
+      fs.unlinkSync(path.join(attachDir, file));
+    }
+  }
+
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
