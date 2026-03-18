@@ -451,6 +451,36 @@ async function runAgent(
         { group: group.name, error: output.error },
         'Container agent error',
       );
+      // Notify user about API errors via the streaming callback
+      if (output.error && onOutput) {
+        const errLower = output.error.toLowerCase();
+        let userMsg: string | null = null;
+        if (errLower.includes('529') || errLower.includes('overloaded')) {
+          userMsg =
+            'The AI service (Anthropic) is currently overloaded (HTTP 529). Your message will be retried automatically.';
+        } else if (
+          errLower.includes('rate_limit') ||
+          errLower.includes('api_error') ||
+          errLower.includes('server_error') ||
+          errLower.includes('service_unavailable') ||
+          errLower.includes('openai') ||
+          errLower.includes('anthropic')
+        ) {
+          userMsg =
+            'API error encountered. Your message will be retried automatically.';
+        }
+        if (userMsg) {
+          logger.warn(
+            { group: group.name, errorDetail: output.error },
+            'Notifying user of API error',
+          );
+          await onOutput({
+            status: 'error',
+            result: userMsg,
+            error: output.error,
+          });
+        }
+      }
       return 'error';
     }
 
