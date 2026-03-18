@@ -7,8 +7,8 @@ them.
 
 When a Slack message includes file attachments:
 
-1. **Audio** (`audio/*`): Slack's own transcript is used if available (faster, free). Otherwise the audio is downloaded
-   and transcribed via OpenAI Whisper. The transcript is embedded in the message as `[Voice note: <transcript>]`.
+1. **Audio** (`audio/*`): Always transcribed via OpenAI Whisper for consistent, reliable results. The audio is downloaded
+   from Slack and sent to the Whisper API. The transcript is embedded in the message as `[Voice note: <transcript>]`.
 
 2. **Images** (`image/*`): Downloaded to `groups/{folder}/attachments/img-{timestamp}-{fileId}.{ext}`. The agent sees
    `[Image attached: attachments/filename]` in the message and can use Claude Code's `Read` tool for vision.
