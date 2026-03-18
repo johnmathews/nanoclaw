@@ -8,7 +8,8 @@ Capture the **why** behind changes — motivations, trade-offs, alternatives con
 
 ## How to use
 
-- One file per entry, named `YYYY-MM-DD-slug.md`
+- One file per entry, named `yymmdd-verb-description.md` (e.g. `260318-add-voice-transcription.md`)
+- Verbs: `add`, `remove`, `fix`, `rename`, `change`, `scope`, `retrospective`, etc.
 - Keep entries focused on a single topic or decision
 - Include: what changed, why, what alternatives were considered, any gotchas
 - Reference relevant files/commits where helpful
