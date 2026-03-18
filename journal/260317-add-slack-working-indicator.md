@@ -44,6 +44,7 @@ callback. The orchestrator passes this through to `channel.updateWorkingIndicato
 change the placeholder text. Rate-limited to one update per 3 seconds to avoid Slack API throttling.
 
 Tool name mapping (in agent-runner):
+
 - `Read` -> "Reading files"
 - `Edit`/`Write` -> "Editing code" / "Writing code"
 - `Bash` -> "Running command"
@@ -53,29 +54,33 @@ Tool name mapping (in agent-runner):
 
 ## Files changed
 
-| File | Change |
-|------|--------|
-| `src/channels/slack.ts` | `setTyping()` posts/deletes placeholder; `sendMessage()`/`sendBlocks()` update placeholder with response; `updateWorkingIndicator()` for progress text with rate limiting |
-| `src/types.ts` | Added optional `updateWorkingIndicator?(jid, text)` to Channel interface |
-| `container/agent-runner/src/index.ts` | Progress markers emitted on tool_use blocks; tool name -> friendly label mapping |
-| `src/container-runner.ts` | Parses `PROGRESS_START/END` markers; `onProgress` callback parameter; always syncs agent-runner source to session mounts |
-| `src/index.ts` | Wires `onProgress` callback from container-runner to `channel.updateWorkingIndicator()` |
+| File                                  | Change                                                                                                                                                                    |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/channels/slack.ts`               | `setTyping()` posts/deletes placeholder; `sendMessage()`/`sendBlocks()` update placeholder with response; `updateWorkingIndicator()` for progress text with rate limiting |
+| `src/types.ts`                        | Added optional `updateWorkingIndicator?(jid, text)` to Channel interface                                                                                                  |
+| `container/agent-runner/src/index.ts` | Progress markers emitted on tool_use blocks; tool name -> friendly label mapping                                                                                          |
+| `src/container-runner.ts`             | Parses `PROGRESS_START/END` markers; `onProgress` callback parameter; always syncs agent-runner source to session mounts                                                  |
+| `src/index.ts`                        | Wires `onProgress` callback from container-runner to `channel.updateWorkingIndicator()`                                                                                   |
 
 ## Design decisions
 
 ### Why not ephemeral messages?
+
 Slack ephemeral messages (`chat.postEphemeral`) cannot be updated or deleted by the bot. They only disappear on
 refresh/navigate, so they can't be "replaced" by the real response.
 
 ### Why post-then-update instead of post-then-delete?
+
 Updating in-place is smoother — no flicker between deleting the old message and posting a new one. The message
 transforms from placeholder to response seamlessly.
 
 ### Why rate-limit progress updates?
+
 Slack's API has rate limits. An agent might call 10+ tools in rapid succession. Capping updates at one per 3 seconds
 prevents throttling while still giving meaningful feedback.
 
 ### Why fire-and-forget for progress updates?
+
 `updateWorkingIndicator()` is synchronous (returns void) and doesn't await the API call. Progress updates are
 best-effort — if one fails, the next one or the final response will still work. This avoids blocking the agent's
 execution pipeline.

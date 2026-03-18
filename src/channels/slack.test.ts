@@ -551,9 +551,7 @@ describe('SlackChannel', () => {
       mockFetch.mockReset();
       mockTranscribeAudioBuffer.mockReset();
       writeFileSpy = vi.spyOn(fs, 'writeFileSync').mockImplementation(() => {});
-      mkdirSpy = vi.spyOn(fs, 'mkdirSync').mockImplementation(
-        () => '' as any,
-      );
+      mkdirSpy = vi.spyOn(fs, 'mkdirSync').mockImplementation(() => '' as any);
     });
 
     afterEach(() => {
@@ -632,7 +630,8 @@ describe('SlackChannel', () => {
             name: 'screenshot.png',
             mimetype: 'image/png',
             size: 4096,
-            url_private_download: 'https://files.slack.com/F_IMG/screenshot.png',
+            url_private_download:
+              'https://files.slack.com/F_IMG/screenshot.png',
           },
         ],
       });

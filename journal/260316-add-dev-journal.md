@@ -20,4 +20,4 @@ new. Code and git history show _what_ changed but not _why_. This journal fills 
 
 ## Format
 
-One markdown file per entry, `YYYY-MM-DD-slug.md`, with frontmatter tags for categorization.
+One markdown file per entry, `yymmdd-verb-description.md`, with frontmatter tags for categorization.
