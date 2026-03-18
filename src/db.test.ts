@@ -780,9 +780,9 @@ describe('getReactionsForMessages', () => {
   });
 
   it('returns empty array when no reactions exist', () => {
-    expect(
-      getReactionsForMessages(['msg-1', 'msg-2'], 'group@g.us'),
-    ).toEqual([]);
+    expect(getReactionsForMessages(['msg-1', 'msg-2'], 'group@g.us')).toEqual(
+      [],
+    );
   });
 
   it('filters by chatJid', () => {
@@ -887,7 +887,8 @@ describe('getReactionsForChat', () => {
       chat_jid: 'group@g.us',
       sender: 'a@s.whatsapp.net',
       sender_name: 'Alice',
-      content: 'hello world, this is a long message that should be truncated in the preview',
+      content:
+        'hello world, this is a long message that should be truncated in the preview',
       timestamp: '2024-01-01T00:00:01.000Z',
     });
     store({

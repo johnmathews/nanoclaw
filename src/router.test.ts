@@ -17,10 +17,7 @@ function msg(overrides: Partial<NewMessage> & { id: string }): NewMessage {
 
 describe('formatMessages', () => {
   it('formats messages without reactions (unchanged behavior)', () => {
-    const result = formatMessages(
-      [msg({ id: 'm1', content: 'hello' })],
-      'UTC',
-    );
+    const result = formatMessages([msg({ id: 'm1', content: 'hello' })], 'UTC');
     expect(result).toContain('<message sender="Alice"');
     expect(result).toContain('hello</message>');
     expect(result).not.toContain('<reactions');

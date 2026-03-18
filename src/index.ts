@@ -637,7 +637,11 @@ async function startMessageLoop(): Promise<void> {
           const messagesToSend =
             allPending.length > 0 ? allPending : groupMessages;
           const pipeReactionMap = buildReactionMap(messagesToSend, chatJid);
-          const formatted = formatMessages(messagesToSend, TIMEZONE, pipeReactionMap);
+          const formatted = formatMessages(
+            messagesToSend,
+            TIMEZONE,
+            pipeReactionMap,
+          );
 
           if (queue.sendMessage(chatJid, formatted)) {
             logger.debug(
@@ -845,10 +849,7 @@ async function main(): Promise<void> {
       if (needsTrigger) return;
 
       // Look up the reacted-to message for context
-      const originalContent = getMessageContent(
-        reaction.message_id,
-        chatJid,
-      );
+      const originalContent = getMessageContent(reaction.message_id, chatJid);
       const preview = originalContent
         ? `"${originalContent.slice(0, 50)}${originalContent.length > 50 ? '...' : ''}"`
         : 'a message';
