@@ -19,6 +19,7 @@ import {
   ContainerOutput,
   runContainerAgent,
   writeGroupsSnapshot,
+  writeReactionsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
 import {
@@ -31,16 +32,21 @@ import {
   getAllRegisteredGroups,
   getAllSessions,
   getAllTasks,
+  getMessageContent,
   getMessageFromMe,
   getMessagesSince,
   getNewMessages,
+  getReactionsForChat,
+  getReactionsForMessages,
   getRouterState,
   initDatabase,
+  Reaction,
   setRegisteredGroup,
   setRouterState,
   setSession,
   storeChatMetadata,
   storeMessage,
+  storeReaction,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
@@ -63,7 +69,12 @@ import {
   isSessionCommandAllowed,
 } from './session-commands.js';
 import { startSchedulerLoop } from './task-scheduler.js';
-import { Channel, NewMessage, RegisteredGroup } from './types.js';
+import {
+  Channel,
+  InboundReaction,
+  NewMessage,
+  RegisteredGroup,
+} from './types.js';
 import { parseImageReferences } from './image.js';
 import { StatusTracker } from './status-tracker.js';
 import { logger } from './logger.js';
@@ -154,6 +165,30 @@ export function getAvailableGroups(): import('./container-runner.js').AvailableG
       lastActivity: c.last_message_time,
       isRegistered: registeredJids.has(c.jid),
     }));
+}
+
+/**
+ * Build a reaction map for a set of messages (keyed by message ID).
+ * Returns undefined if there are no reactions, to avoid unnecessary XML.
+ */
+function buildReactionMap(
+  messages: NewMessage[],
+  chatJid: string,
+): Map<string, Reaction[]> | undefined {
+  if (messages.length === 0) return undefined;
+  const ids = messages.map((m) => m.id);
+  const reactions = getReactionsForMessages(ids, chatJid);
+  if (reactions.length === 0) return undefined;
+  const map = new Map<string, Reaction[]>();
+  for (const r of reactions) {
+    const list = map.get(r.message_id);
+    if (list) {
+      list.push(r);
+    } else {
+      map.set(r.message_id, [r]);
+    }
+  }
+  return map;
 }
 
 /** @internal - exported for testing */
@@ -251,7 +286,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     statusTracker.markThinking(msg.id);
   }
 
-  const prompt = formatMessages(missedMessages, TIMEZONE);
+  const reactionMap = buildReactionMap(missedMessages, chatJid);
+  const prompt = formatMessages(missedMessages, TIMEZONE, reactionMap);
   const imageAttachments = parseImageReferences(missedMessages);
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
@@ -411,6 +447,9 @@ async function runAgent(
     availableGroups,
     new Set(Object.keys(registeredGroups)),
   );
+
+  // Update reactions snapshot for container to read
+  writeReactionsSnapshot(group.folder, chatJid, getReactionsForChat(chatJid));
 
   // Wrap onOutput to track session ID from streamed results
   const wrappedOnOutput = onOutput
@@ -597,7 +636,8 @@ async function startMessageLoop(): Promise<void> {
           );
           const messagesToSend =
             allPending.length > 0 ? allPending : groupMessages;
-          const formatted = formatMessages(messagesToSend, TIMEZONE);
+          const pipeReactionMap = buildReactionMap(messagesToSend, chatJid);
+          const formatted = formatMessages(messagesToSend, TIMEZONE, pipeReactionMap);
 
           if (queue.sendMessage(chatJid, formatted)) {
             logger.debug(
@@ -782,6 +822,48 @@ async function main(): Promise<void> {
         }
       }
       storeMessage(msg);
+    },
+    onReaction: (chatJid: string, reaction: InboundReaction) => {
+      // Always store the reaction (additions and removals)
+      storeReaction({
+        message_id: reaction.message_id,
+        message_chat_jid: chatJid,
+        reactor_jid: reaction.reactor_jid,
+        reactor_name: reaction.reactor_name,
+        emoji: reaction.emoji,
+        timestamp: reaction.timestamp,
+      });
+
+      // Don't trigger on reaction removals or bot's own reactions
+      if (!reaction.emoji || reaction.is_from_me) return;
+
+      // Only trigger in groups that don't require a trigger pattern
+      const group = registeredGroups[chatJid];
+      if (!group) return;
+      const isMainGroup = group.isMain === true;
+      const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
+      if (needsTrigger) return;
+
+      // Look up the reacted-to message for context
+      const originalContent = getMessageContent(
+        reaction.message_id,
+        chatJid,
+      );
+      const preview = originalContent
+        ? `"${originalContent.slice(0, 50)}${originalContent.length > 50 ? '...' : ''}"`
+        : 'a message';
+
+      // Synthesize a message so the agent sees the reaction
+      storeMessage({
+        id: `reaction:${reaction.message_id}:${reaction.reactor_jid}:${reaction.timestamp}`,
+        chat_jid: chatJid,
+        sender: reaction.reactor_jid,
+        sender_name: reaction.reactor_name,
+        content: `[Reacted ${reaction.emoji} to ${preview}]`,
+        timestamp: reaction.timestamp,
+        is_from_me: false,
+        is_bot_message: false,
+      });
     },
     onChatMetadata: (
       chatJid: string,
