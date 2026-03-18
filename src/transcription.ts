@@ -42,7 +42,11 @@ async function transcribeWithOpenAI(
     });
 
     logger.info(
-      { model: config.model, audioBytes: audioBuffer.length, filename: filename || 'voice.ogg' },
+      {
+        model: config.model,
+        audioBytes: audioBuffer.length,
+        filename: filename || 'voice.ogg',
+      },
       'Sending audio to OpenAI Whisper API',
     );
 
@@ -80,7 +84,12 @@ export async function transcribeAudioBuffer(
   mimetype?: string,
 ): Promise<string | null> {
   if (!buffer || buffer.length === 0) return null;
-  const transcript = await transcribeWithOpenAI(buffer, DEFAULT_CONFIG, filename, mimetype);
+  const transcript = await transcribeWithOpenAI(
+    buffer,
+    DEFAULT_CONFIG,
+    filename,
+    mimetype,
+  );
   return transcript?.trim() ?? null;
 }
 
