@@ -52,6 +52,18 @@ async function transcribeWithOpenAI(
   }
 }
 
+/**
+ * Transcribe an audio buffer using OpenAI Whisper.
+ * Channel-agnostic — works with any audio source (Slack, WhatsApp, etc.).
+ */
+export async function transcribeAudioBuffer(
+  buffer: Buffer,
+): Promise<string | null> {
+  if (!buffer || buffer.length === 0) return null;
+  const transcript = await transcribeWithOpenAI(buffer, DEFAULT_CONFIG);
+  return transcript?.trim() ?? null;
+}
+
 export async function transcribeAudioMessage(
   msg: WAMessage,
   sock: WASocket,
