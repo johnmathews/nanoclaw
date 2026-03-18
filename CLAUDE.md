@@ -20,6 +20,7 @@ isolated filesystem and memory.
 | `src/config.ts`                     | Trigger pattern, paths, intervals                          |
 | `src/container-runner.ts`           | Spawns agent containers with mounts, parses progress       |
 | `src/task-scheduler.ts`             | Runs scheduled tasks                                       |
+| `src/transcription.ts`              | Voice message transcription via OpenAI Whisper             |
 | `src/db.ts`                         | SQLite operations                                          |
 | `groups/{name}/CLAUDE.md`           | Per-group memory (isolated)                                |
 | `container/skills/agent-browser.md` | Browser automation tool (available to all agents via Bash) |
@@ -58,6 +59,15 @@ systemctl --user start nanoclaw
 systemctl --user stop nanoclaw
 systemctl --user restart nanoclaw
 ```
+
+## WhatsApp Dedicated Number
+
+The agent runs on its own WhatsApp Business account (`ASSISTANT_HAS_OWN_NUMBER=true`). This means:
+
+- The agent has a separate phone number (eSIM) linked via WhatsApp Business
+- No message prefix needed — `fromMe` flag distinguishes bot messages from user messages
+- Chat looks like a normal 1-on-1 conversation
+- Auth uses pairing code (`npm run auth --pairing-code --phone <number>`) — more reliable than QR in terminals
 
 ## Troubleshooting
 

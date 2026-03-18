@@ -58,7 +58,10 @@ async function transcribeWithOpenAI(
 
     return result;
   } catch (err) {
-    logger.error({ err, model: config.model }, 'OpenAI Whisper transcription failed');
+    logger.error(
+      { err, model: config.model },
+      'OpenAI Whisper transcription failed',
+    );
     return null;
   }
 }
