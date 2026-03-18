@@ -19,6 +19,8 @@ const DEFAULT_CONFIG: TranscriptionConfig = {
 async function transcribeWithOpenAI(
   audioBuffer: Buffer,
   config: TranscriptionConfig,
+  filename?: string,
+  mimetype?: string,
 ): Promise<string | null> {
   const env = readEnvFile(['OPENAI_API_KEY']);
   const apiKey = env.OPENAI_API_KEY;
@@ -35,12 +37,16 @@ async function transcribeWithOpenAI(
 
     const openai = new OpenAI({ apiKey });
 
-    const file = await toFile(audioBuffer, 'voice.ogg', {
-      type: 'audio/ogg',
+    const file = await toFile(audioBuffer, filename || 'voice.ogg', {
+      type: mimetype || 'audio/ogg',
     });
 
     logger.info(
-      { model: config.model, audioBytes: audioBuffer.length },
+      {
+        model: config.model,
+        audioBytes: audioBuffer.length,
+        filename: filename || 'voice.ogg',
+      },
       'Sending audio to OpenAI Whisper API',
     );
 
@@ -62,19 +68,28 @@ async function transcribeWithOpenAI(
       { err, model: config.model },
       'OpenAI Whisper transcription failed',
     );
-    return null;
+    throw err;
   }
 }
 
 /**
  * Transcribe an audio buffer using OpenAI Whisper.
  * Channel-agnostic — works with any audio source (Slack, WhatsApp, etc.).
+ * Pass filename/mimetype to match the actual audio format (defaults to voice.ogg).
+ * Throws on API errors so callers can report failures to users.
  */
 export async function transcribeAudioBuffer(
   buffer: Buffer,
+  filename?: string,
+  mimetype?: string,
 ): Promise<string | null> {
   if (!buffer || buffer.length === 0) return null;
-  const transcript = await transcribeWithOpenAI(buffer, DEFAULT_CONFIG);
+  const transcript = await transcribeWithOpenAI(
+    buffer,
+    DEFAULT_CONFIG,
+    filename,
+    mimetype,
+  );
   return transcript?.trim() ?? null;
 }
 
@@ -106,15 +121,18 @@ export async function transcribeAudioMessage(
 
     logger.info({ bytes: buffer.length }, 'Downloaded WhatsApp audio message');
 
-    const transcript = await transcribeWithOpenAI(buffer, config);
-
-    if (!transcript) {
+    try {
+      const transcript = await transcribeWithOpenAI(buffer, config);
+      if (!transcript) {
+        return config.fallbackMessage;
+      }
+      return transcript.trim();
+    } catch (err) {
+      logger.error({ err }, 'WhatsApp transcription error');
       return config.fallbackMessage;
     }
-
-    return transcript.trim();
   } catch (err) {
-    logger.error({ err }, 'WhatsApp transcription error');
+    logger.error({ err }, 'WhatsApp audio download error');
     return config.fallbackMessage;
   }
 }

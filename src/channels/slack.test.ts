@@ -690,7 +690,11 @@ describe('SlackChannel', () => {
       });
       await triggerMessageEvent(event);
 
-      expect(mockTranscribeAudioBuffer).toHaveBeenCalledWith(audioBuffer);
+      expect(mockTranscribeAudioBuffer).toHaveBeenCalledWith(
+        audioBuffer,
+        'voice.ogg',
+        'audio/ogg',
+      );
       expect(opts.onMessage).toHaveBeenCalledWith(
         'slack:C0123456789',
         expect.objectContaining({
@@ -728,6 +732,107 @@ describe('SlackChannel', () => {
           content: expect.stringContaining(
             '[Voice note: transcription unavailable]',
           ),
+        }),
+      );
+    });
+
+    it('passes correct filename and mimetype for m4a audio (regression: hardcoded voice.ogg broke Slack)', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      const audioBuffer = Buffer.from('fake-m4a-audio');
+      mockFetchResponse(audioBuffer);
+      mockTranscribeAudioBuffer.mockResolvedValueOnce('Transcribed from m4a');
+
+      const event = createMessageEvent({
+        text: '',
+        files: [
+          {
+            id: 'F_M4A',
+            name: 'Audio Clip (2026-03-18 13:23:44).m4a',
+            mimetype: 'audio/mp4',
+            url_private_download: 'https://files.slack.com/F_M4A/audio.m4a',
+          },
+        ],
+      });
+      await triggerMessageEvent(event);
+
+      // Must pass the actual filename and mimetype, not hardcoded voice.ogg
+      expect(mockTranscribeAudioBuffer).toHaveBeenCalledWith(
+        audioBuffer,
+        'Audio Clip (2026-03-18 13:23:44).m4a',
+        'audio/mp4',
+      );
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'slack:C0123456789',
+        expect.objectContaining({
+          content: expect.stringContaining(
+            '[Voice note: Transcribed from m4a]',
+          ),
+        }),
+      );
+    });
+
+    it('passes correct filename and mimetype for webm audio', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      const audioBuffer = Buffer.from('fake-webm-audio');
+      mockFetchResponse(audioBuffer);
+      mockTranscribeAudioBuffer.mockResolvedValueOnce('Webm transcript');
+
+      const event = createMessageEvent({
+        text: '',
+        files: [
+          {
+            id: 'F_WEBM',
+            name: 'recording.webm',
+            mimetype: 'audio/webm',
+            url_private_download:
+              'https://files.slack.com/F_WEBM/recording.webm',
+          },
+        ],
+      });
+      await triggerMessageEvent(event);
+
+      expect(mockTranscribeAudioBuffer).toHaveBeenCalledWith(
+        audioBuffer,
+        'recording.webm',
+        'audio/webm',
+      );
+    });
+
+    it('shows error message when transcription throws (regression: errors were silently swallowed)', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      mockFetchResponse(Buffer.from('audio-data'));
+      mockTranscribeAudioBuffer.mockRejectedValueOnce(
+        new Error(
+          "400 Invalid file format. Supported formats: ['flac', 'm4a', 'mp3']",
+        ),
+      );
+
+      const event = createMessageEvent({
+        text: '',
+        files: [
+          {
+            id: 'F_ERR',
+            name: 'broken.wav',
+            mimetype: 'audio/wav',
+            url_private_download: 'https://files.slack.com/F_ERR/broken.wav',
+          },
+        ],
+      });
+      await triggerMessageEvent(event);
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'slack:C0123456789',
+        expect.objectContaining({
+          content: expect.stringContaining('[Voice note: transcription failed'),
         }),
       );
     });
