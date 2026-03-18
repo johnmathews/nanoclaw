@@ -1,10 +1,15 @@
+import fs from 'fs';
+import path from 'path';
+
 import { App, LogLevel } from '@slack/bolt';
 import type { GenericMessageEvent, BotMessageEvent } from '@slack/types';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { updateChatName } from '../db.js';
 import { readEnvFile } from '../env.js';
+import { resolveGroupFolderPath } from '../group-folder.js';
 import { logger } from '../logger.js';
+import { transcribeAudioBuffer } from '../transcription.js';
 import { registerChannel, ChannelOpts } from './registry.js';
 import {
   Channel,
@@ -13,12 +18,33 @@ import {
   RegisteredGroup,
 } from '../types.js';
 
+interface SlackFile {
+  id: string;
+  name?: string;
+  mimetype?: string;
+  filetype?: string;
+  pretty_type?: string;
+  size?: number;
+  url_private?: string;
+  url_private_download?: string;
+  transcription?: {
+    status?: string;
+    preview?: { content?: string; has_more?: boolean };
+  };
+}
+
 // Slack's chat.postMessage API limits text to ~4000 characters per call.
 // Messages exceeding this are split into sequential chunks.
 const MAX_MESSAGE_LENGTH = 4000;
 
 // Emoji used as a reaction on the triggering message while the agent works
 const WORKING_REACTION = 'eyes';
+
+function formatFileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
 
 // The message subtypes we process. Bolt delivers all subtypes via app.event('message');
 // we filter to regular messages (GenericMessageEvent, subtype undefined) and bot messages
@@ -35,6 +61,7 @@ export class SlackChannel implements Channel {
   name = 'slack';
 
   private app: App;
+  private botToken: string;
   private botUserId: string | undefined;
   private connected = false;
   private outgoingQueue: Array<{ jid: string; text: string }> = [];
@@ -58,6 +85,8 @@ export class SlackChannel implements Channel {
         'SLACK_BOT_TOKEN and SLACK_APP_TOKEN must be set in .env',
       );
     }
+
+    this.botToken = botToken;
 
     this.app = new App({
       token: botToken,
@@ -151,12 +180,14 @@ export class SlackChannel implements Channel {
       // Bolt's event type is the full MessageEvent union (17+ subtypes).
       // We filter on subtype first, then narrow to the two types we handle.
       const subtype = (event as { subtype?: string }).subtype;
-      if (subtype && subtype !== 'bot_message') return;
+      if (subtype && subtype !== 'bot_message' && subtype !== 'file_share')
+        return;
 
       // After filtering, event is either GenericMessageEvent or BotMessageEvent
       const msg = event as HandledMessageEvent;
 
-      if (!msg.text) return;
+      const files = (msg as { files?: SlackFile[] }).files;
+      if (!msg.text && (!files || files.length === 0)) return;
 
       // Threaded replies are flattened into the channel conversation.
       // The agent sees them alongside channel-level messages; responses
@@ -188,7 +219,16 @@ export class SlackChannel implements Channel {
       // Translate Slack <@UBOTID> mentions into TRIGGER_PATTERN format.
       // Slack encodes @mentions as <@U12345>, which won't match TRIGGER_PATTERN
       // (e.g., ^@<ASSISTANT_NAME>\b), so we prepend the trigger when the bot is @mentioned.
-      let content = msg.text;
+      let content = msg.text || '';
+
+      // Process file attachments (images, audio, documents)
+      if (files && files.length > 0 && !isBotMessage) {
+        const groupFolder = groups[jid]?.folder;
+        if (groupFolder) {
+          content = await this.processSlackFiles(files, content, groupFolder);
+        }
+      }
+
       if (this.botUserId && !isBotMessage) {
         const mentionPattern = `<@${this.botUserId}>`;
         if (
@@ -422,6 +462,89 @@ export class SlackChannel implements Channel {
       logger.debug({ userId, err }, 'Failed to resolve Slack user name');
       return undefined;
     }
+  }
+
+  /**
+   * Download a file from Slack using the bot token for authentication.
+   */
+  private async downloadSlackFile(file: SlackFile): Promise<Buffer | null> {
+    const url = file.url_private_download || file.url_private;
+    if (!url) return null;
+
+    try {
+      const resp = await fetch(url, {
+        headers: { Authorization: `Bearer ${this.botToken}` },
+      });
+      if (!resp.ok) {
+        logger.warn(
+          { fileId: file.id, status: resp.status },
+          'Failed to download Slack file',
+        );
+        return null;
+      }
+      return Buffer.from(await resp.arrayBuffer());
+    } catch (err) {
+      logger.warn({ fileId: file.id, err }, 'Error downloading Slack file');
+      return null;
+    }
+  }
+
+  /**
+   * Process Slack file attachments: transcribe audio, save images/docs to disk.
+   */
+  private async processSlackFiles(
+    files: SlackFile[],
+    content: string,
+    groupFolder: string,
+  ): Promise<string> {
+    const groupDir = resolveGroupFolderPath(groupFolder);
+    const attachDir = path.join(groupDir, 'attachments');
+
+    for (const file of files) {
+      const mime = file.mimetype || '';
+
+      if (mime.startsWith('audio/')) {
+        // Audio: use Slack's transcript if available, otherwise Whisper
+        const slackTranscript =
+          file.transcription?.status === 'complete'
+            ? file.transcription.preview?.content
+            : undefined;
+
+        if (slackTranscript) {
+          content += `\n[Voice note: ${slackTranscript}]`;
+        } else {
+          const buffer = await this.downloadSlackFile(file);
+          if (buffer) {
+            const transcript = await transcribeAudioBuffer(buffer);
+            content += transcript
+              ? `\n[Voice note: ${transcript}]`
+              : '\n[Voice note: transcription unavailable]';
+          }
+        }
+      } else if (mime.startsWith('image/')) {
+        // Image: save to attachments dir for agent vision
+        const buffer = await this.downloadSlackFile(file);
+        if (buffer) {
+          fs.mkdirSync(attachDir, { recursive: true });
+          const ext = file.name?.split('.').pop() || 'png';
+          const filename = `img-${Date.now()}-${file.id}.${ext}`;
+          fs.writeFileSync(path.join(attachDir, filename), buffer);
+          content += `\n[Image attached: attachments/${filename}]`;
+        }
+      } else {
+        // Other files: save to attachments dir
+        const buffer = await this.downloadSlackFile(file);
+        if (buffer) {
+          fs.mkdirSync(attachDir, { recursive: true });
+          const filename = `${file.id}-${file.name || 'file'}`;
+          fs.writeFileSync(path.join(attachDir, filename), buffer);
+          const size = formatFileSize(file.size || buffer.length);
+          content += `\n[File attached: attachments/${filename}] (${file.pretty_type || mime}, ${size})`;
+        }
+      }
+    }
+
+    return content;
   }
 
   private async flushOutgoingQueue(): Promise<void> {
