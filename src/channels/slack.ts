@@ -520,19 +520,32 @@ export class SlackChannel implements Channel {
         );
         const buffer = await this.downloadSlackFile(file);
         if (buffer) {
-          const transcript = await transcribeAudioBuffer(buffer);
-          if (transcript) {
-            logger.info(
-              { fileId: file.id, transcriptLength: transcript.length },
-              'Slack audio transcribed successfully',
+          try {
+            const transcript = await transcribeAudioBuffer(
+              buffer,
+              file.name || 'voice.ogg',
+              mime,
             );
-            content += `\n[Voice note: ${transcript}]`;
-          } else {
-            logger.warn(
-              { fileId: file.id, name: file.name },
-              'Slack audio transcription returned no result',
+            if (transcript) {
+              logger.info(
+                { fileId: file.id, transcriptLength: transcript.length },
+                'Slack audio transcribed successfully',
+              );
+              content += `\n[Voice note: ${transcript}]`;
+            } else {
+              logger.warn(
+                { fileId: file.id, name: file.name },
+                'Slack audio transcription returned no result',
+              );
+              content += '\n[Voice note: transcription unavailable]';
+            }
+          } catch (err: any) {
+            const errMsg = err?.message || String(err);
+            logger.error(
+              { err, fileId: file.id, name: file.name },
+              'Slack audio transcription failed',
             );
-            content += '\n[Voice note: transcription unavailable]';
+            content += `\n[Voice note: transcription failed — ${errMsg}]`;
           }
         }
       } else if (mime.startsWith('image/')) {
