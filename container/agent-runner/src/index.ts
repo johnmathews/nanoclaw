@@ -620,16 +620,14 @@ async function main(): Promise<void> {
   }
 
   // --- Slash command handling ---
-  // Only known session slash commands are handled here. This prevents
-  // accidental interception of user prompts that happen to start with '/'.
-  const KNOWN_SESSION_COMMANDS = new Set(['/compact']);
+  // Any single-word /command is treated as a session slash command and forwarded
+  // directly to the SDK. Multi-word prompts starting with '/' are not intercepted.
   const trimmedPrompt = prompt.trim();
-  const isSessionSlashCommand = KNOWN_SESSION_COMMANDS.has(trimmedPrompt);
+  const isSessionSlashCommand = /^\/\w+$/.test(trimmedPrompt);
 
   if (isSessionSlashCommand) {
     log(`Handling session command: ${trimmedPrompt}`);
     let slashSessionId: string | undefined;
-    let compactBoundarySeen = false;
     let hadError = false;
     let resultEmitted = false;
 
@@ -660,12 +658,6 @@ async function main(): Promise<void> {
           log(`Session after slash command: ${slashSessionId}`);
         }
 
-        // Observe compact_boundary to confirm compaction completed
-        if (message.type === 'system' && (message as { subtype?: string }).subtype === 'compact_boundary') {
-          compactBoundarySeen = true;
-          log('Compact boundary observed — compaction completed');
-        }
-
         if (message.type === 'result') {
           const resultSubtype = (message as { subtype?: string }).subtype;
           const textResult = 'result' in message ? (message as { result?: string }).result : null;
@@ -681,7 +673,7 @@ async function main(): Promise<void> {
           } else {
             writeOutput({
               status: 'success',
-              result: textResult || 'Conversation compacted.',
+              result: textResult || 'Command completed.',
               newSessionId: slashSessionId,
             });
           }
@@ -695,20 +687,13 @@ async function main(): Promise<void> {
       writeOutput({ status: 'error', result: null, error: errorMsg });
     }
 
-    log(`Slash command done. compactBoundarySeen=${compactBoundarySeen}, hadError=${hadError}`);
-
-    // Warn if compact_boundary was never observed — compaction may not have occurred
-    if (!hadError && !compactBoundarySeen) {
-      log('WARNING: compact_boundary was not observed. Compaction may not have completed.');
-    }
+    log(`Slash command done. hadError=${hadError}`);
 
     // Only emit final session marker if no result was emitted yet and no error occurred
     if (!resultEmitted && !hadError) {
       writeOutput({
         status: 'success',
-        result: compactBoundarySeen
-          ? 'Conversation compacted.'
-          : 'Compaction requested but compact_boundary was not observed.',
+        result: 'Command completed.',
         newSessionId: slashSessionId,
       });
     } else if (!hadError) {
