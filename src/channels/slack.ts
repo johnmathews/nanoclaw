@@ -580,7 +580,11 @@ export class SlackChannel implements Channel {
             { fileId: file.id, filename, bytes: buffer.length },
             'Slack document saved to attachments',
           );
-          content += `\n[File attached: attachments/${filename}] (${file.pretty_type || mime}, ${size})`;
+          if (mime === 'application/pdf') {
+            content += `\n[PDF: attachments/${filename} (${size})]\nUse: pdf-reader extract attachments/${filename}`;
+          } else {
+            content += `\n[File attached: attachments/${filename}] (${file.pretty_type || mime}, ${size})`;
+          }
         }
       }
     }
