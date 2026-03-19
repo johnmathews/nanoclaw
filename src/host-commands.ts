@@ -65,7 +65,7 @@ export function renderProgressBar(
 ): string {
   const filled = Math.round(utilization * width);
   const empty = width - filled;
-  const bar = '\u2588'.repeat(filled) + '\u2591'.repeat(empty);
+  const bar = '\u2593'.repeat(filled) + '\u2591'.repeat(empty);
   const pct = Math.round(utilization * 100);
   return `${bar} ${pct}% used`;
 }

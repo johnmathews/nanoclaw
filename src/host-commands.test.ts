@@ -111,7 +111,7 @@ describe('renderProgressBar', () => {
   it('renders correct width and percentage', () => {
     const bar = renderProgressBar(0.5, 10);
     expect(bar).toContain('50% used');
-    expect(bar).toMatch(/\u2588{5}\u2591{5}/);
+    expect(bar).toMatch(/\u2593{5}\u2591{5}/);
   });
 
   it('renders empty bar at 0', () => {
@@ -123,7 +123,7 @@ describe('renderProgressBar', () => {
   it('renders full bar at 1', () => {
     const bar = renderProgressBar(1, 10);
     expect(bar).toContain('100% used');
-    expect(bar).toMatch(/\u2588{10}/);
+    expect(bar).toMatch(/\u2593{10}/);
   });
 });
 
