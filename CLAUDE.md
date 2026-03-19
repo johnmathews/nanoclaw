@@ -106,6 +106,17 @@ Container agents mount `data/sessions/{group}/agent-runner-src` over `/app/src`.
 `container/agent-runner/src/` on every container spawn, so changes to the agent-runner code take effect on the next
 agent invocation without needing to rebuild the container image (the entrypoint recompiles TypeScript at runtime).
 
+## Merging Skill Branches
+
+Always **rebase skill branches onto current main before merging**, never merge directly. Skill branches fork from an
+older main and their versions of shared files (especially `src/db.ts`) may be missing columns, fields, or migrations
+added after the fork point. A direct merge can silently drop these changes during conflict resolution. Rebasing surfaces
+conflicts in the skill branch where they're easier to review.
+
+After merging any skill branch, run `npm test` and verify all tests pass before committing. The registered group
+round-trip tests in `src/db.test.ts` specifically guard against dropped DB columns — if a merge breaks field persistence,
+these tests will catch it.
+
 ## Container Build Cache
 
 The container buildkit caches the build context aggressively. `--no-cache` alone does NOT invalidate COPY steps — the

@@ -5,6 +5,7 @@ import {
   createTask,
   deleteTask,
   getAllChats,
+  getAllRegisteredGroups,
   getLatestMessage,
   getMessageContent,
   getMessageFromMe,
@@ -16,7 +17,9 @@ import {
   getReactionsForMessages,
   getReactionsByUser,
   getReactionStats,
+  getRegisteredGroup,
   getTaskById,
+  setRegisteredGroup,
   storeChatMetadata,
   storeMessage,
   storeReaction,
@@ -974,5 +977,97 @@ describe('getReactionsForChat', () => {
     });
 
     expect(getReactionsForChat('other@g.us')).toEqual([]);
+  });
+});
+
+// --- Registered groups ---
+
+describe('registered groups', () => {
+  const mainGroup = {
+    name: 'Main',
+    folder: 'main',
+    trigger: '@Bot',
+    added_at: '2024-01-01',
+    isMain: true,
+  };
+
+  const otherGroup = {
+    name: 'Other',
+    folder: 'slack_other',
+    trigger: '@Bot',
+    added_at: '2024-01-02',
+  };
+
+  it('round-trips isMain through setRegisteredGroup/getRegisteredGroup', () => {
+    setRegisteredGroup('jid-main', mainGroup);
+    const loaded = getRegisteredGroup('jid-main');
+    expect(loaded?.isMain).toBe(true);
+  });
+
+  it('returns isMain as falsy for non-main groups', () => {
+    setRegisteredGroup('jid-other', otherGroup);
+    const loaded = getRegisteredGroup('jid-other');
+    expect(loaded?.isMain).toBeFalsy();
+  });
+
+  it('populates isMain in getAllRegisteredGroups', () => {
+    setRegisteredGroup('jid-main', mainGroup);
+    setRegisteredGroup('jid-other', otherGroup);
+    const all = getAllRegisteredGroups();
+    expect(all['jid-main'].isMain).toBe(true);
+    expect(all['jid-other'].isMain).toBeFalsy();
+  });
+
+  it('preserves isMain on re-registration', () => {
+    setRegisteredGroup('jid-main', mainGroup);
+    setRegisteredGroup('jid-main', { ...mainGroup, name: 'Renamed' });
+    const loaded = getRegisteredGroup('jid-main');
+    expect(loaded?.isMain).toBe(true);
+    expect(loaded?.name).toBe('Renamed');
+  });
+
+  it('round-trips requiresTrigger', () => {
+    setRegisteredGroup('jid-a', { ...otherGroup, requiresTrigger: false });
+    setRegisteredGroup('jid-b', { ...otherGroup, folder: 'slack_b', requiresTrigger: true });
+    expect(getRegisteredGroup('jid-a')?.requiresTrigger).toBe(false);
+    expect(getRegisteredGroup('jid-b')?.requiresTrigger).toBe(true);
+  });
+
+  it('round-trips containerConfig', () => {
+    const config = { additionalMounts: [{ hostPath: '/data', containerPath: 'data', readonly: true }] };
+    setRegisteredGroup('jid-cfg', {
+      ...otherGroup,
+      folder: 'slack_cfg',
+      containerConfig: config,
+    });
+    const loaded = getRegisteredGroup('jid-cfg');
+    expect(loaded?.containerConfig).toEqual(config);
+  });
+
+  it('returns undefined containerConfig when not set', () => {
+    setRegisteredGroup('jid-other', otherGroup);
+    expect(getRegisteredGroup('jid-other')?.containerConfig).toBeUndefined();
+  });
+
+  it('round-trips all fields through getAllRegisteredGroups', () => {
+    const full = {
+      name: 'Full',
+      folder: 'slack_full',
+      trigger: '@Bot',
+      added_at: '2024-01-03',
+      isMain: true,
+      requiresTrigger: false,
+      containerConfig: { additionalMounts: [{ hostPath: '/x', containerPath: 'x', readonly: true }] },
+    };
+    setRegisteredGroup('jid-full', full);
+    const all = getAllRegisteredGroups();
+    const loaded = all['jid-full'];
+    expect(loaded.name).toBe('Full');
+    expect(loaded.folder).toBe('slack_full');
+    expect(loaded.trigger).toBe('@Bot');
+    expect(loaded.added_at).toBe('2024-01-03');
+    expect(loaded.isMain).toBe(true);
+    expect(loaded.requiresTrigger).toBe(false);
+    expect(loaded.containerConfig).toEqual({ additionalMounts: [{ hostPath: '/x', containerPath: 'x', readonly: true }] });
   });
 });

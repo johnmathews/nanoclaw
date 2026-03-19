@@ -152,10 +152,7 @@ describe('handleSessionCommand', () => {
       deps,
     });
     expect(result).toEqual({ handled: true, success: true });
-    expect(deps.runAgent).toHaveBeenCalledWith(
-      '/done',
-      expect.any(Function),
-    );
+    expect(deps.runAgent).toHaveBeenCalledWith('/done', expect.any(Function));
   });
 
   it('normalizes backslash command to forward slash', async () => {
@@ -169,10 +166,7 @@ describe('handleSessionCommand', () => {
       deps,
     });
     expect(result).toEqual({ handled: true, success: true });
-    expect(deps.runAgent).toHaveBeenCalledWith(
-      '/done',
-      expect.any(Function),
-    );
+    expect(deps.runAgent).toHaveBeenCalledWith('/done', expect.any(Function));
   });
 
   it('sends denial to interactable sender in non-main group', async () => {

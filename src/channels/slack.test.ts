@@ -71,6 +71,10 @@ vi.mock('@slack/bolt', () => ({
           user: { real_name: 'Alice Smith', name: 'alice' },
         }),
       },
+      reactions: {
+        add: vi.fn().mockResolvedValue({ ok: true }),
+        remove: vi.fn().mockResolvedValue({ ok: true }),
+      },
     };
 
     constructor(opts: any) {
@@ -1290,26 +1294,178 @@ describe('SlackChannel', () => {
     });
   });
 
-  // --- setTyping ---
+  // --- setTyping / :eyes: reaction lifecycle ---
 
   describe('setTyping', () => {
-    it('resolves without error (no-op)', async () => {
+    it('adds :eyes: reaction when typing starts with messageTs', async () => {
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);
 
-      // Should not throw — Slack has no bot typing indicator API
+      await channel.setTyping('slack:C0123456789', true, '1234567890.123456');
+
+      expect(currentApp().client.reactions.add).toHaveBeenCalledWith({
+        channel: 'C0123456789',
+        timestamp: '1234567890.123456',
+        name: 'eyes',
+      });
+    });
+
+    it('does nothing when typing starts without messageTs and no prior reaction', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+
+      await channel.setTyping('slack:C0123456789', true);
+
+      expect(currentApp().client.reactions.add).not.toHaveBeenCalled();
+    });
+
+    it('removes :eyes: reaction when typing stops', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+
+      // First add a reaction
+      await channel.setTyping('slack:C0123456789', true, '1234567890.123456');
+      currentApp().client.reactions.add.mockClear();
+
+      // Then stop typing — should remove it
+      await channel.setTyping('slack:C0123456789', false);
+
+      expect(currentApp().client.reactions.remove).toHaveBeenCalledWith({
+        channel: 'C0123456789',
+        timestamp: '1234567890.123456',
+        name: 'eyes',
+      });
+    });
+
+    it('does nothing when typing stops with no prior reaction', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+
+      await channel.setTyping('slack:C0123456789', false);
+
+      expect(currentApp().client.reactions.remove).not.toHaveBeenCalled();
+    });
+
+    it('remembers messageTs so subsequent setTyping(true) reuses it', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+
+      // First call with explicit messageTs
+      await channel.setTyping('slack:C0123456789', true, '1234567890.123456');
+      currentApp().client.reactions.add.mockClear();
+
+      // Second call without messageTs — should reuse stored ts
+      await channel.setTyping('slack:C0123456789', true);
+
+      expect(currentApp().client.reactions.add).toHaveBeenCalledWith({
+        channel: 'C0123456789',
+        timestamp: '1234567890.123456',
+        name: 'eyes',
+      });
+    });
+
+    it('clears stored messageTs after typing stops', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+
+      await channel.setTyping('slack:C0123456789', true, '1234567890.123456');
+      await channel.setTyping('slack:C0123456789', false);
+      currentApp().client.reactions.add.mockClear();
+      currentApp().client.reactions.remove.mockClear();
+
+      // Now typing again without messageTs — should not add reaction (ts was cleared)
+      await channel.setTyping('slack:C0123456789', true);
+
+      expect(currentApp().client.reactions.add).not.toHaveBeenCalled();
+    });
+
+    it('handles reaction add failure gracefully', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+
+      currentApp().client.reactions.add.mockRejectedValueOnce(
+        new Error('already_reacted'),
+      );
+
+      // Should not throw
       await expect(
-        channel.setTyping('slack:C0123456789', true),
+        channel.setTyping('slack:C0123456789', true, '1234567890.123456'),
       ).resolves.toBeUndefined();
     });
 
-    it('accepts false without error', async () => {
+    it('handles reaction remove failure gracefully', async () => {
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);
 
+      await channel.setTyping('slack:C0123456789', true, '1234567890.123456');
+      currentApp().client.reactions.remove.mockRejectedValueOnce(
+        new Error('no_reaction'),
+      );
+
+      // Should not throw
       await expect(
         channel.setTyping('slack:C0123456789', false),
       ).resolves.toBeUndefined();
+    });
+
+    it('tracks reactions per channel independently', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+
+      await channel.setTyping('slack:C_AAA', true, 'ts-aaa');
+      await channel.setTyping('slack:C_BBB', true, 'ts-bbb');
+
+      // Stop typing in channel A only
+      await channel.setTyping('slack:C_AAA', false);
+
+      expect(currentApp().client.reactions.remove).toHaveBeenCalledWith({
+        channel: 'C_AAA',
+        timestamp: 'ts-aaa',
+        name: 'eyes',
+      });
+
+      // Channel B reaction should still be active — stopping B should remove it
+      currentApp().client.reactions.remove.mockClear();
+      await channel.setTyping('slack:C_BBB', false);
+
+      expect(currentApp().client.reactions.remove).toHaveBeenCalledWith({
+        channel: 'C_BBB',
+        timestamp: 'ts-bbb',
+        name: 'eyes',
+      });
+    });
+  });
+
+  // --- sendMessage removes :eyes: reaction ---
+
+  describe('sendMessage clears working reaction', () => {
+    it('removes :eyes: reaction when first response is sent', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      // Simulate agent working: add reaction
+      await channel.setTyping('slack:C0123456789', true, '1234567890.123456');
+      currentApp().client.reactions.remove.mockClear();
+
+      // Send response — should auto-remove reaction
+      await channel.sendMessage('slack:C0123456789', 'Here is the answer');
+
+      expect(currentApp().client.reactions.remove).toHaveBeenCalledWith({
+        channel: 'C0123456789',
+        timestamp: '1234567890.123456',
+        name: 'eyes',
+      });
+    });
+
+    it('does not call reactions.remove when no working reaction exists', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      await channel.sendMessage('slack:C0123456789', 'Unprompted message');
+
+      expect(currentApp().client.reactions.remove).not.toHaveBeenCalled();
     });
   });
 
