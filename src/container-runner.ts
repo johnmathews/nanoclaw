@@ -44,7 +44,9 @@ export interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
-  imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
+  /** Base64-encoded image data, loaded on the host before container spawn.
+   *  No file-path dependency — the container receives the data directly. */
+  imageAttachments?: Array<{ mediaType: string; data: string }>;
 }
 
 export interface ContainerOutput {
@@ -253,6 +255,11 @@ function buildContainerArgs(
     args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
   }
 
+  // Pass Parallel AI API key if available (for MCP servers inside container)
+  if (process.env.PARALLEL_API_KEY) {
+    args.push('-e', `PARALLEL_API_KEY=${process.env.PARALLEL_API_KEY}`);
+  }
+
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
 
@@ -291,13 +298,10 @@ export async function runContainerAgent(
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
 
-  // Clear stale attachments from previous runs (safe: GroupQueue serializes per group)
-  const attachDir = path.join(groupDir, 'attachments');
-  if (fs.existsSync(attachDir)) {
-    for (const file of fs.readdirSync(attachDir)) {
-      fs.unlinkSync(path.join(attachDir, file));
-    }
-  }
+  // No attachment cleanup here. loadImageData() deletes each file after
+  // reading it into memory, so there's nothing stale to clean up.
+  // Cleaning here would be dangerous: it could delete files from a
+  // concurrent message that hasn't been loaded yet.
 
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');

@@ -27,8 +27,8 @@ interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
-  imageAttachments?: Array<{ relativePath: string; mediaType: string }>;
-
+  /** Base64-encoded image data, loaded on the host before container spawn. */
+  imageAttachments?: Array<{ mediaType: string; data: string }>;
 }
 
 interface ImageContentBlock {
@@ -401,21 +401,15 @@ async function runQuery(
   const stream = new MessageStream();
   stream.push(prompt);
 
-  // Load image attachments and send as multimodal content blocks
+  // Send image attachments as multimodal content blocks.
+  // Data arrives pre-loaded (base64) from the host — no file reads needed.
   if (containerInput.imageAttachments?.length) {
-    const blocks: ContentBlock[] = [];
-    for (const img of containerInput.imageAttachments) {
-      const imgPath = path.join('/workspace/group', img.relativePath);
-      try {
-        const data = fs.readFileSync(imgPath).toString('base64');
-        blocks.push({ type: 'image', source: { type: 'base64', media_type: img.mediaType, data } });
-      } catch (err) {
-        log(`Failed to load image: ${imgPath}`);
-      }
-    }
-    if (blocks.length > 0) {
-      stream.pushMultimodal(blocks);
-    }
+    const blocks: ContentBlock[] = containerInput.imageAttachments.map((img) => ({
+      type: 'image' as const,
+      source: { type: 'base64' as const, media_type: img.mediaType, data: img.data },
+    }));
+    log(`Sending ${blocks.length} image(s) as multimodal content`);
+    stream.pushMultimodal(blocks);
   }
 
   // Poll IPC for follow-up messages and _close sentinel during the query
@@ -487,6 +481,8 @@ async function runQuery(
         'NotebookEdit',
         'mcp__nanoclaw__*',
         'mcp__gmail__*',
+        'mcp__parallel-search__*',
+        'mcp__parallel-task__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -506,6 +502,22 @@ async function runQuery(
           command: 'npx',
           args: ['-y', '@gongrzhe/server-gmail-autoauth-mcp'],
         },
+        ...(process.env.PARALLEL_API_KEY ? {
+          'parallel-search': {
+            type: 'http' as const,
+            url: 'https://search-mcp.parallel.ai/mcp',
+            headers: {
+              'Authorization': `Bearer ${process.env.PARALLEL_API_KEY}`,
+            },
+          },
+          'parallel-task': {
+            type: 'http' as const,
+            url: 'https://task-mcp.parallel.ai/mcp',
+            headers: {
+              'Authorization': `Bearer ${process.env.PARALLEL_API_KEY}`,
+            },
+          },
+        } : {}),
       },
       hooks: {
         PreCompact: [{ hooks: [createPreCompactHook(containerInput.assistantName)] }],
@@ -580,6 +592,10 @@ async function main(): Promise<void> {
 
   const __dirname = path.dirname(fileURLToPath(import.meta.url));
   const mcpServerPath = path.join(__dirname, 'ipc-mcp-stdio.js');
+
+  if (process.env.PARALLEL_API_KEY) {
+    log('Parallel AI MCP servers configured');
+  }
 
   let sessionId = containerInput.sessionId;
   fs.mkdirSync(IPC_INPUT_DIR, { recursive: true });

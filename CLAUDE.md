@@ -20,6 +20,7 @@ isolated filesystem and memory.
 | `src/config.ts`                     | Trigger pattern, paths, intervals                          |
 | `src/container-runner.ts`           | Spawns agent containers with mounts, parses progress       |
 | `src/task-scheduler.ts`             | Runs scheduled tasks                                       |
+| `src/image.ts`                      | Image processing, base64 loading, reference parsing        |
 | `src/transcription.ts`              | Voice message transcription via OpenAI Whisper             |
 | `src/db.ts`                         | SQLite operations                                          |
 | `groups/{name}/CLAUDE.md`           | Per-group memory (isolated)                                |
@@ -83,6 +84,20 @@ Slack channels show an :eyes: reaction on the triggering message while the agent
 don't trigger unread notifications — unlike posting a placeholder message, which does. The bot needs the
 `reactions:write` scope. The `setTyping` interface accepts an optional `messageTs` parameter (the Slack message
 timestamp to react to).
+
+## Image Attachment Pipeline
+
+Images are loaded into base64 on the **host** side before container spawn, not read from files inside the container.
+This eliminates race conditions between attachment cleanup and container file reads. The flow:
+
+1. Channel downloads image → `processImage()` resizes and saves to `groups/{folder}/attachments/`
+2. `loadImageData()` reads each file into memory and **deletes it immediately**
+3. Base64 data goes to the container via `ContainerInput.imageAttachments` (JSON over stdin)
+4. Agent-runner sends data directly to Claude — no file reads needed
+
+Both WhatsApp (`[Image: attachments/...]`) and Slack (`[Image attached: attachments/...]`) formats are parsed by
+`parseImageReferences()`. Media types are inferred from file extension (not hardcoded). WhatsApp downloads retry twice
+on failure with linear backoff.
 
 ## Agent-Runner Source Mount
 

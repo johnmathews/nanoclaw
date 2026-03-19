@@ -734,45 +734,103 @@ describe('WhatsAppChannel', () => {
       vi.mocked(isImageMessage).mockReturnValue(false);
     });
 
-    it('handles image download failure gracefully', async () => {
+    it('handles image download failure gracefully after retries', async () => {
       vi.mocked(isImageMessage).mockReturnValue(true);
-      vi.mocked(downloadMediaMessage).mockRejectedValueOnce(
-        new Error('Download failed'),
-      );
+      // Must fail all 3 attempts (initial + 2 retries)
+      vi.mocked(downloadMediaMessage)
+        .mockRejectedValueOnce(new Error('Download failed'))
+        .mockRejectedValueOnce(new Error('Download failed'))
+        .mockRejectedValueOnce(new Error('Download failed'));
       const opts = createTestOpts();
       const channel = new WhatsAppChannel(opts);
 
       await connectChannel(channel);
 
-      await triggerMessages([
-        {
-          key: {
-            id: 'msg-img-3',
-            remoteJid: 'registered@g.us',
-            participant: '5551234@s.whatsapp.net',
-            fromMe: false,
-          },
-          message: {
-            imageMessage: {
-              caption: 'Will fail',
-              mimetype: 'image/jpeg',
+      fakeSocket._ev.emit('messages.upsert', {
+        messages: [
+          {
+            key: {
+              id: 'msg-img-3',
+              remoteJid: 'registered@g.us',
+              participant: '5551234@s.whatsapp.net',
+              fromMe: false,
             },
+            message: {
+              imageMessage: {
+                caption: 'Will fail',
+                mimetype: 'image/jpeg',
+              },
+            },
+            pushName: 'Charlie',
+            messageTimestamp: Math.floor(Date.now() / 1000),
           },
-          pushName: 'Charlie',
-          messageTimestamp: Math.floor(Date.now() / 1000),
-        },
-      ]);
+        ],
+      });
 
-      // Image download failed but caption is still there as content
+      // Wait for all retries to complete (1s + 2s delays + processing)
+      await new Promise((r) => setTimeout(r, 4000));
+
+      // All retries exhausted — caption is still there as content
       expect(opts.onMessage).toHaveBeenCalledWith(
         'registered@g.us',
         expect.objectContaining({
           content: 'Will fail',
         }),
       );
+      // downloadMediaMessage called at least 3 times (initial + 2 retries)
+      // Other tests may have called it before, so check >= 3
+      expect(
+        vi.mocked(downloadMediaMessage).mock.calls.length,
+      ).toBeGreaterThanOrEqual(3);
 
       vi.mocked(isImageMessage).mockReturnValue(false);
-    });
+    }, 10000);
+
+    it('retries image download and succeeds on second attempt', async () => {
+      vi.mocked(isImageMessage).mockReturnValue(true);
+      vi.mocked(downloadMediaMessage)
+        .mockRejectedValueOnce(new Error('Transient failure'))
+        .mockResolvedValueOnce(Buffer.from('image-data'));
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      fakeSocket._ev.emit('messages.upsert', {
+        messages: [
+          {
+            key: {
+              id: 'msg-img-retry',
+              remoteJid: 'registered@g.us',
+              participant: '5551234@s.whatsapp.net',
+              fromMe: false,
+            },
+            message: {
+              imageMessage: {
+                caption: 'Retry success',
+                mimetype: 'image/jpeg',
+              },
+            },
+            pushName: 'Dave',
+            messageTimestamp: Math.floor(Date.now() / 1000),
+          },
+        ],
+      });
+
+      // Wait for retry to complete (1s delay + processing)
+      await new Promise((r) => setTimeout(r, 2000));
+
+      // Second attempt succeeded — image was processed
+      expect(processImage).toHaveBeenCalled();
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'registered@g.us',
+        expect.objectContaining({
+          content: '[Image: attachments/test.jpg]',
+        }),
+      );
+
+      vi.mocked(isImageMessage).mockReturnValue(false);
+    }, 10000);
 
     it('falls back to caption when processImage returns null', async () => {
       vi.mocked(isImageMessage).mockReturnValue(true);
