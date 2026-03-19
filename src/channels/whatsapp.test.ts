@@ -1509,5 +1509,361 @@ describe('WhatsAppChannel', () => {
         }),
       );
     });
+
+    it('detects bot own reactions via LID matching', async () => {
+      const onReaction = vi.fn();
+      const opts = createTestOpts({ onReaction });
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      // The bot's LID is 9876543210:1@lid (from fakeSocket.user.lid)
+      // The code normalizes with .replace(/:.*@/, '@') → '9876543210@lid'
+      fakeSocket._ev.emit('messages.reaction', [
+        {
+          key: { id: 'msg-react-lid', remoteJid: 'registered@g.us' },
+          reaction: {
+            key: { remoteJid: '9876543210@lid' },
+            text: '👀',
+            senderTimestampMs: BigInt(Date.now()),
+          },
+        },
+      ]);
+
+      await new Promise((r) => setTimeout(r, 0));
+
+      expect(onReaction).toHaveBeenCalledWith(
+        'registered@g.us',
+        expect.objectContaining({
+          is_from_me: true,
+        }),
+      );
+    });
+
+    it('handles reaction processing errors gracefully', async () => {
+      const onReaction = vi.fn().mockImplementation(() => {
+        throw new Error('Callback exploded');
+      });
+      const opts = createTestOpts({ onReaction });
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      // Should not throw even if the callback throws
+      fakeSocket._ev.emit('messages.reaction', [
+        {
+          key: { id: 'msg-react-err', remoteJid: 'registered@g.us' },
+          reaction: {
+            key: { remoteJid: '5551234@s.whatsapp.net' },
+            text: '💥',
+            senderTimestampMs: BigInt(Date.now()),
+          },
+        },
+      ]);
+
+      await new Promise((r) => setTimeout(r, 0));
+
+      // The callback was called (even though it threw)
+      expect(onReaction).toHaveBeenCalled();
+    });
+  });
+
+  // --- sendReaction ---
+
+  describe('sendReaction', () => {
+    it('sends reaction via sock.sendMessage with react payload', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      const messageKey = {
+        id: 'msg-123',
+        remoteJid: 'registered@g.us',
+        fromMe: false,
+      };
+
+      await channel.sendReaction('registered@g.us', messageKey, '👍');
+
+      expect(fakeSocket.sendMessage).toHaveBeenCalledWith('registered@g.us', {
+        react: { text: '👍', key: messageKey },
+      });
+    });
+
+    it('sends reaction removal (empty emoji)', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      const messageKey = {
+        id: 'msg-124',
+        remoteJid: 'registered@g.us',
+        fromMe: false,
+      };
+
+      await channel.sendReaction('registered@g.us', messageKey, '');
+
+      expect(fakeSocket.sendMessage).toHaveBeenCalledWith('registered@g.us', {
+        react: { text: '', key: messageKey },
+      });
+    });
+
+    it('throws when not connected', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      // Don't connect — channel starts disconnected
+      const messageKey = {
+        id: 'msg-125',
+        remoteJid: 'registered@g.us',
+        fromMe: false,
+      };
+
+      await expect(
+        channel.sendReaction('registered@g.us', messageKey, '👍'),
+      ).rejects.toThrow('Not connected to WhatsApp');
+    });
+
+    it('propagates send errors', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      fakeSocket.sendMessage.mockRejectedValueOnce(new Error('Send failed'));
+
+      const messageKey = {
+        id: 'msg-126',
+        remoteJid: 'registered@g.us',
+        fromMe: false,
+      };
+
+      await expect(
+        channel.sendReaction('registered@g.us', messageKey, '🔥'),
+      ).rejects.toThrow('Send failed');
+    });
+  });
+
+  // --- reactToLatestMessage ---
+
+  describe('reactToLatestMessage', () => {
+    it('calls getLatestMessage and forwards to sendReaction', async () => {
+      const { getLatestMessage: mockGetLatestMessage } = await import(
+        '../db.js'
+      );
+      vi.mocked(mockGetLatestMessage).mockReturnValue({
+        id: 'latest-msg-1',
+        fromMe: false,
+      });
+
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      await channel.reactToLatestMessage('registered@g.us', '🎉');
+
+      expect(mockGetLatestMessage).toHaveBeenCalledWith('registered@g.us');
+      expect(fakeSocket.sendMessage).toHaveBeenCalledWith('registered@g.us', {
+        react: {
+          text: '🎉',
+          key: {
+            id: 'latest-msg-1',
+            remoteJid: 'registered@g.us',
+            fromMe: false,
+          },
+        },
+      });
+    });
+
+    it('uses fromMe from the latest message in the key', async () => {
+      const { getLatestMessage: mockGetLatestMessage } = await import(
+        '../db.js'
+      );
+      vi.mocked(mockGetLatestMessage).mockReturnValue({
+        id: 'latest-msg-2',
+        fromMe: true,
+      });
+
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      await channel.reactToLatestMessage('registered@g.us', '✅');
+
+      expect(fakeSocket.sendMessage).toHaveBeenCalledWith('registered@g.us', {
+        react: {
+          text: '✅',
+          key: {
+            id: 'latest-msg-2',
+            remoteJid: 'registered@g.us',
+            fromMe: true,
+          },
+        },
+      });
+    });
+
+    it('throws when no messages found for chat', async () => {
+      const { getLatestMessage: mockGetLatestMessage } = await import(
+        '../db.js'
+      );
+      vi.mocked(mockGetLatestMessage).mockReturnValue(undefined);
+
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      await expect(
+        channel.reactToLatestMessage('empty-chat@g.us', '👍'),
+      ).rejects.toThrow('No messages found for chat empty-chat@g.us');
+    });
+  });
+
+  // --- Own-number mode ---
+
+  describe('own-number mode (ASSISTANT_HAS_OWN_NUMBER=true)', () => {
+    let originalModule: typeof import('../config.js');
+
+    beforeEach(async () => {
+      // Override ASSISTANT_HAS_OWN_NUMBER to true for this block
+      const configModule = await import('../config.js');
+      originalModule = { ...configModule };
+      // @ts-expect-error - overriding readonly module export for testing
+      configModule.ASSISTANT_HAS_OWN_NUMBER = true;
+    });
+
+    afterEach(async () => {
+      // Restore original value
+      const configModule = await import('../config.js');
+      // @ts-expect-error - restoring readonly module export
+      configModule.ASSISTANT_HAS_OWN_NUMBER = originalModule.ASSISTANT_HAS_OWN_NUMBER;
+    });
+
+    it('sendMessage does NOT prefix with assistant name', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      await channel.sendMessage('registered@g.us', 'Hello from own number');
+
+      expect(fakeSocket.sendMessage).toHaveBeenCalledWith('registered@g.us', {
+        text: 'Hello from own number',
+      });
+    });
+
+    it('sendMessage does NOT prefix DMs either', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      await channel.sendMessage('123@s.whatsapp.net', 'DM without prefix');
+
+      expect(fakeSocket.sendMessage).toHaveBeenCalledWith(
+        '123@s.whatsapp.net',
+        { text: 'DM without prefix' },
+      );
+    });
+  });
+
+  // --- setTyping behavioral tests ---
+
+  describe('setTyping', () => {
+    it('sends composing presence when typing starts', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+      await connectChannel(channel);
+
+      await channel.setTyping('registered@g.us', true);
+
+      expect(fakeSocket.sendPresenceUpdate).toHaveBeenCalledWith(
+        'composing',
+        'registered@g.us',
+      );
+    });
+
+    it('sends paused presence when typing stops', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+      await connectChannel(channel);
+
+      await channel.setTyping('registered@g.us', false);
+
+      expect(fakeSocket.sendPresenceUpdate).toHaveBeenCalledWith(
+        'paused',
+        'registered@g.us',
+      );
+    });
+
+    it('handles presence update failure gracefully', async () => {
+      const opts = createTestOpts();
+      const channel = new WhatsAppChannel(opts);
+      await connectChannel(channel);
+
+      fakeSocket.sendPresenceUpdate.mockRejectedValueOnce(
+        new Error('presence failed'),
+      );
+
+      // Should not throw
+      await expect(
+        channel.setTyping('registered@g.us', true),
+      ).resolves.toBeUndefined();
+    });
+  });
+
+  // --- Reaction receiving edge cases ---
+
+  describe('reaction receiving edge cases', () => {
+    it('ignores reactions from status@broadcast', async () => {
+      const onReaction = vi.fn();
+      const opts = createTestOpts({ onReaction });
+      const channel = new WhatsAppChannel(opts);
+      await connectChannel(channel);
+
+      fakeSocket._ev.emit('messages.reaction', [
+        {
+          key: {
+            id: 'msg-1',
+            remoteJid: 'status@broadcast',
+          },
+          reaction: {
+            key: { participant: 'someone@s.whatsapp.net' },
+            text: '👍',
+            senderTimestampMs: Date.now(),
+          },
+        },
+      ]);
+
+      await new Promise((r) => setTimeout(r, 0));
+      expect(onReaction).not.toHaveBeenCalled();
+    });
+
+    it('ignores reactions from unregistered groups', async () => {
+      const onReaction = vi.fn();
+      const opts = createTestOpts({ onReaction });
+      const channel = new WhatsAppChannel(opts);
+      await connectChannel(channel);
+
+      fakeSocket._ev.emit('messages.reaction', [
+        {
+          key: {
+            id: 'msg-1',
+            remoteJid: 'unregistered@g.us',
+          },
+          reaction: {
+            key: { participant: 'someone@s.whatsapp.net' },
+            text: '👍',
+            senderTimestampMs: Date.now(),
+          },
+        },
+      ]);
+
+      await new Promise((r) => setTimeout(r, 0));
+      expect(onReaction).not.toHaveBeenCalled();
+    });
   });
 });
