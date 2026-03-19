@@ -194,7 +194,10 @@ describe('handleSessionCommand', () => {
       deps,
     });
     expect(result).toEqual({ handled: true, success: true });
-    expect(deps.runAgent).toHaveBeenCalledWith('/compact', expect.any(Function));
+    expect(deps.runAgent).toHaveBeenCalledWith(
+      '/compact',
+      expect.any(Function),
+    );
   });
 
   it('does not intercept non-SDK commands', async () => {
@@ -315,7 +318,9 @@ describe('handleSessionCommand', () => {
 
   it('handles host command /usage without spawning container', async () => {
     const deps = makeDeps({
-      executeHostCommand: vi.fn().mockResolvedValue('*Usage — Today*\nNo usage.'),
+      executeHostCommand: vi
+        .fn()
+        .mockResolvedValue('*Usage — Today*\nNo usage.'),
     });
     const result = await handleSessionCommand({
       missedMessages: [makeMsg('\\usage')],
@@ -327,7 +332,9 @@ describe('handleSessionCommand', () => {
     });
     expect(result).toEqual({ handled: true, success: true });
     expect(deps.executeHostCommand).toHaveBeenCalledWith('/usage');
-    expect(deps.sendMessage).toHaveBeenCalledWith(expect.stringContaining('Usage'));
+    expect(deps.sendMessage).toHaveBeenCalledWith(
+      expect.stringContaining('Usage'),
+    );
     expect(deps.runAgent).not.toHaveBeenCalled();
     expect(deps.advanceCursor).toHaveBeenCalledWith('100');
   });
@@ -346,7 +353,9 @@ describe('handleSessionCommand', () => {
     });
     expect(result).toEqual({ handled: true, success: true });
     expect(deps.executeHostCommand).not.toHaveBeenCalled();
-    expect(deps.sendMessage).toHaveBeenCalledWith('Session commands require admin access.');
+    expect(deps.sendMessage).toHaveBeenCalledWith(
+      'Session commands require admin access.',
+    );
   });
 
   it('advances cursor past command on pre-command failure to prevent retry loops', async () => {

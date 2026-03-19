@@ -1030,13 +1030,21 @@ describe('registered groups', () => {
 
   it('round-trips requiresTrigger', () => {
     setRegisteredGroup('jid-a', { ...otherGroup, requiresTrigger: false });
-    setRegisteredGroup('jid-b', { ...otherGroup, folder: 'slack_b', requiresTrigger: true });
+    setRegisteredGroup('jid-b', {
+      ...otherGroup,
+      folder: 'slack_b',
+      requiresTrigger: true,
+    });
     expect(getRegisteredGroup('jid-a')?.requiresTrigger).toBe(false);
     expect(getRegisteredGroup('jid-b')?.requiresTrigger).toBe(true);
   });
 
   it('round-trips containerConfig', () => {
-    const config = { additionalMounts: [{ hostPath: '/data', containerPath: 'data', readonly: true }] };
+    const config = {
+      additionalMounts: [
+        { hostPath: '/data', containerPath: 'data', readonly: true },
+      ],
+    };
     setRegisteredGroup('jid-cfg', {
       ...otherGroup,
       folder: 'slack_cfg',
@@ -1059,7 +1067,11 @@ describe('registered groups', () => {
       added_at: '2024-01-03',
       isMain: true,
       requiresTrigger: false,
-      containerConfig: { additionalMounts: [{ hostPath: '/x', containerPath: 'x', readonly: true }] },
+      containerConfig: {
+        additionalMounts: [
+          { hostPath: '/x', containerPath: 'x', readonly: true },
+        ],
+      },
     };
     setRegisteredGroup('jid-full', full);
     const all = getAllRegisteredGroups();
@@ -1070,7 +1082,11 @@ describe('registered groups', () => {
     expect(loaded.added_at).toBe('2024-01-03');
     expect(loaded.isMain).toBe(true);
     expect(loaded.requiresTrigger).toBe(false);
-    expect(loaded.containerConfig).toEqual({ additionalMounts: [{ hostPath: '/x', containerPath: 'x', readonly: true }] });
+    expect(loaded.containerConfig).toEqual({
+      additionalMounts: [
+        { hostPath: '/x', containerPath: 'x', readonly: true },
+      ],
+    });
   });
 });
 
@@ -1094,7 +1110,7 @@ describe('rate_limits', () => {
     upsertRateLimit({
       status: 'allowed',
       rate_limit_type: 'five_hour',
-      utilization: 0.10,
+      utilization: 0.1,
     });
     upsertRateLimit({
       status: 'allowed_warning',
@@ -1108,9 +1124,21 @@ describe('rate_limits', () => {
   });
 
   it('stores multiple rate limit types', () => {
-    upsertRateLimit({ status: 'allowed', rate_limit_type: 'five_hour', utilization: 0.18 });
-    upsertRateLimit({ status: 'allowed', rate_limit_type: 'seven_day', utilization: 0.26 });
-    upsertRateLimit({ status: 'allowed', rate_limit_type: 'seven_day_sonnet', utilization: 0.08 });
+    upsertRateLimit({
+      status: 'allowed',
+      rate_limit_type: 'five_hour',
+      utilization: 0.18,
+    });
+    upsertRateLimit({
+      status: 'allowed',
+      rate_limit_type: 'seven_day',
+      utilization: 0.26,
+    });
+    upsertRateLimit({
+      status: 'allowed',
+      rate_limit_type: 'seven_day_sonnet',
+      utilization: 0.08,
+    });
     const rows = getRateLimits();
     expect(rows).toHaveLength(3);
   });

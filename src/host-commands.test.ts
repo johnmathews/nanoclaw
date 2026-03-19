@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { executeUsageCommand, executeHostCommand, renderProgressBar } from './host-commands.js';
+import {
+  executeUsageCommand,
+  executeHostCommand,
+  renderProgressBar,
+} from './host-commands.js';
 import type { HostCommandDeps } from './host-commands.js';
 import type { RateLimitRow } from './db.js';
 

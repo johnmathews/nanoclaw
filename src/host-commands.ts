@@ -27,12 +27,16 @@ function formatResetTime(epoch: number, timezone: string): string {
   const todayStr = now.toLocaleDateString('en-CA', { timeZone: timezone });
   const resetStr = date.toLocaleDateString('en-CA', { timeZone: timezone });
 
-  const timeStr = date.toLocaleTimeString('en-US', {
-    timeZone: timezone,
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true,
-  }).toLowerCase().replace(':00', '').replace(' ', '');
+  const timeStr = date
+    .toLocaleTimeString('en-US', {
+      timeZone: timezone,
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+    })
+    .toLowerCase()
+    .replace(':00', '')
+    .replace(' ', '');
 
   if (todayStr === resetStr) {
     return `Resets ${timeStr} (${timezone})`;
@@ -46,7 +50,10 @@ function formatResetTime(epoch: number, timezone: string): string {
   return `Resets ${dateFormatted}, ${timeStr} (${timezone})`;
 }
 
-export function renderProgressBar(utilization: number, width: number = 50): string {
+export function renderProgressBar(
+  utilization: number,
+  width: number = 50,
+): string {
   const filled = Math.round(utilization * width);
   const empty = width - filled;
   const bar = '\u2588'.repeat(filled) + '\u2591'.repeat(empty);
@@ -91,7 +98,12 @@ export function executeUsageCommand(deps: HostCommandDeps): string {
   }
 
   // Order: five_hour first, then seven_day variants
-  const order = ['five_hour', 'seven_day', 'seven_day_opus', 'seven_day_sonnet'];
+  const order = [
+    'five_hour',
+    'seven_day',
+    'seven_day_opus',
+    'seven_day_sonnet',
+  ];
   const sorted = [...rows].sort((a, b) => {
     const ai = order.indexOf(a.rate_limit_type);
     const bi = order.indexOf(b.rate_limit_type);

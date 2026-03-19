@@ -616,12 +616,25 @@ async function startMessageLoop(): Promise<void> {
             (m) => extractHostCommand(m.content, TRIGGER_PATTERN) !== null,
           );
           if (loopHostCmdMsg) {
-            const hostCmd = extractHostCommand(loopHostCmdMsg.content, TRIGGER_PATTERN)!;
-            if (isSessionCommandAllowed(isMainGroup, loopHostCmdMsg.is_from_me === true)) {
-              logger.info({ group: group.name, command: hostCmd }, 'Host command (inline)');
+            const hostCmd = extractHostCommand(
+              loopHostCmdMsg.content,
+              TRIGGER_PATTERN,
+            )!;
+            if (
+              isSessionCommandAllowed(
+                isMainGroup,
+                loopHostCmdMsg.is_from_me === true,
+              )
+            ) {
+              logger.info(
+                { group: group.name, command: hostCmd },
+                'Host command (inline)',
+              );
               executeHostCommand(hostCmd, { getRateLimits })
                 .then((response) => channel.sendMessage(chatJid, response))
-                .catch((err) => logger.error({ chatJid, err }, 'Host command error'));
+                .catch((err) =>
+                  logger.error({ chatJid, err }, 'Host command error'),
+                );
             }
             // Advance cursor past the host command so it won't be included
             // in allPending on the next poll cycle.
