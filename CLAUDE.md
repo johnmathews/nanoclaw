@@ -119,32 +119,26 @@ After merging any skill branch, run `npm test` and verify all tests pass before 
 round-trip tests in `src/db.test.ts` specifically guard against dropped DB columns — if a merge breaks field persistence,
 these tests will catch it.
 
-## Host Commands
+## Slash Commands
 
-Host commands (e.g., `\usage`) are handled entirely on the host — no container is spawned. They share the same auth
-model as session commands (main group or `is_from_me`). The system has two command categories:
+Any `\command` (or `/command`) from a channel is detected generically — no whitelist. The system has two categories:
 
-- **Session commands** (`/compact`, `/clear`): forwarded to the SDK inside a container
-- **Host commands** (`/usage`): executed on the host via `executeHostCommand()` in `src/host-commands.ts`
+- **SDK commands** (e.g., `/compact`, `/clear`, `/done`): forwarded to the SDK inside a container
+- **Intercepted commands** (`/usage`): handled on the host via `executeHostCommand()` in `src/host-commands.ts`
 
-Both are detected in `src/session-commands.ts` via `extractSessionCommand()` / `extractHostCommand()`. Host commands
-execute inline in the message loop (`src/index.ts`) and also in `handleSessionCommand()` for the queue path.
+All commands are detected by `extractCommand()` in `src/session-commands.ts`. Intercepted commands execute inline in the
+message loop; SDK commands are enqueued for container processing. Both share the same auth model (main group or
+`is_from_me`). Backslash is normalized to forward slash (Slack intercepts `/` as native slash commands).
 
 ## Usage Tracking
 
-The `\usage` command shows rate limit status and reset times. The data comes from the SDK's `rate_limit_event`
-messages, which contain `status`, `resetsAt` (epoch seconds), and `rateLimitType`. The SDK currently only sends the
-`five_hour` session type via `query()` — weekly breakdowns and utilization percentages are not exposed (Claude Code
-gets those from an internal billing API). If the SDK starts sending `utilization`, progress bars render automatically.
+The `\usage` command shows rate limit utilization with progress bars and reset times. It first tries the
+`console.anthropic.com/api/oauth/usage` API using the OAuth token from `~/.claude/.credentials.json`, which returns
+5-hour session, 7-day weekly, and per-model utilization percentages. If the API call fails, it falls back to
+DB-stored rate limit snapshots captured from the SDK's `rate_limit_event` messages during agent queries.
 
-Host commands execute **inline** in the message loop (not deferred to `processGroupMessages`). This prevents a race
-where the next poll cycle would include the command message in `allPending` and pipe it to an active container.
-
-Flow:
-1. SDK emits `rate_limit_event` messages during every query
-2. Agent-runner captures these and includes them as `ContainerOutput.rateLimits`
-3. Host's `wrappedOnOutput` upserts each snapshot into the `rate_limits` table (keyed by type)
-4. `\usage` reads the latest snapshots and renders status + reset times (or progress bars if utilization is available)
+Intercepted commands execute **inline** in the message loop (not deferred to `processGroupMessages`). This prevents a
+race where the next poll cycle would include the command message in `allPending` and pipe it to an active container.
 
 ## Container Build Cache
 
