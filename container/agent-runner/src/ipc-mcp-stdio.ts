@@ -529,7 +529,7 @@ Use available_groups.json to find the JID for a group. The folder name must be c
       .describe(
         'Channel-prefixed folder name (e.g., "whatsapp_family-chat", "telegram_dev-team")',
       ),
-    trigger: z.string().describe('Trigger word (e.g., "@Andy")'),
+    trigger: z.string().describe('Trigger word (e.g., "@agent")'),
   },
   async (args) => {
     if (!isMain) {

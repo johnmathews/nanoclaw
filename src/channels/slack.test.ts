@@ -939,6 +939,51 @@ describe('SlackChannel', () => {
       expect(writeFileSpy).not.toHaveBeenCalled();
     });
 
+    it('adds pdf-reader instruction for PDF attachments', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      const pdfBuffer = Buffer.from('fake-pdf');
+      mockFetchResponse(pdfBuffer);
+
+      const event = createMessageEvent({
+        text: 'Please review this',
+        files: [
+          {
+            id: 'F_PDF',
+            name: 'report.pdf',
+            mimetype: 'application/pdf',
+            size: 51200,
+            url_private_download: 'https://files.slack.com/F_PDF/report.pdf',
+          },
+        ],
+      });
+      await triggerMessageEvent(event);
+
+      expect(writeFileSpy).toHaveBeenCalledWith(
+        '/fake/groups/test-channel/attachments/F_PDF-report.pdf',
+        pdfBuffer,
+      );
+
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'slack:C0123456789',
+        expect.objectContaining({
+          content: expect.stringContaining(
+            '[PDF: attachments/F_PDF-report.pdf (50.0 KB)]',
+          ),
+        }),
+      );
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'slack:C0123456789',
+        expect.objectContaining({
+          content: expect.stringContaining(
+            'pdf-reader extract attachments/F_PDF-report.pdf',
+          ),
+        }),
+      );
+    });
+
     it('does not process files from bot messages', async () => {
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);

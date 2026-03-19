@@ -40,6 +40,7 @@ vi.mock('fs', async () => {
       writeFileSync: vi.fn(),
       readFileSync: vi.fn(() => ''),
       readdirSync: vi.fn(() => []),
+      unlinkSync: vi.fn(),
       statSync: vi.fn(() => ({ isDirectory: () => false })),
       copyFileSync: vi.fn(),
     },
@@ -88,6 +89,7 @@ vi.mock('child_process', async () => {
 
 import { runContainerAgent, ContainerOutput } from './container-runner.js';
 import type { RegisteredGroup } from './types.js';
+import fs from 'fs';
 
 const testGroup: RegisteredGroup = {
   name: 'Test Group',
@@ -206,5 +208,70 @@ describe('container-runner timeout behavior', () => {
     const result = await resultPromise;
     expect(result.status).toBe('success');
     expect(result.newSessionId).toBe('session-456');
+  });
+});
+
+describe('container-runner attachment handling', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('does not clean up attachments (loadImageData handles that)', async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p) => {
+      return String(p).includes('attachments');
+    });
+    vi.mocked(fs.readdirSync).mockImplementation((p) => {
+      if (String(p).includes('attachments')) {
+        return ['img-1.jpg', 'img-2.jpg'] as any;
+      }
+      return [] as any;
+    });
+
+    const resultPromise = runContainerAgent(testGroup, testInput, () => {});
+
+    emitOutputMarker(fakeProc, { status: 'success', result: 'ok' });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    await resultPromise;
+
+    // Container runner should NOT delete attachment files
+    expect(fs.unlinkSync).not.toHaveBeenCalled();
+  });
+
+  it('passes base64 image data in container input JSON', async () => {
+    const inputWithImage = {
+      ...testInput,
+      imageAttachments: [{ mediaType: 'image/jpeg', data: 'aGVsbG8=' }],
+    };
+
+    const resultPromise = runContainerAgent(
+      testGroup,
+      inputWithImage,
+      () => {},
+    );
+
+    // Capture what was written to stdin
+    const chunks: Buffer[] = [];
+    fakeProc.stdin.on('data', (chunk: Buffer) => chunks.push(chunk));
+
+    emitOutputMarker(fakeProc, { status: 'success', result: 'ok' });
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    await resultPromise;
+
+    const stdinContent = Buffer.concat(chunks).toString();
+    const parsed = JSON.parse(stdinContent);
+    expect(parsed.imageAttachments).toEqual([
+      { mediaType: 'image/jpeg', data: 'aGVsbG8=' },
+    ]);
   });
 });

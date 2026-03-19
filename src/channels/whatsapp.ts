@@ -207,22 +207,37 @@ export class WhatsAppChannel implements Channel {
             msg.message?.videoMessage?.caption ||
             '';
 
-          // Image attachment handling
+          // Image attachment handling (with retry for transient network failures)
           if (isImageMessage(msg)) {
-            try {
-              const buffer = await downloadMediaMessage(msg, 'buffer', {});
-              const groupDir = path.join(GROUPS_DIR, groups[chatJid].folder);
-              const caption = msg.message?.imageMessage?.caption ?? '';
-              const result = await processImage(
-                buffer as Buffer,
-                groupDir,
-                caption,
-              );
-              if (result) {
-                content = result.content;
+            const maxRetries = 2;
+            for (let attempt = 0; attempt <= maxRetries; attempt++) {
+              try {
+                const buffer = await downloadMediaMessage(msg, 'buffer', {});
+                const groupDir = path.join(GROUPS_DIR, groups[chatJid].folder);
+                const caption = msg.message?.imageMessage?.caption ?? '';
+                const result = await processImage(
+                  buffer as Buffer,
+                  groupDir,
+                  caption,
+                );
+                if (result) {
+                  content = result.content;
+                }
+                break; // success
+              } catch (err) {
+                if (attempt < maxRetries) {
+                  logger.warn(
+                    { err, jid: chatJid, attempt: attempt + 1 },
+                    'Image download failed, retrying',
+                  );
+                  await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+                } else {
+                  logger.error(
+                    { err, jid: chatJid },
+                    'Image download failed after all retries',
+                  );
+                }
               }
-            } catch (err) {
-              logger.warn({ err, jid: chatJid }, 'Image - download failed');
             }
           }
 

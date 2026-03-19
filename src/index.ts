@@ -75,7 +75,11 @@ import {
   NewMessage,
   RegisteredGroup,
 } from './types.js';
-import { parseImageReferences } from './image.js';
+import {
+  parseImageReferences,
+  loadImageData,
+  type LoadedImage,
+} from './image.js';
 import { StatusTracker } from './status-tracker.js';
 import { logger } from './logger.js';
 
@@ -288,7 +292,22 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const reactionMap = buildReactionMap(missedMessages, chatJid);
   const prompt = formatMessages(missedMessages, TIMEZONE, reactionMap);
-  const imageAttachments = parseImageReferences(missedMessages);
+
+  // Load images into memory NOW, before any cleanup or container spawn.
+  // This eliminates the file-based handoff — data goes directly via stdin.
+  const imageRefs = parseImageReferences(missedMessages);
+  const groupDir = resolveGroupFolderPath(group.folder);
+  const imageAttachments = loadImageData(imageRefs, groupDir);
+  if (imageRefs.length > 0 && imageAttachments.length < imageRefs.length) {
+    logger.warn(
+      {
+        group: group.name,
+        expected: imageRefs.length,
+        loaded: imageAttachments.length,
+      },
+      'Some image attachments could not be loaded from disk',
+    );
+  }
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
@@ -416,7 +435,7 @@ async function runAgent(
   group: RegisteredGroup,
   prompt: string,
   chatJid: string,
-  imageAttachments: Array<{ relativePath: string; mediaType: string }>,
+  imageAttachments: LoadedImage[],
   onOutput?: (output: ContainerOutput) => Promise<void>,
   onProgress?: (text: string) => void,
 ): Promise<'success' | 'error'> {
