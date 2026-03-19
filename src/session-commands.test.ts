@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
+  extractHostCommand,
   extractSessionCommand,
   handleSessionCommand,
   isSessionCommandAllowed,
@@ -34,19 +35,19 @@ describe('extractSessionCommand', () => {
 
   it('detects backslash commands and normalizes to forward slash', () => {
     expect(extractSessionCommand('\\compact', trigger)).toBe('/compact');
-    expect(extractSessionCommand('\\done', trigger)).toBe('/done');
-    expect(extractSessionCommand('\\usage', trigger)).toBe('/usage');
+    expect(extractSessionCommand('\\clear', trigger)).toBe('/clear');
   });
 
   it('detects backslash commands with trigger prefix', () => {
-    expect(extractSessionCommand('@Andy \\done', trigger)).toBe('/done');
+    expect(extractSessionCommand('@Andy \\clear', trigger)).toBe('/clear');
     expect(extractSessionCommand('@Andy \\compact', trigger)).toBe('/compact');
   });
 
-  it('detects any single-word slash command', () => {
-    expect(extractSessionCommand('/done', trigger)).toBe('/done');
-    expect(extractSessionCommand('/usage', trigger)).toBe('/usage');
-    expect(extractSessionCommand('/help', trigger)).toBe('/help');
+  it('ignores non-SDK slash commands', () => {
+    expect(extractSessionCommand('/done', trigger)).toBeNull();
+    expect(extractSessionCommand('/usage', trigger)).toBeNull();
+    expect(extractSessionCommand('/help', trigger)).toBeNull();
+    expect(extractSessionCommand('\\usage', trigger)).toBeNull();
   });
 
   it('rejects multi-word after slash', () => {
@@ -56,6 +57,33 @@ describe('extractSessionCommand', () => {
   it('rejects messages that only contain a slash or backslash', () => {
     expect(extractSessionCommand('/', trigger)).toBeNull();
     expect(extractSessionCommand('\\', trigger)).toBeNull();
+  });
+});
+
+describe('extractHostCommand', () => {
+  const trigger = /^@Andy\b/i;
+
+  it('detects /usage', () => {
+    expect(extractHostCommand('/usage', trigger)).toBe('/usage');
+  });
+
+  it('detects backslash \\usage', () => {
+    expect(extractHostCommand('\\usage', trigger)).toBe('/usage');
+  });
+
+  it('detects /usage with trigger prefix', () => {
+    expect(extractHostCommand('@Andy /usage', trigger)).toBe('/usage');
+    expect(extractHostCommand('@Andy \\usage', trigger)).toBe('/usage');
+  });
+
+  it('rejects non-host commands', () => {
+    expect(extractHostCommand('/compact', trigger)).toBeNull();
+    expect(extractHostCommand('/clear', trigger)).toBeNull();
+    expect(extractHostCommand('/help', trigger)).toBeNull();
+  });
+
+  it('rejects multi-word messages', () => {
+    expect(extractHostCommand('/usage today', trigger)).toBeNull();
   });
 });
 
@@ -141,10 +169,10 @@ describe('handleSessionCommand', () => {
     expect(deps.advanceCursor).toHaveBeenCalledWith('100');
   });
 
-  it('handles /done command', async () => {
+  it('handles /clear command', async () => {
     const deps = makeDeps();
     const result = await handleSessionCommand({
-      missedMessages: [makeMsg('/done')],
+      missedMessages: [makeMsg('/clear')],
       isMainGroup: true,
       groupName: 'test',
       triggerPattern: trigger,
@@ -152,13 +180,13 @@ describe('handleSessionCommand', () => {
       deps,
     });
     expect(result).toEqual({ handled: true, success: true });
-    expect(deps.runAgent).toHaveBeenCalledWith('/done', expect.any(Function));
+    expect(deps.runAgent).toHaveBeenCalledWith('/clear', expect.any(Function));
   });
 
   it('normalizes backslash command to forward slash', async () => {
     const deps = makeDeps();
     const result = await handleSessionCommand({
-      missedMessages: [makeMsg('\\done')],
+      missedMessages: [makeMsg('\\compact')],
       isMainGroup: true,
       groupName: 'test',
       triggerPattern: trigger,
@@ -166,7 +194,24 @@ describe('handleSessionCommand', () => {
       deps,
     });
     expect(result).toEqual({ handled: true, success: true });
-    expect(deps.runAgent).toHaveBeenCalledWith('/done', expect.any(Function));
+    expect(deps.runAgent).toHaveBeenCalledWith(
+      '/compact',
+      expect.any(Function),
+    );
+  });
+
+  it('does not intercept non-SDK commands', async () => {
+    const deps = makeDeps();
+    const result = await handleSessionCommand({
+      missedMessages: [makeMsg('\\usage')],
+      isMainGroup: true,
+      groupName: 'test',
+      triggerPattern: trigger,
+      timezone: 'UTC',
+      deps,
+    });
+    expect(result).toEqual({ handled: false });
+    expect(deps.runAgent).not.toHaveBeenCalled();
   });
 
   it('sends denial to interactable sender in non-main group', async () => {
@@ -271,7 +316,49 @@ describe('handleSessionCommand', () => {
     );
   });
 
-  it('returns success:false on pre-command failure with no output', async () => {
+  it('handles host command /usage without spawning container', async () => {
+    const deps = makeDeps({
+      executeHostCommand: vi
+        .fn()
+        .mockResolvedValue('*Usage — Today*\nNo usage.'),
+    });
+    const result = await handleSessionCommand({
+      missedMessages: [makeMsg('\\usage')],
+      isMainGroup: true,
+      groupName: 'test',
+      triggerPattern: trigger,
+      timezone: 'UTC',
+      deps,
+    });
+    expect(result).toEqual({ handled: true, success: true });
+    expect(deps.executeHostCommand).toHaveBeenCalledWith('/usage');
+    expect(deps.sendMessage).toHaveBeenCalledWith(
+      expect.stringContaining('Usage'),
+    );
+    expect(deps.runAgent).not.toHaveBeenCalled();
+    expect(deps.advanceCursor).toHaveBeenCalledWith('100');
+  });
+
+  it('denies host command from unauthorized sender', async () => {
+    const deps = makeDeps({
+      executeHostCommand: vi.fn().mockResolvedValue('usage data'),
+    });
+    const result = await handleSessionCommand({
+      missedMessages: [makeMsg('\\usage', { is_from_me: false })],
+      isMainGroup: false,
+      groupName: 'test',
+      triggerPattern: trigger,
+      timezone: 'UTC',
+      deps,
+    });
+    expect(result).toEqual({ handled: true, success: true });
+    expect(deps.executeHostCommand).not.toHaveBeenCalled();
+    expect(deps.sendMessage).toHaveBeenCalledWith(
+      'Session commands require admin access.',
+    );
+  });
+
+  it('advances cursor past command on pre-command failure to prevent retry loops', async () => {
     const deps = makeDeps({ runAgent: vi.fn().mockResolvedValue('error') });
     const msgs = [
       makeMsg('summarize this', { timestamp: '99' }),
@@ -285,9 +372,10 @@ describe('handleSessionCommand', () => {
       timezone: 'UTC',
       deps,
     });
-    expect(result).toEqual({ handled: true, success: false });
+    expect(result).toEqual({ handled: true, success: true });
     expect(deps.sendMessage).toHaveBeenCalledWith(
       expect.stringContaining('Failed to process'),
     );
+    expect(deps.advanceCursor).toHaveBeenCalledWith('100');
   });
 });

@@ -49,11 +49,19 @@ export interface ContainerInput {
   imageAttachments?: Array<{ mediaType: string; data: string }>;
 }
 
+export interface RateLimitSnapshot {
+  status: 'allowed' | 'allowed_warning' | 'rejected';
+  resets_at?: number;
+  rate_limit_type?: string;
+  utilization?: number;
+}
+
 export interface ContainerOutput {
   status: 'success' | 'error';
   result: string | null;
   newSessionId?: string;
   error?: string;
+  rateLimits?: RateLimitSnapshot[];
 }
 
 interface VolumeMount {
@@ -208,7 +216,13 @@ function buildVolumeMounts(
     'agent-runner-src',
   );
   if (fs.existsSync(agentRunnerSrc)) {
-    fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, { recursive: true });
+    // Clean destination first so stale files (e.g. test files from prior
+    // copies) don't persist across spawns.
+    fs.rmSync(groupAgentRunnerDir, { recursive: true, force: true });
+    fs.cpSync(agentRunnerSrc, groupAgentRunnerDir, {
+      recursive: true,
+      filter: (src) => !src.endsWith('.test.ts'),
+    });
   }
   mounts.push({
     hostPath: groupAgentRunnerDir,

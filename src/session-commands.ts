@@ -1,9 +1,15 @@
 import type { NewMessage } from './types.js';
 import { logger } from './logger.js';
 
+/** Commands the SDK supports as session slash commands. Others are not intercepted. */
+const SDK_SESSION_COMMANDS = new Set(['/compact', '/clear']);
+
+/** Commands handled on the host side (no container spawn needed). */
+const HOST_COMMANDS = new Set(['/usage']);
+
 /**
  * Extract a session slash command from a message, stripping the trigger prefix if present.
- * Returns the slash command (e.g., '/compact') or null if not a session command.
+ * Returns the slash command (e.g., '/compact') or null if not a recognized session command.
  */
 export function extractSessionCommand(
   content: string,
@@ -12,8 +18,25 @@ export function extractSessionCommand(
   let text = content.trim();
   text = text.replace(triggerPattern, '').trim();
   const match = text.match(/^[/\\](\w+)$/);
-  if (match) return '/' + match[1];
-  return null;
+  if (!match) return null;
+  const command = '/' + match[1];
+  return SDK_SESSION_COMMANDS.has(command) ? command : null;
+}
+
+/**
+ * Extract a host command from a message, stripping the trigger prefix if present.
+ * Returns the command (e.g., '/usage') or null if not a recognized host command.
+ */
+export function extractHostCommand(
+  content: string,
+  triggerPattern: RegExp,
+): string | null {
+  let text = content.trim();
+  text = text.replace(triggerPattern, '').trim();
+  const match = text.match(/^[/\\](\w+)$/);
+  if (!match) return null;
+  const command = '/' + match[1];
+  return HOST_COMMANDS.has(command) ? command : null;
 }
 
 /**
@@ -46,6 +69,8 @@ export interface SessionCommandDeps {
   formatMessages: (msgs: NewMessage[], timezone: string) => string;
   /** Whether the denied sender would normally be allowed to interact (for denial messages). */
   canSenderInteract: (msg: NewMessage) => boolean;
+  /** Execute a host-side command (e.g., /usage). Returns formatted response text. */
+  executeHostCommand?: (command: string) => Promise<string>;
 }
 
 function resultToText(result: string | object | null | undefined): string {
@@ -76,6 +101,29 @@ export async function handleSessionCommand(opts: {
     timezone,
     deps,
   } = opts;
+
+  // --- Host command interception (no container needed) ---
+  const hostCmdMsg = missedMessages.find(
+    (m) => extractHostCommand(m.content, triggerPattern) !== null,
+  );
+  if (hostCmdMsg && deps.executeHostCommand) {
+    const hostCommand = extractHostCommand(hostCmdMsg.content, triggerPattern)!;
+
+    if (!isSessionCommandAllowed(isMainGroup, hostCmdMsg.is_from_me === true)) {
+      if (deps.canSenderInteract(hostCmdMsg)) {
+        await deps.sendMessage('Session commands require admin access.');
+      }
+      deps.advanceCursor(hostCmdMsg.timestamp);
+      return { handled: true, success: true };
+    }
+
+    logger.info({ group: groupName, command: hostCommand }, 'Host command');
+    const response = await deps.executeHostCommand(hostCommand);
+    await deps.sendMessage(response);
+    deps.advanceCursor(hostCmdMsg.timestamp);
+    return { handled: true, success: true };
+  }
+  // --- End host command interception ---
 
   const cmdMsg = missedMessages.find(
     (m) => extractSessionCommand(m.content, triggerPattern) !== null,
@@ -132,13 +180,12 @@ export async function handleSessionCommand(opts: {
       await deps.sendMessage(
         `Failed to process messages before ${command}. Try again.`,
       );
-      if (preOutputSent) {
-        // Output was already sent — don't retry or it will duplicate.
-        // Advance cursor past pre-compact messages, leave command pending.
-        deps.advanceCursor(preCompactMsgs[preCompactMsgs.length - 1].timestamp);
-        return { handled: true, success: true };
-      }
-      return { handled: true, success: false };
+      // Always advance cursor past the pre-command messages to prevent
+      // infinite retry loops when the failure is persistent (e.g. container
+      // compilation error). The command message is also consumed — asking
+      // the user to "try again" means re-send the command.
+      deps.advanceCursor(cmdMsg.timestamp);
+      return { handled: true, success: true };
     }
   }
 

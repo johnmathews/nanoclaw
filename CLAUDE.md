@@ -23,6 +23,8 @@ isolated filesystem and memory.
 | `src/image.ts`                      | Image processing, base64 loading, reference parsing        |
 | `src/transcription.ts`              | Voice message transcription via OpenAI Whisper             |
 | `src/db.ts`                         | SQLite operations                                          |
+| `src/host-commands.ts`              | Host-side commands (/usage) — no container spawn needed    |
+| `src/session-commands.ts`           | Session + host command extraction and handling             |
 | `store/messages.db`                 | SQLite database (messages, chats, tasks, sessions, state)  |
 | `groups/{name}/CLAUDE.md`           | Per-group memory (isolated)                                |
 | `container/skills/agent-browser.md` | Browser automation tool (available to all agents via Bash) |
@@ -116,6 +118,33 @@ conflicts in the skill branch where they're easier to review.
 After merging any skill branch, run `npm test` and verify all tests pass before committing. The registered group
 round-trip tests in `src/db.test.ts` specifically guard against dropped DB columns — if a merge breaks field persistence,
 these tests will catch it.
+
+## Host Commands
+
+Host commands (e.g., `\usage`) are handled entirely on the host — no container is spawned. They share the same auth
+model as session commands (main group or `is_from_me`). The system has two command categories:
+
+- **Session commands** (`/compact`, `/clear`): forwarded to the SDK inside a container
+- **Host commands** (`/usage`): executed on the host via `executeHostCommand()` in `src/host-commands.ts`
+
+Both are detected in `src/session-commands.ts` via `extractSessionCommand()` / `extractHostCommand()`. Host commands
+execute inline in the message loop (`src/index.ts`) and also in `handleSessionCommand()` for the queue path.
+
+## Usage Tracking
+
+The `\usage` command shows rate limit status and reset times. The data comes from the SDK's `rate_limit_event`
+messages, which contain `status`, `resetsAt` (epoch seconds), and `rateLimitType`. The SDK currently only sends the
+`five_hour` session type via `query()` — weekly breakdowns and utilization percentages are not exposed (Claude Code
+gets those from an internal billing API). If the SDK starts sending `utilization`, progress bars render automatically.
+
+Host commands execute **inline** in the message loop (not deferred to `processGroupMessages`). This prevents a race
+where the next poll cycle would include the command message in `allPending` and pipe it to an active container.
+
+Flow:
+1. SDK emits `rate_limit_event` messages during every query
+2. Agent-runner captures these and includes them as `ContainerOutput.rateLimits`
+3. Host's `wrappedOnOutput` upserts each snapshot into the `rate_limits` table (keyed by type)
+4. `\usage` reads the latest snapshots and renders status + reset times (or progress bars if utilization is available)
 
 ## Container Build Cache
 

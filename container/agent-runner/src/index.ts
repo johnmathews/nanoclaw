@@ -26,6 +26,7 @@ import {
   parseTranscript,
   formatTranscriptMarkdown,
 } from './utils.js';
+import type { RateLimitSnapshot } from './utils.js';
 
 interface ContainerInput {
   prompt: string;
@@ -316,6 +317,8 @@ async function runQuery(
   let lastAssistantUuid: string | undefined;
   let messageCount = 0;
   let resultCount = 0;
+  // Collect rate limit snapshots emitted during this query
+  const rateLimitSnapshots: RateLimitSnapshot[] = [];
 
   // Load global CLAUDE.md as additional system context (shared across all groups)
   const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
@@ -436,6 +439,26 @@ async function runQuery(
       log(`Task notification: task=${tn.task_id} status=${tn.status} summary=${tn.summary}`);
     }
 
+    // Capture rate limit info from the SDK (plan utilization, reset times)
+    if ((message as { type: string }).type === 'rate_limit_event') {
+      const rle = message as { rate_limit_info?: {
+        status: string;
+        resetsAt?: number;
+        rateLimitType?: string;
+        utilization?: number;
+      }};
+      if (rle.rate_limit_info) {
+        const info = rle.rate_limit_info;
+        rateLimitSnapshots.push({
+          status: info.status as RateLimitSnapshot['status'],
+          resets_at: info.resetsAt,
+          rate_limit_type: info.rateLimitType,
+          utilization: info.utilization,
+        });
+        log(`Rate limit: type=${info.rateLimitType} util=${info.utilization} status=${info.status}`);
+      }
+    }
+
     if (message.type === 'result') {
       resultCount++;
       const textResult = 'result' in message ? (message as { result?: string }).result : null;
@@ -443,7 +466,8 @@ async function runQuery(
       writeOutput({
         status: 'success',
         result: textResult || null,
-        newSessionId
+        newSessionId,
+        ...(rateLimitSnapshots.length > 0 && { rateLimits: rateLimitSnapshots }),
       });
     }
   }
@@ -509,6 +533,7 @@ async function main(): Promise<void> {
     let slashSessionId: string | undefined;
     let hadError = false;
     let resultEmitted = false;
+    const slashRateLimits: RateLimitSnapshot[] = [];
 
     try {
       for await (const message of query({
@@ -537,6 +562,38 @@ async function main(): Promise<void> {
           log(`Session after slash command: ${slashSessionId}`);
         }
 
+        // Local commands (e.g. /usage, /cost) emit content via local_command_output
+        if (message.type === 'system' && (message as { subtype?: string }).subtype === 'local_command_output') {
+          const content = (message as { content?: string }).content;
+          if (content) {
+            writeOutput({
+              status: 'success',
+              result: content,
+              newSessionId: slashSessionId,
+            });
+            resultEmitted = true;
+          }
+        }
+
+        // Capture rate limit info in slash command path too
+        if ((message as { type: string }).type === 'rate_limit_event') {
+          const rle = message as { rate_limit_info?: {
+            status: string;
+            resetsAt?: number;
+            rateLimitType?: string;
+            utilization?: number;
+          }};
+          if (rle.rate_limit_info) {
+            const info = rle.rate_limit_info;
+            slashRateLimits.push({
+              status: info.status as RateLimitSnapshot['status'],
+              resets_at: info.resetsAt,
+              rate_limit_type: info.rateLimitType,
+              utilization: info.utilization,
+            });
+          }
+        }
+
         if (message.type === 'result') {
           const resultSubtype = (message as { subtype?: string }).subtype;
           const textResult = 'result' in message ? (message as { result?: string }).result : null;
@@ -554,6 +611,7 @@ async function main(): Promise<void> {
               status: 'success',
               result: textResult || 'Command completed.',
               newSessionId: slashSessionId,
+              ...(slashRateLimits.length > 0 && { rateLimits: slashRateLimits }),
             });
           }
           resultEmitted = true;

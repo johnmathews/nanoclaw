@@ -38,10 +38,12 @@ import {
   getNewMessages,
   getReactionsForChat,
   getReactionsForMessages,
+  getRateLimits,
   getRouterState,
   initDatabase,
   Reaction,
   setRegisteredGroup,
+  upsertRateLimit,
   setRouterState,
   setSession,
   storeChatMetadata,
@@ -64,10 +66,12 @@ import {
   shouldDropMessage,
 } from './sender-allowlist.js';
 import {
+  extractHostCommand,
   extractSessionCommand,
   handleSessionCommand,
   isSessionCommandAllowed,
 } from './session-commands.js';
+import { executeHostCommand } from './host-commands.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import {
   Channel,
@@ -257,6 +261,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               isTriggerAllowed(chatJid, msg.sender, loadSenderAllowlist())))
         );
       },
+      executeHostCommand: (command) =>
+        executeHostCommand(command, { getRateLimits }),
     },
   });
   if (cmdResult.handled) return cmdResult.success;
@@ -470,12 +476,17 @@ async function runAgent(
   // Update reactions snapshot for container to read
   writeReactionsSnapshot(group.folder, chatJid, getReactionsForChat(chatJid));
 
-  // Wrap onOutput to track session ID from streamed results
+  // Wrap onOutput to track session ID and persist rate limits from streamed results
   const wrappedOnOutput = onOutput
     ? async (output: ContainerOutput) => {
         if (output.newSessionId) {
           sessions[group.folder] = output.newSessionId;
           setSession(group.folder, output.newSessionId);
+        }
+        if (output.rateLimits) {
+          for (const snapshot of output.rateLimits) {
+            upsertRateLimit(snapshot);
+          }
         }
         await onOutput(output);
       }
@@ -597,8 +608,42 @@ async function startMessageLoop(): Promise<void> {
 
           const isMainGroup = group.isMain === true;
 
+          // --- Host command interception (message loop) ---
+          // Host commands execute inline (no container needed).
+          // Must run BEFORE the pipe path — otherwise the next poll cycle
+          // will include the command in allPending and pipe it to the container.
+          const loopHostCmdMsg = groupMessages.find(
+            (m) => extractHostCommand(m.content, TRIGGER_PATTERN) !== null,
+          );
+          if (loopHostCmdMsg) {
+            const hostCmd = extractHostCommand(
+              loopHostCmdMsg.content,
+              TRIGGER_PATTERN,
+            )!;
+            if (
+              isSessionCommandAllowed(
+                isMainGroup,
+                loopHostCmdMsg.is_from_me === true,
+              )
+            ) {
+              logger.info(
+                { group: group.name, command: hostCmd },
+                'Host command (inline)',
+              );
+              executeHostCommand(hostCmd, { getRateLimits })
+                .then((response) => channel.sendMessage(chatJid, response))
+                .catch((err) =>
+                  logger.error({ chatJid, err }, 'Host command error'),
+                );
+            }
+            // Advance cursor past the host command so it won't be included
+            // in allPending on the next poll cycle.
+            lastAgentTimestamp[chatJid] = loopHostCmdMsg.timestamp;
+            saveState();
+            continue;
+          }
+
           // --- Session command interception (message loop) ---
-          // Scan ALL messages in the batch for a session command.
           const loopCmdMsg = groupMessages.find(
             (m) => extractSessionCommand(m.content, TRIGGER_PATTERN) !== null,
           );
@@ -621,7 +666,7 @@ async function startMessageLoop(): Promise<void> {
             queue.enqueueMessageCheck(chatJid);
             continue;
           }
-          // --- End session command interception ---
+          // --- End command interception ---
 
           const needsTrigger = !isMainGroup && group.requiresTrigger !== false;
 
