@@ -11,7 +11,8 @@ export function extractSessionCommand(
 ): string | null {
   let text = content.trim();
   text = text.replace(triggerPattern, '').trim();
-  if (text === '/compact') return '/compact';
+  const match = text.match(/^[/\\](\w+)$/);
+  if (match) return '/' + match[1];
   return null;
 }
 

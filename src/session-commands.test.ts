@@ -22,10 +22,6 @@ describe('extractSessionCommand', () => {
     expect(extractSessionCommand('/compact now please', trigger)).toBeNull();
   });
 
-  it('rejects partial matches', () => {
-    expect(extractSessionCommand('/compaction', trigger)).toBeNull();
-  });
-
   it('rejects regular messages', () => {
     expect(
       extractSessionCommand('please compact the conversation', trigger),
@@ -36,8 +32,30 @@ describe('extractSessionCommand', () => {
     expect(extractSessionCommand('  /compact  ', trigger)).toBe('/compact');
   });
 
-  it('is case-sensitive for the command', () => {
-    expect(extractSessionCommand('/Compact', trigger)).toBeNull();
+  it('detects backslash commands and normalizes to forward slash', () => {
+    expect(extractSessionCommand('\\compact', trigger)).toBe('/compact');
+    expect(extractSessionCommand('\\done', trigger)).toBe('/done');
+    expect(extractSessionCommand('\\usage', trigger)).toBe('/usage');
+  });
+
+  it('detects backslash commands with trigger prefix', () => {
+    expect(extractSessionCommand('@Andy \\done', trigger)).toBe('/done');
+    expect(extractSessionCommand('@Andy \\compact', trigger)).toBe('/compact');
+  });
+
+  it('detects any single-word slash command', () => {
+    expect(extractSessionCommand('/done', trigger)).toBe('/done');
+    expect(extractSessionCommand('/usage', trigger)).toBe('/usage');
+    expect(extractSessionCommand('/help', trigger)).toBe('/help');
+  });
+
+  it('rejects multi-word after slash', () => {
+    expect(extractSessionCommand('/done now', trigger)).toBeNull();
+  });
+
+  it('rejects messages that only contain a slash or backslash', () => {
+    expect(extractSessionCommand('/', trigger)).toBeNull();
+    expect(extractSessionCommand('\\', trigger)).toBeNull();
   });
 });
 
@@ -123,6 +141,40 @@ describe('handleSessionCommand', () => {
     expect(deps.advanceCursor).toHaveBeenCalledWith('100');
   });
 
+  it('handles /done command', async () => {
+    const deps = makeDeps();
+    const result = await handleSessionCommand({
+      missedMessages: [makeMsg('/done')],
+      isMainGroup: true,
+      groupName: 'test',
+      triggerPattern: trigger,
+      timezone: 'UTC',
+      deps,
+    });
+    expect(result).toEqual({ handled: true, success: true });
+    expect(deps.runAgent).toHaveBeenCalledWith(
+      '/done',
+      expect.any(Function),
+    );
+  });
+
+  it('normalizes backslash command to forward slash', async () => {
+    const deps = makeDeps();
+    const result = await handleSessionCommand({
+      missedMessages: [makeMsg('\\done')],
+      isMainGroup: true,
+      groupName: 'test',
+      triggerPattern: trigger,
+      timezone: 'UTC',
+      deps,
+    });
+    expect(result).toEqual({ handled: true, success: true });
+    expect(deps.runAgent).toHaveBeenCalledWith(
+      '/done',
+      expect.any(Function),
+    );
+  });
+
   it('sends denial to interactable sender in non-main group', async () => {
     const deps = makeDeps();
     const result = await handleSessionCommand({
@@ -158,7 +210,7 @@ describe('handleSessionCommand', () => {
     expect(deps.advanceCursor).toHaveBeenCalledWith('100');
   });
 
-  it('processes pre-compact messages before /compact', async () => {
+  it('processes pre-command messages before the command', async () => {
     const deps = makeDeps();
     const msgs = [
       makeMsg('summarize this', { timestamp: '99' }),
@@ -174,7 +226,7 @@ describe('handleSessionCommand', () => {
     });
     expect(result).toEqual({ handled: true, success: true });
     expect(deps.formatMessages).toHaveBeenCalledWith([msgs[0]], 'UTC');
-    // Two runAgent calls: pre-compact + /compact
+    // Two runAgent calls: pre-command + /compact
     expect(deps.runAgent).toHaveBeenCalledTimes(2);
     expect(deps.runAgent).toHaveBeenCalledWith(
       '<formatted>',
@@ -225,7 +277,7 @@ describe('handleSessionCommand', () => {
     );
   });
 
-  it('returns success:false on pre-compact failure with no output', async () => {
+  it('returns success:false on pre-command failure with no output', async () => {
     const deps = makeDeps({ runAgent: vi.fn().mockResolvedValue('error') });
     const msgs = [
       makeMsg('summarize this', { timestamp: '99' }),
