@@ -23,6 +23,7 @@ isolated filesystem and memory.
 | `src/image.ts`                      | Image processing, base64 loading, reference parsing        |
 | `src/transcription.ts`              | Voice message transcription via OpenAI Whisper             |
 | `src/db.ts`                         | SQLite operations                                          |
+| `store/messages.db`                 | SQLite database (messages, chats, tasks, sessions, state)  |
 | `groups/{name}/CLAUDE.md`           | Per-group memory (isolated)                                |
 | `container/skills/agent-browser.md` | Browser automation tool (available to all agents via Bash) |
 
