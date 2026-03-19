@@ -524,11 +524,7 @@ describe('container-runner error handling', () => {
   });
 
   it('returns error status on spawn error event', async () => {
-    const resultPromise = runContainerAgent(
-      testGroup,
-      testInput,
-      () => {},
-    );
+    const resultPromise = runContainerAgent(testGroup, testInput, () => {});
 
     fakeProc.emit('error', new Error('spawn ENOENT'));
     await vi.advanceTimersByTimeAsync(10);
@@ -674,11 +670,7 @@ describe('container-runner stdin JSON writing', () => {
       stdinEnded = true;
     });
 
-    const resultPromise = runContainerAgent(
-      testGroup,
-      testInput,
-      () => {},
-    );
+    const resultPromise = runContainerAgent(testGroup, testInput, () => {});
 
     await vi.advanceTimersByTimeAsync(10);
 

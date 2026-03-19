@@ -1649,9 +1649,8 @@ describe('WhatsAppChannel', () => {
 
   describe('reactToLatestMessage', () => {
     it('calls getLatestMessage and forwards to sendReaction', async () => {
-      const { getLatestMessage: mockGetLatestMessage } = await import(
-        '../db.js'
-      );
+      const { getLatestMessage: mockGetLatestMessage } =
+        await import('../db.js');
       vi.mocked(mockGetLatestMessage).mockReturnValue({
         id: 'latest-msg-1',
         fromMe: false,
@@ -1678,9 +1677,8 @@ describe('WhatsAppChannel', () => {
     });
 
     it('uses fromMe from the latest message in the key', async () => {
-      const { getLatestMessage: mockGetLatestMessage } = await import(
-        '../db.js'
-      );
+      const { getLatestMessage: mockGetLatestMessage } =
+        await import('../db.js');
       vi.mocked(mockGetLatestMessage).mockReturnValue({
         id: 'latest-msg-2',
         fromMe: true,
@@ -1706,9 +1704,8 @@ describe('WhatsAppChannel', () => {
     });
 
     it('throws when no messages found for chat', async () => {
-      const { getLatestMessage: mockGetLatestMessage } = await import(
-        '../db.js'
-      );
+      const { getLatestMessage: mockGetLatestMessage } =
+        await import('../db.js');
       vi.mocked(mockGetLatestMessage).mockReturnValue(undefined);
 
       const opts = createTestOpts();
@@ -1739,7 +1736,8 @@ describe('WhatsAppChannel', () => {
       // Restore original value
       const configModule = await import('../config.js');
       // @ts-expect-error - restoring readonly module export
-      configModule.ASSISTANT_HAS_OWN_NUMBER = originalModule.ASSISTANT_HAS_OWN_NUMBER;
+      configModule.ASSISTANT_HAS_OWN_NUMBER =
+        originalModule.ASSISTANT_HAS_OWN_NUMBER;
     });
 
     it('sendMessage does NOT prefix with assistant name', async () => {
