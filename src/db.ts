@@ -11,6 +11,7 @@ import {
   ScheduledTask,
   TaskRunLog,
 } from './types.js';
+import type { RateLimitSnapshot } from './container-runner.js';
 
 let db: Database.Database;
 
@@ -105,6 +106,14 @@ function createSchema(database: Database.Database): void {
     CREATE INDEX IF NOT EXISTS idx_reactions_reactor ON reactions(reactor_jid);
     CREATE INDEX IF NOT EXISTS idx_reactions_emoji ON reactions(emoji);
     CREATE INDEX IF NOT EXISTS idx_reactions_timestamp ON reactions(timestamp);
+
+    CREATE TABLE IF NOT EXISTS rate_limits (
+      rate_limit_type TEXT PRIMARY KEY,
+      status TEXT NOT NULL,
+      utilization REAL,
+      resets_at INTEGER,
+      updated_at TEXT NOT NULL
+    );
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)
@@ -840,6 +849,36 @@ export function getAllRegisteredGroups(): Record<string, RegisteredGroup> {
     };
   }
   return result;
+}
+
+// --- Rate limit accessors ---
+
+export function upsertRateLimit(snapshot: RateLimitSnapshot): void {
+  if (!snapshot.rate_limit_type) return;
+  db.prepare(
+    `INSERT OR REPLACE INTO rate_limits (rate_limit_type, status, utilization, resets_at, updated_at)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(
+    snapshot.rate_limit_type,
+    snapshot.status,
+    snapshot.utilization ?? null,
+    snapshot.resets_at ?? null,
+    new Date().toISOString(),
+  );
+}
+
+export interface RateLimitRow {
+  rate_limit_type: string;
+  status: string;
+  utilization: number | null;
+  resets_at: number | null;
+  updated_at: string;
+}
+
+export function getRateLimits(): RateLimitRow[] {
+  return db
+    .prepare(`SELECT * FROM rate_limits ORDER BY rate_limit_type`)
+    .all() as RateLimitRow[];
 }
 
 // --- JSON migration ---

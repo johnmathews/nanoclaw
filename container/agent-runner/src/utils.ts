@@ -8,11 +8,19 @@ export interface ParsedMessage {
   content: string;
 }
 
+export interface RateLimitSnapshot {
+  status: 'allowed' | 'allowed_warning' | 'rejected';
+  resets_at?: number;
+  rate_limit_type?: string;
+  utilization?: number;
+}
+
 export interface ContainerOutput {
   status: 'success' | 'error';
   result: string | null;
   newSessionId?: string;
   error?: string;
+  rateLimits?: RateLimitSnapshot[];
 }
 
 export const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';

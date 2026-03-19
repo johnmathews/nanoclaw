@@ -19,6 +19,8 @@ import {
   getReactionStats,
   getRegisteredGroup,
   getTaskById,
+  getRateLimits,
+  upsertRateLimit,
   setRegisteredGroup,
   storeChatMetadata,
   storeMessage,
@@ -1069,5 +1071,53 @@ describe('registered groups', () => {
     expect(loaded.isMain).toBe(true);
     expect(loaded.requiresTrigger).toBe(false);
     expect(loaded.containerConfig).toEqual({ additionalMounts: [{ hostPath: '/x', containerPath: 'x', readonly: true }] });
+  });
+});
+
+describe('rate_limits', () => {
+  it('round-trips upsertRateLimit / getRateLimits', () => {
+    upsertRateLimit({
+      status: 'allowed',
+      rate_limit_type: 'five_hour',
+      utilization: 0.18,
+      resets_at: 1711929600000,
+    });
+    const rows = getRateLimits();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].rate_limit_type).toBe('five_hour');
+    expect(rows[0].status).toBe('allowed');
+    expect(rows[0].utilization).toBe(0.18);
+    expect(rows[0].resets_at).toBe(1711929600000);
+  });
+
+  it('upserts on same rate_limit_type', () => {
+    upsertRateLimit({
+      status: 'allowed',
+      rate_limit_type: 'five_hour',
+      utilization: 0.10,
+    });
+    upsertRateLimit({
+      status: 'allowed_warning',
+      rate_limit_type: 'five_hour',
+      utilization: 0.85,
+    });
+    const rows = getRateLimits();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].utilization).toBe(0.85);
+    expect(rows[0].status).toBe('allowed_warning');
+  });
+
+  it('stores multiple rate limit types', () => {
+    upsertRateLimit({ status: 'allowed', rate_limit_type: 'five_hour', utilization: 0.18 });
+    upsertRateLimit({ status: 'allowed', rate_limit_type: 'seven_day', utilization: 0.26 });
+    upsertRateLimit({ status: 'allowed', rate_limit_type: 'seven_day_sonnet', utilization: 0.08 });
+    const rows = getRateLimits();
+    expect(rows).toHaveLength(3);
+  });
+
+  it('skips entries without rate_limit_type', () => {
+    upsertRateLimit({ status: 'allowed' });
+    const rows = getRateLimits();
+    expect(rows).toHaveLength(0);
   });
 });
