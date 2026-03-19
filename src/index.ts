@@ -66,8 +66,8 @@ import {
   shouldDropMessage,
 } from './sender-allowlist.js';
 import {
-  extractHostCommand,
-  extractSessionCommand,
+  extractCommand,
+  isInterceptedCommand,
   handleSessionCommand,
   isSessionCommandAllowed,
 } from './session-commands.js';
@@ -261,7 +261,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               isTriggerAllowed(chatJid, msg.sender, loadSenderAllowlist())))
         );
       },
-      executeHostCommand: (command) =>
+      executeInterceptedCommand: (command) =>
         executeHostCommand(command, { getRateLimits }),
     },
   });
@@ -608,50 +608,43 @@ async function startMessageLoop(): Promise<void> {
 
           const isMainGroup = group.isMain === true;
 
-          // --- Host command interception (message loop) ---
-          // Host commands execute inline (no container needed).
+          // --- Slash command interception (message loop) ---
           // Must run BEFORE the pipe path — otherwise the next poll cycle
           // will include the command in allPending and pipe it to the container.
-          const loopHostCmdMsg = groupMessages.find(
-            (m) => extractHostCommand(m.content, TRIGGER_PATTERN) !== null,
-          );
-          if (loopHostCmdMsg) {
-            const hostCmd = extractHostCommand(
-              loopHostCmdMsg.content,
-              TRIGGER_PATTERN,
-            )!;
-            if (
-              isSessionCommandAllowed(
-                isMainGroup,
-                loopHostCmdMsg.is_from_me === true,
-              )
-            ) {
-              logger.info(
-                { group: group.name, command: hostCmd },
-                'Host command (inline)',
-              );
-              executeHostCommand(hostCmd, { getRateLimits })
-                .then((response) => channel.sendMessage(chatJid, response))
-                .catch((err) =>
-                  logger.error({ chatJid, err }, 'Host command error'),
-                );
-            }
-            // Advance cursor past the host command so it won't be included
-            // in allPending on the next poll cycle.
-            lastAgentTimestamp[chatJid] = loopHostCmdMsg.timestamp;
-            saveState();
-            continue;
-          }
-
-          // --- Session command interception (message loop) ---
           const loopCmdMsg = groupMessages.find(
-            (m) => extractSessionCommand(m.content, TRIGGER_PATTERN) !== null,
+            (m) => extractCommand(m.content, TRIGGER_PATTERN) !== null,
           );
 
           if (loopCmdMsg) {
-            // Only close active container if the sender is authorized — otherwise an
-            // untrusted user could kill in-flight work by sending /compact (DoS).
-            // closeStdin no-ops internally when no container is active.
+            const cmd = extractCommand(loopCmdMsg.content, TRIGGER_PATTERN)!;
+
+            if (isInterceptedCommand(cmd)) {
+              // Intercepted commands execute inline (no container needed).
+              if (
+                isSessionCommandAllowed(
+                  isMainGroup,
+                  loopCmdMsg.is_from_me === true,
+                )
+              ) {
+                logger.info(
+                  { group: group.name, command: cmd },
+                  'Intercepted command (inline)',
+                );
+                executeHostCommand(cmd, { getRateLimits })
+                  .then((response) => channel.sendMessage(chatJid, response))
+                  .catch((err) =>
+                    logger.error({ chatJid, err }, 'Intercepted command error'),
+                  );
+              }
+              // Advance cursor past the command so it won't be included
+              // in allPending on the next poll cycle.
+              lastAgentTimestamp[chatJid] = loopCmdMsg.timestamp;
+              saveState();
+              continue;
+            }
+
+            // SDK commands: close active container and enqueue for processing.
+            // Only close if authorized — otherwise untrusted user could DoS.
             if (
               isSessionCommandAllowed(
                 isMainGroup,

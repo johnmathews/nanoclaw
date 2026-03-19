@@ -1,17 +1,15 @@
 import type { NewMessage } from './types.js';
 import { logger } from './logger.js';
 
-/** Commands the SDK supports as session slash commands. Others are not intercepted. */
-const SDK_SESSION_COMMANDS = new Set(['/compact', '/clear']);
-
-/** Commands handled on the host side (no container spawn needed). */
-const HOST_COMMANDS = new Set(['/usage']);
+/** Commands intercepted on the host (no container spawn). */
+const INTERCEPTED_COMMANDS = new Set(['/usage']);
 
 /**
- * Extract a session slash command from a message, stripping the trigger prefix if present.
- * Returns the slash command (e.g., '/compact') or null if not a recognized session command.
+ * Extract a slash command from a message, stripping the trigger prefix if present.
+ * Returns the normalized command (e.g., '/compact') or null if not a single-word command.
+ * Accepts both /command and \command (backslash normalized to forward slash).
  */
-export function extractSessionCommand(
+export function extractCommand(
   content: string,
   triggerPattern: RegExp,
 ): string | null {
@@ -19,24 +17,14 @@ export function extractSessionCommand(
   text = text.replace(triggerPattern, '').trim();
   const match = text.match(/^[/\\](\w+)$/);
   if (!match) return null;
-  const command = '/' + match[1];
-  return SDK_SESSION_COMMANDS.has(command) ? command : null;
+  return '/' + match[1];
 }
 
 /**
- * Extract a host command from a message, stripping the trigger prefix if present.
- * Returns the command (e.g., '/usage') or null if not a recognized host command.
+ * Check if a command is intercepted on the host side (not forwarded to the SDK).
  */
-export function extractHostCommand(
-  content: string,
-  triggerPattern: RegExp,
-): string | null {
-  let text = content.trim();
-  text = text.replace(triggerPattern, '').trim();
-  const match = text.match(/^[/\\](\w+)$/);
-  if (!match) return null;
-  const command = '/' + match[1];
-  return HOST_COMMANDS.has(command) ? command : null;
+export function isInterceptedCommand(command: string): boolean {
+  return INTERCEPTED_COMMANDS.has(command);
 }
 
 /**
@@ -69,8 +57,8 @@ export interface SessionCommandDeps {
   formatMessages: (msgs: NewMessage[], timezone: string) => string;
   /** Whether the denied sender would normally be allowed to interact (for denial messages). */
   canSenderInteract: (msg: NewMessage) => boolean;
-  /** Execute a host-side command (e.g., /usage). Returns formatted response text. */
-  executeHostCommand?: (command: string) => Promise<string>;
+  /** Execute an intercepted command on the host (e.g., /usage). Returns formatted response text. */
+  executeInterceptedCommand?: (command: string) => Promise<string>;
 }
 
 function resultToText(result: string | object | null | undefined): string {
@@ -102,34 +90,12 @@ export async function handleSessionCommand(opts: {
     deps,
   } = opts;
 
-  // --- Host command interception (no container needed) ---
-  const hostCmdMsg = missedMessages.find(
-    (m) => extractHostCommand(m.content, triggerPattern) !== null,
-  );
-  if (hostCmdMsg && deps.executeHostCommand) {
-    const hostCommand = extractHostCommand(hostCmdMsg.content, triggerPattern)!;
-
-    if (!isSessionCommandAllowed(isMainGroup, hostCmdMsg.is_from_me === true)) {
-      if (deps.canSenderInteract(hostCmdMsg)) {
-        await deps.sendMessage('Session commands require admin access.');
-      }
-      deps.advanceCursor(hostCmdMsg.timestamp);
-      return { handled: true, success: true };
-    }
-
-    logger.info({ group: groupName, command: hostCommand }, 'Host command');
-    const response = await deps.executeHostCommand(hostCommand);
-    await deps.sendMessage(response);
-    deps.advanceCursor(hostCmdMsg.timestamp);
-    return { handled: true, success: true };
-  }
-  // --- End host command interception ---
-
+  // Find the first slash command in the batch
   const cmdMsg = missedMessages.find(
-    (m) => extractSessionCommand(m.content, triggerPattern) !== null,
+    (m) => extractCommand(m.content, triggerPattern) !== null,
   );
   const command = cmdMsg
-    ? extractSessionCommand(cmdMsg.content, triggerPattern)
+    ? extractCommand(cmdMsg.content, triggerPattern)
     : null;
 
   if (!command || !cmdMsg) return { handled: false };
@@ -146,7 +112,16 @@ export async function handleSessionCommand(opts: {
     return { handled: true, success: true };
   }
 
-  // AUTHORIZED: process pre-compact messages first, then run the command
+  // --- Intercepted commands (handled on host, no container needed) ---
+  if (isInterceptedCommand(command) && deps.executeInterceptedCommand) {
+    logger.info({ group: groupName, command }, 'Intercepted command');
+    const response = await deps.executeInterceptedCommand(command);
+    await deps.sendMessage(response);
+    deps.advanceCursor(cmdMsg.timestamp);
+    return { handled: true, success: true };
+  }
+
+  // --- SDK commands (forwarded to container) ---
   logger.info({ group: groupName, command }, 'Session command');
 
   const cmdIndex = missedMessages.indexOf(cmdMsg);
