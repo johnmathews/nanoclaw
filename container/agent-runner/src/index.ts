@@ -26,6 +26,7 @@ import {
   parseTranscript,
   formatTranscriptMarkdown,
   formatSlashCommandError,
+  formatSkillsList,
 } from './utils.js';
 import type { RateLimitSnapshot } from './utils.js';
 
@@ -597,13 +598,23 @@ async function main(): Promise<void> {
           const textResult = 'result' in message ? (message as { result?: string }).result : null;
 
           if (resultSubtype?.startsWith('error')) {
-            hadError = true;
-            writeOutput({
-              status: 'error',
-              result: null,
-              error: formatSlashCommandError(textResult || 'Session command failed.', slashAvailableCommands),
-              newSessionId: slashSessionId,
-            });
+            // /skills: intercept the error and return a formatted skills list instead
+            if (trimmedPrompt === '/skills') {
+              const skillsDir = path.join(process.env.HOME || '/home/node', '.claude', 'skills');
+              writeOutput({
+                status: 'success',
+                result: formatSkillsList(slashAvailableCommands, skillsDir),
+                newSessionId: slashSessionId,
+              });
+            } else {
+              hadError = true;
+              writeOutput({
+                status: 'error',
+                result: null,
+                error: formatSlashCommandError(textResult || 'Session command failed.', slashAvailableCommands),
+                newSessionId: slashSessionId,
+              });
+            }
           } else {
             writeOutput({
               status: 'success',

@@ -5,6 +5,8 @@ import {
   parseTranscript,
   formatTranscriptMarkdown,
   formatSlashCommandError,
+  formatSkillsList,
+  discoverSkillCommands,
   writeOutput,
   writeProgress,
   OUTPUT_START_MARKER,
@@ -355,5 +357,44 @@ describe('formatSlashCommandError', () => {
   it('uses fallback error text when original is empty', () => {
     const result = formatSlashCommandError('Session command failed.', ['/compact']);
     expect(result).toContain('Available commands: /compact');
+  });
+});
+
+// ─── formatSkillsList ──────────────────────────────────────────────────────
+
+describe('formatSkillsList', () => {
+  it('includes built-in SDK and host commands even with empty args', () => {
+    const result = formatSkillsList([]);
+    expect(result).toContain('*Available Commands*');
+    expect(result).toContain('• /clear');
+    expect(result).toContain('• /compact');
+    expect(result).toContain('• /done');
+    expect(result).toContain('• /usage');
+  });
+
+  it('merges additional SDK commands from init message', () => {
+    const result = formatSkillsList(['/help', '/review']);
+    expect(result).toContain('• /help');
+    expect(result).toContain('• /review');
+    expect(result).toContain('• /compact');
+  });
+
+  it('deduplicates if SDK list includes a built-in command', () => {
+    const result = formatSkillsList(['/usage', '/compact']);
+    const usageCount = (result.match(/• \/usage/g) || []).length;
+    expect(usageCount).toBe(1);
+  });
+
+  it('sorts commands alphabetically', () => {
+    const result = formatSkillsList(['/zoom', '/alpha']);
+    const lines = result.split('\n').filter((l) => l.startsWith('• /'));
+    const commands = lines.map((l) => l.replace('• ', ''));
+    expect(commands).toEqual([...commands].sort());
+  });
+});
+
+describe('discoverSkillCommands', () => {
+  it('returns empty array for non-existent directory', () => {
+    expect(discoverSkillCommands('/nonexistent/path')).toEqual([]);
   });
 });
