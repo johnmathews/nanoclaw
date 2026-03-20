@@ -240,8 +240,8 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     timezone: TIMEZONE,
     deps: {
       sendMessage: (text) => channel.sendMessage(chatJid, text),
-      setTyping: (typing) =>
-        channel.setTyping?.(chatJid, typing) ?? Promise.resolve(),
+      setTyping: (typing, messageTs) =>
+        channel.setTyping?.(chatJid, typing, messageTs) ?? Promise.resolve(),
       runAgent: (prompt, onOutput) =>
         runAgent(group, prompt, chatJid, [], onOutput),
       closeStdin: () => queue.closeStdin(chatJid),

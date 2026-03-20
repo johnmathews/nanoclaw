@@ -76,6 +76,38 @@ export function formatSlashCommandError(errorText: string, availableCommands: st
   return `${errorText}\n\nAvailable commands: ${availableCommands.join(', ')}`;
 }
 
+/** Built-in SDK slash commands (stable across versions). */
+const SDK_COMMANDS = ['/clear', '/compact', '/done'];
+
+/** Host-side intercepted commands that don't go through the SDK. */
+const HOST_COMMANDS = ['/usage'];
+
+/**
+ * Discover installed skill commands from the skills directory.
+ * Each subdirectory under the skills path is a skill (e.g., 'status' → '/status').
+ */
+export function discoverSkillCommands(skillsDir: string): string[] {
+  try {
+    const fs = require('fs');
+    const entries = fs.readdirSync(skillsDir, { withFileTypes: true });
+    return entries
+      .filter((e: { isDirectory: () => boolean }) => e.isDirectory())
+      .map((e: { name: string }) => `/${e.name}`);
+  } catch {
+    return [];
+  }
+}
+
+export function formatSkillsList(sdkCommands: string[], skillsDir?: string): string {
+  const skillCommands = skillsDir ? discoverSkillCommands(skillsDir) : [];
+  // Merge all sources, deduplicate
+  const all = new Set([...SDK_COMMANDS, ...HOST_COMMANDS, ...sdkCommands, ...skillCommands]);
+  const sorted = [...all].sort();
+
+  const lines = sorted.map((cmd) => `• ${cmd}`);
+  return `*Available Commands*\n\n${lines.join('\n')}`;
+}
+
 export function sanitizeFilename(summary: string): string {
   return summary
     .toLowerCase()
