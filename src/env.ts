@@ -13,8 +13,16 @@ export function readEnvFile(keys: string[]): Record<string, string> {
   let content: string;
   try {
     content = fs.readFileSync(envFile, 'utf-8');
-  } catch (err) {
-    logger.debug({ err }, '.env file not found, using defaults');
+  } catch (err: unknown) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'EACCES') {
+      logger.error(
+        { path: envFile },
+        '.env file exists but is not readable — check ownership (should be owned by the service user)',
+      );
+    } else {
+      logger.debug({ err }, '.env file not found, using defaults');
+    }
     return {};
   }
 
