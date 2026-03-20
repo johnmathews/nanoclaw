@@ -527,6 +527,19 @@ async function main(): Promise<void> {
 
   if (isSessionSlashCommand) {
     log(`Handling session command: ${trimmedPrompt}`);
+
+    // /skills: handled entirely on the agent-runner side — no SDK call needed.
+    // Discovers installed skills from the filesystem and merges with known built-in commands.
+    if (trimmedPrompt === '/skills') {
+      const skillsDir = path.join(process.env.HOME || '/home/node', '.claude', 'skills');
+      writeOutput({
+        status: 'success',
+        result: formatSkillsList([], skillsDir),
+        newSessionId: sessionId,
+      });
+      return;
+    }
+
     let slashSessionId: string | undefined;
     let slashAvailableCommands: string[] = [];
     let hadError = false;
@@ -598,23 +611,13 @@ async function main(): Promise<void> {
           const textResult = 'result' in message ? (message as { result?: string }).result : null;
 
           if (resultSubtype?.startsWith('error')) {
-            // /skills: intercept the error and return a formatted skills list instead
-            if (trimmedPrompt === '/skills') {
-              const skillsDir = path.join(process.env.HOME || '/home/node', '.claude', 'skills');
-              writeOutput({
-                status: 'success',
-                result: formatSkillsList(slashAvailableCommands, skillsDir),
-                newSessionId: slashSessionId,
-              });
-            } else {
-              hadError = true;
-              writeOutput({
-                status: 'error',
-                result: null,
-                error: formatSlashCommandError(textResult || 'Session command failed.', slashAvailableCommands),
-                newSessionId: slashSessionId,
-              });
-            }
+            hadError = true;
+            writeOutput({
+              status: 'error',
+              result: null,
+              error: formatSlashCommandError(textResult || 'Session command failed.', slashAvailableCommands),
+              newSessionId: slashSessionId,
+            });
           } else {
             writeOutput({
               status: 'success',

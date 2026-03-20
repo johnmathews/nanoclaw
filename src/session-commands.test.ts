@@ -243,7 +243,7 @@ describe('handleSessionCommand', () => {
     expect(deps.advanceCursor).toHaveBeenCalledWith('100');
   });
 
-  it('denies intercepted command from unauthorized sender', async () => {
+  it('allows read-only intercepted command from any sender in non-main group', async () => {
     const deps = makeDeps({
       executeInterceptedCommand: vi.fn().mockResolvedValue('usage data'),
     });
@@ -256,8 +256,25 @@ describe('handleSessionCommand', () => {
       deps,
     });
     expect(result).toEqual({ handled: true, success: true });
-    expect(deps.executeInterceptedCommand).not.toHaveBeenCalled();
-    expect(deps.sendMessage).toHaveBeenCalledWith(
+    expect(deps.executeInterceptedCommand).toHaveBeenCalledWith('/usage');
+    expect(deps.sendMessage).not.toHaveBeenCalledWith(
+      'Session commands require admin access.',
+    );
+  });
+
+  it('allows /skills from any sender in non-main group', async () => {
+    const deps = makeDeps();
+    const result = await handleSessionCommand({
+      missedMessages: [makeMsg('\\skills', { is_from_me: false })],
+      isMainGroup: false,
+      groupName: 'test',
+      triggerPattern: trigger,
+      timezone: 'UTC',
+      deps,
+    });
+    expect(result).toEqual({ handled: true, success: true });
+    expect(deps.runAgent).toHaveBeenCalledWith('/skills', expect.any(Function));
+    expect(deps.sendMessage).not.toHaveBeenCalledWith(
       'Session commands require admin access.',
     );
   });
@@ -323,9 +340,7 @@ describe('handleSessionCommand', () => {
 
   it('passes messageTs to setTyping for intercepted commands', async () => {
     const deps = makeDeps({
-      executeInterceptedCommand: vi
-        .fn()
-        .mockResolvedValue('usage data'),
+      executeInterceptedCommand: vi.fn().mockResolvedValue('usage data'),
     });
     await handleSessionCommand({
       missedMessages: [makeMsg('\\usage', { id: 'slack-ts-456' })],
