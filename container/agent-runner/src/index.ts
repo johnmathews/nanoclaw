@@ -25,6 +25,7 @@ import {
   generateFallbackName,
   parseTranscript,
   formatTranscriptMarkdown,
+  formatSlashCommandError,
 } from './utils.js';
 import type { RateLimitSnapshot } from './utils.js';
 
@@ -531,6 +532,7 @@ async function main(): Promise<void> {
   if (isSessionSlashCommand) {
     log(`Handling session command: ${trimmedPrompt}`);
     let slashSessionId: string | undefined;
+    let slashAvailableCommands: string[] = [];
     let hadError = false;
     let resultEmitted = false;
     const slashRateLimits: RateLimitSnapshot[] = [];
@@ -559,6 +561,7 @@ async function main(): Promise<void> {
 
         if (message.type === 'system' && message.subtype === 'init') {
           slashSessionId = message.session_id;
+          slashAvailableCommands = (message as any).slash_commands ?? [];
           log(`Session after slash command: ${slashSessionId}`);
         }
 
@@ -603,7 +606,7 @@ async function main(): Promise<void> {
             writeOutput({
               status: 'error',
               result: null,
-              error: textResult || 'Session command failed.',
+              error: formatSlashCommandError(textResult || 'Session command failed.', slashAvailableCommands),
               newSessionId: slashSessionId,
             });
           } else {

@@ -71,6 +71,11 @@ export function writeProgress(toolName: string): void {
   console.log(PROGRESS_END_MARKER);
 }
 
+export function formatSlashCommandError(errorText: string, availableCommands: string[]): string {
+  if (availableCommands.length === 0) return errorText;
+  return `${errorText}\n\nAvailable commands: ${availableCommands.join(', ')}`;
+}
+
 export function sanitizeFilename(summary: string): string {
   return summary
     .toLowerCase()

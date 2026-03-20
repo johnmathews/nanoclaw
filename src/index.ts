@@ -370,7 +370,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
         logger.info(
           { group: group.name },
-          `Agent output: ${raw.slice(0, 200)}`,
+          `Agent output: ${raw.length} chars`,
         );
         if (text) {
           await channel.sendMessage(chatJid, text);
