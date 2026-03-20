@@ -27,6 +27,8 @@ isolated filesystem and memory.
 | `src/session-commands.ts`           | Session + host command extraction and handling             |
 | `store/messages.db`                 | SQLite database (messages, chats, tasks, sessions, state)  |
 | `groups/{name}/CLAUDE.md`           | Per-group memory (isolated)                                |
+| `groups/{name}/config.json`         | Per-group config (model override, etc.)                    |
+| `src/group-config.ts`               | Reads and resolves per-group config                        |
 | `container/skills/agent-browser.md` | Browser automation tool (available to all agents via Bash) |
 
 ## Skills
@@ -87,6 +89,19 @@ Slack channels show an :eyes: reaction on the triggering message while the agent
 don't trigger unread notifications — unlike posting a placeholder message, which does. The bot needs the
 `reactions:write` scope. The `setTyping` interface accepts an optional `messageTs` parameter (the Slack message
 timestamp to react to).
+
+## Per-Group Model Configuration
+
+Each group can override the default model by placing a `config.json` in its group folder:
+
+```json
+{ "model": "opus" }
+```
+
+Supported aliases: `opus` → `claude-opus-4-6`, `sonnet` → `claude-sonnet-4-6`, `haiku` → `claude-haiku-4-5-20251001`.
+Full model IDs are also accepted. The file is read on every container spawn (no cache), so edits take effect immediately.
+The resolved model is passed as `ANTHROPIC_MODEL` env var to the container. If no `config.json` or no `model` field, the
+SDK default is used.
 
 ## Image Attachment Pipeline
 

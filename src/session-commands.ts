@@ -4,6 +4,9 @@ import { logger } from './logger.js';
 /** Commands intercepted on the host (no container spawn). */
 const INTERCEPTED_COMMANDS = new Set(['/usage']);
 
+/** Read-only commands that any authorized sender can use (not just admins). */
+const READ_ONLY_COMMANDS = new Set(['/usage', '/skills', '/model']);
+
 /**
  * Extract a slash command from a message, stripping the trigger prefix if present.
  * Returns the normalized command (e.g., '/compact') or null if not a single-word command.
@@ -100,11 +103,12 @@ export async function handleSessionCommand(opts: {
 
   if (!command || !cmdMsg) return { handled: false };
 
-  if (!isSessionCommandAllowed(isMainGroup, cmdMsg.is_from_me === true)) {
-    // DENIED: send denial if the sender would normally be allowed to interact,
-    // then silently consume the command by advancing the cursor past it.
-    // Trade-off: other messages in the same batch are also consumed (cursor is
-    // a high-water mark). Acceptable for this narrow edge case.
+  // Read-only commands (e.g. /usage, /skills) skip auth — available to anyone.
+  // Session-modifying commands (e.g. /compact, /clear) require admin access.
+  if (
+    !READ_ONLY_COMMANDS.has(command) &&
+    !isSessionCommandAllowed(isMainGroup, cmdMsg.is_from_me === true)
+  ) {
     if (deps.canSenderInteract(cmdMsg)) {
       await deps.sendMessage('Session commands require admin access.');
     }

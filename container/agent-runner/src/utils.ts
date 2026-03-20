@@ -1,7 +1,8 @@
 /**
  * Extracted utility functions from the agent-runner.
- * Pure functions with no SDK or filesystem dependencies (except writeOutput/writeProgress which only use console.log).
  */
+
+import fs from 'fs';
 
 export interface ParsedMessage {
   role: 'user' | 'assistant';
@@ -88,11 +89,10 @@ const HOST_COMMANDS = ['/usage'];
  */
 export function discoverSkillCommands(skillsDir: string): string[] {
   try {
-    const fs = require('fs');
     const entries = fs.readdirSync(skillsDir, { withFileTypes: true });
     return entries
-      .filter((e: { isDirectory: () => boolean }) => e.isDirectory())
-      .map((e: { name: string }) => `/${e.name}`);
+      .filter((e) => e.isDirectory())
+      .map((e) => `/${e.name}`);
   } catch {
     return [];
   }
