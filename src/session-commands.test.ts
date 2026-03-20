@@ -307,6 +307,38 @@ describe('handleSessionCommand', () => {
     );
   });
 
+  it('passes messageTs to setTyping for SDK commands', async () => {
+    const deps = makeDeps();
+    await handleSessionCommand({
+      missedMessages: [makeMsg('/compact', { id: 'slack-ts-123' })],
+      isMainGroup: true,
+      groupName: 'test',
+      triggerPattern: trigger,
+      timezone: 'UTC',
+      deps,
+    });
+    expect(deps.setTyping).toHaveBeenCalledWith(true, 'slack-ts-123');
+    expect(deps.setTyping).toHaveBeenCalledWith(false);
+  });
+
+  it('passes messageTs to setTyping for intercepted commands', async () => {
+    const deps = makeDeps({
+      executeInterceptedCommand: vi
+        .fn()
+        .mockResolvedValue('usage data'),
+    });
+    await handleSessionCommand({
+      missedMessages: [makeMsg('\\usage', { id: 'slack-ts-456' })],
+      isMainGroup: true,
+      groupName: 'test',
+      triggerPattern: trigger,
+      timezone: 'UTC',
+      deps,
+    });
+    expect(deps.setTyping).toHaveBeenCalledWith(true, 'slack-ts-456');
+    expect(deps.setTyping).toHaveBeenCalledWith(false);
+  });
+
   it('allows is_from_me sender in non-main group', async () => {
     const deps = makeDeps();
     const result = await handleSessionCommand({

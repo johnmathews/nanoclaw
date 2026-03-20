@@ -47,7 +47,7 @@ export interface AgentResult {
 /** Dependencies injected by the orchestrator. */
 export interface SessionCommandDeps {
   sendMessage: (text: string) => Promise<void>;
-  setTyping: (typing: boolean) => Promise<void>;
+  setTyping: (typing: boolean, messageTs?: string) => Promise<void>;
   runAgent: (
     prompt: string,
     onOutput: (result: AgentResult) => Promise<void>,
@@ -115,9 +115,11 @@ export async function handleSessionCommand(opts: {
   // --- Intercepted commands (handled on host, no container needed) ---
   if (isInterceptedCommand(command) && deps.executeInterceptedCommand) {
     logger.info({ group: groupName, command }, 'Intercepted command');
+    await deps.setTyping(true, cmdMsg.id);
     const response = await deps.executeInterceptedCommand(command);
     await deps.sendMessage(response);
     deps.advanceCursor(cmdMsg.timestamp);
+    await deps.setTyping(false);
     return { handled: true, success: true };
   }
 
@@ -165,7 +167,7 @@ export async function handleSessionCommand(opts: {
   }
 
   // Forward the literal slash command as the prompt (no XML formatting)
-  await deps.setTyping(true);
+  await deps.setTyping(true, cmdMsg.id);
 
   let hadCmdError = false;
   const cmdOutput = await deps.runAgent(command, async (result) => {
