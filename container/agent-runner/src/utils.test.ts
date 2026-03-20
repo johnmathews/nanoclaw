@@ -4,6 +4,7 @@ import {
   generateFallbackName,
   parseTranscript,
   formatTranscriptMarkdown,
+  formatSlashCommandError,
   writeOutput,
   writeProgress,
   OUTPUT_START_MARKER,
@@ -336,5 +337,23 @@ describe('writeProgress', () => {
   it('outputs exactly 3 lines', () => {
     writeProgress('Bash');
     expect(logs).toHaveLength(3);
+  });
+});
+
+// ─── formatSlashCommandError ──────────────────────────────────────────────────
+
+describe('formatSlashCommandError', () => {
+  it('returns error unchanged when no commands available', () => {
+    expect(formatSlashCommandError('Unknown skill: skills', [])).toBe('Unknown skill: skills');
+  });
+
+  it('appends available commands to error message', () => {
+    const result = formatSlashCommandError('Unknown skill: skills', ['/compact', '/clear', '/done']);
+    expect(result).toBe('Unknown skill: skills\n\nAvailable commands: /compact, /clear, /done');
+  });
+
+  it('uses fallback error text when original is empty', () => {
+    const result = formatSlashCommandError('Session command failed.', ['/compact']);
+    expect(result).toContain('Available commands: /compact');
   });
 });
