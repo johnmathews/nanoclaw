@@ -27,11 +27,19 @@ with Sonnet (the SDK default). A file-based config was chosen over DB because:
   code changes.
 - **Graceful degradation:** Missing file → `{}`, invalid JSON → warn + `{}`,
   non-string model → `{}`. The container just gets the SDK default.
+- **Explicit SDK model passing:** Initially the model was only passed as an env
+  var (`ANTHROPIC_MODEL`) on the container, relying on the CLI subprocess to
+  read it. This was fragile — it depended on an implementation detail of how
+  the SDK spawns the CLI. Fixed by having the agent-runner read
+  `process.env.ANTHROPIC_MODEL` and pass it directly as `options.model` to
+  `query()`, which is the SDK's documented interface. The env var is still set
+  (belt and suspenders), but the explicit option is the primary mechanism.
 
 ## Files
 
 - `src/group-config.ts` — new module
 - `src/group-config.test.ts` — 14 tests
-- `src/container-runner.ts` — reads config, injects `ANTHROPIC_MODEL`
+- `src/container-runner.ts` — reads config, injects `ANTHROPIC_MODEL` env var
 - `src/container-runner.test.ts` — added mock for group-config
+- `container/agent-runner/src/index.ts` — reads env var, passes as `options.model`
 - `groups/slack_git-maintenance/config.json` — sets opus (gitignored)
