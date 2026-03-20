@@ -52,6 +52,11 @@ vi.mock('./mount-security.js', () => ({
   validateAdditionalMounts: vi.fn(() => []),
 }));
 
+// Mock group-config (default: no overrides)
+vi.mock('./group-config.js', () => ({
+  readGroupConfig: vi.fn(() => ({})),
+}));
+
 // Create a controllable fake ChildProcess
 function createFakeProcess() {
   const proc = new EventEmitter() as EventEmitter & {

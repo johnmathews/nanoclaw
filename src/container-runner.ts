@@ -27,6 +27,7 @@ import {
   stopContainer,
 } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
+import { readGroupConfig } from './group-config.js';
 import { validateAdditionalMounts } from './mount-security.js';
 import { readEnvFile } from './env.js';
 import { RegisteredGroup } from './types.js';
@@ -247,6 +248,7 @@ function buildVolumeMounts(
 function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
+  group: RegisteredGroup,
 ): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
@@ -279,6 +281,12 @@ function buildContainerArgs(
   }
   if (containerSecrets.GITHUB_TOKEN) {
     args.push('-e', `GITHUB_TOKEN=${containerSecrets.GITHUB_TOKEN}`);
+  }
+
+  // Per-group model override from groups/{folder}/config.json
+  const groupConfig = readGroupConfig(group.folder);
+  if (groupConfig.model) {
+    args.push('-e', `ANTHROPIC_MODEL=${groupConfig.model}`);
   }
 
   // Runtime-specific args for host gateway resolution
@@ -327,7 +335,7 @@ export async function runContainerAgent(
   const mounts = buildVolumeMounts(group, input.isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
-  const containerArgs = buildContainerArgs(mounts, containerName);
+  const containerArgs = buildContainerArgs(mounts, containerName, group);
 
   logger.debug(
     {
