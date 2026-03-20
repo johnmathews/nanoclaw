@@ -279,6 +279,23 @@ describe('handleSessionCommand', () => {
     );
   });
 
+  it('allows /model from any sender in non-main group', async () => {
+    const deps = makeDeps();
+    const result = await handleSessionCommand({
+      missedMessages: [makeMsg('\\model', { is_from_me: false })],
+      isMainGroup: false,
+      groupName: 'test',
+      triggerPattern: trigger,
+      timezone: 'UTC',
+      deps,
+    });
+    expect(result).toEqual({ handled: true, success: true });
+    expect(deps.runAgent).toHaveBeenCalledWith('/model', expect.any(Function));
+    expect(deps.sendMessage).not.toHaveBeenCalledWith(
+      'Session commands require admin access.',
+    );
+  });
+
   it('silently consumes denied command when sender cannot interact', async () => {
     const deps = makeDeps({
       canSenderInteract: vi.fn().mockReturnValue(false),

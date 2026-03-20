@@ -528,6 +528,7 @@ async function main(): Promise<void> {
   if (isSessionSlashCommand) {
     log(`Handling session command: ${trimmedPrompt}`);
 
+
     // /skills: handled entirely on the agent-runner side — no SDK call needed.
     // Discovers installed skills from the filesystem and merges with known built-in commands.
     if (trimmedPrompt === '/skills') {
@@ -540,8 +541,10 @@ async function main(): Promise<void> {
       return;
     }
 
+
     let slashSessionId: string | undefined;
     let slashAvailableCommands: string[] = [];
+    let slashModel: string | null = null;
     let hadError = false;
     let resultEmitted = false;
     const slashRateLimits: RateLimitSnapshot[] = [];
@@ -571,7 +574,7 @@ async function main(): Promise<void> {
         if (message.type === 'system' && message.subtype === 'init') {
           slashSessionId = message.session_id;
           slashAvailableCommands = (message as any).slash_commands ?? [];
-          log(`Session after slash command: ${slashSessionId}`);
+          slashModel = (message as any).model ?? null;
         }
 
         // Local commands (e.g. /usage, /cost) emit content via local_command_output
@@ -610,7 +613,15 @@ async function main(): Promise<void> {
           const resultSubtype = (message as { subtype?: string }).subtype;
           const textResult = 'result' in message ? (message as { result?: string }).result : null;
 
-          if (resultSubtype?.startsWith('error')) {
+          // /model: intercept the result (SDK returns "Unknown skill" as success)
+          // and replace with the actual model from the init message.
+          if (trimmedPrompt === '/model' && slashModel) {
+            writeOutput({
+              status: 'success',
+              result: `*Model:* ${slashModel}`,
+              newSessionId: slashSessionId,
+            });
+          } else if (resultSubtype?.startsWith('error')) {
             hadError = true;
             writeOutput({
               status: 'error',

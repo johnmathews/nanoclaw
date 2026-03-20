@@ -5,7 +5,7 @@ import { logger } from './logger.js';
 const INTERCEPTED_COMMANDS = new Set(['/usage']);
 
 /** Read-only commands that any authorized sender can use (not just admins). */
-const READ_ONLY_COMMANDS = new Set(['/usage', '/skills']);
+const READ_ONLY_COMMANDS = new Set(['/usage', '/skills', '/model']);
 
 /**
  * Extract a slash command from a message, stripping the trigger prefix if present.
@@ -105,7 +105,10 @@ export async function handleSessionCommand(opts: {
 
   // Read-only commands (e.g. /usage, /skills) skip auth — available to anyone.
   // Session-modifying commands (e.g. /compact, /clear) require admin access.
-  if (!READ_ONLY_COMMANDS.has(command) && !isSessionCommandAllowed(isMainGroup, cmdMsg.is_from_me === true)) {
+  if (
+    !READ_ONLY_COMMANDS.has(command) &&
+    !isSessionCommandAllowed(isMainGroup, cmdMsg.is_from_me === true)
+  ) {
     if (deps.canSenderInteract(cmdMsg)) {
       await deps.sendMessage('Session commands require admin access.');
     }
