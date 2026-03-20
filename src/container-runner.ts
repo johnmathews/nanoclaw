@@ -28,6 +28,7 @@ import {
 } from './container-runtime.js';
 import { detectAuthMode } from './credential-proxy.js';
 import { validateAdditionalMounts } from './mount-security.js';
+import { readEnvFile } from './env.js';
 import { RegisteredGroup } from './types.js';
 
 // Sentinel markers for robust output parsing (must match agent-runner)
@@ -269,9 +270,15 @@ function buildContainerArgs(
     args.push('-e', 'CLAUDE_CODE_OAUTH_TOKEN=placeholder');
   }
 
-  // Pass Parallel AI API key if available (for MCP servers inside container)
-  if (process.env.PARALLEL_API_KEY) {
-    args.push('-e', `PARALLEL_API_KEY=${process.env.PARALLEL_API_KEY}`);
+  // Pass optional secrets from .env into the container.
+  // Uses readEnvFile() (not process.env) because .env is intentionally
+  // kept out of the process environment to avoid leaking to all children.
+  const containerSecrets = readEnvFile(['PARALLEL_API_KEY', 'GITHUB_TOKEN']);
+  if (containerSecrets.PARALLEL_API_KEY) {
+    args.push('-e', `PARALLEL_API_KEY=${containerSecrets.PARALLEL_API_KEY}`);
+  }
+  if (containerSecrets.GITHUB_TOKEN) {
+    args.push('-e', `GITHUB_TOKEN=${containerSecrets.GITHUB_TOKEN}`);
   }
 
   // Runtime-specific args for host gateway resolution
@@ -584,11 +591,7 @@ export async function runContainerAgent(
         // Full input is only included at verbose level to avoid
         // persisting user conversation content on every non-zero exit.
         if (isVerbose) {
-          logLines.push(
-            `=== Input ===`,
-            JSON.stringify(input, null, 2),
-            ``,
-          );
+          logLines.push(`=== Input ===`, JSON.stringify(input, null, 2), ``);
         } else {
           logLines.push(
             `=== Input Summary ===`,
