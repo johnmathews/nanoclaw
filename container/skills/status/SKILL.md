@@ -7,17 +7,6 @@ description: Quick read-only health check — session context, workspace mounts,
 
 Generate a quick read-only status report of the current agent environment.
 
-**Main-channel check:** Only the main channel has `/workspace/project` mounted. Run:
-
-```bash
-test -d /workspace/project && echo "MAIN" || echo "NOT_MAIN"
-```
-
-If `NOT_MAIN`, respond with:
-> This command is available in your main chat only. Send `/status` there to check system status.
-
-Then stop — do not generate the report.
-
 ## How to gather the information
 
 Run the checks below and compile results into the report format.
@@ -27,7 +16,7 @@ Run the checks below and compile results into the report format.
 ```bash
 echo "Timestamp: $(date)"
 echo "Working dir: $(pwd)"
-echo "Channel: main"
+echo "Channel: ${NANOCLAW_GROUP:-unknown}"
 ```
 
 ### 2. Workspace and mount visibility
@@ -78,7 +67,7 @@ Present as a clean, readable message:
 🔍 *NanoClaw Status*
 
 *Session:*
-• Channel: main
+• Channel: {group name}
 • Time: 2026-03-14 09:30 UTC
 • Working dir: /workspace/group
 

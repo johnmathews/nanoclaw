@@ -5,7 +5,7 @@ import { logger } from './logger.js';
 const INTERCEPTED_COMMANDS = new Set(['/usage']);
 
 /** Read-only commands that any authorized sender can use (not just admins). */
-const READ_ONLY_COMMANDS = new Set(['/usage', '/skills', '/model']);
+const READ_ONLY_COMMANDS = new Set(['/usage', '/skills', '/model', '/status']);
 
 /**
  * Extract a slash command from a message, stripping the trigger prefix if present.

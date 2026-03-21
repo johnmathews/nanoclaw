@@ -283,6 +283,9 @@ function buildContainerArgs(
     args.push('-e', `GITHUB_TOKEN=${containerSecrets.GITHUB_TOKEN}`);
   }
 
+  // Group name — available to skills like /status
+  args.push('-e', `NANOCLAW_GROUP=${group.name}`);
+
   // Per-group model override from groups/{folder}/config.json
   const groupConfig = readGroupConfig(group.folder);
   if (groupConfig.model) {
