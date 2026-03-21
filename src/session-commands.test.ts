@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   extractCommand,
   isInterceptedCommand,
+  isReadOnlyCommand,
   handleSessionCommand,
   isSessionCommandAllowed,
 } from './session-commands.js';
@@ -72,6 +73,21 @@ describe('isInterceptedCommand', () => {
     expect(isInterceptedCommand('/clear')).toBe(false);
     expect(isInterceptedCommand('/done')).toBe(false);
     expect(isInterceptedCommand('/help')).toBe(false);
+  });
+});
+
+describe('isReadOnlyCommand', () => {
+  it('returns true for read-only commands', () => {
+    expect(isReadOnlyCommand('/usage')).toBe(true);
+    expect(isReadOnlyCommand('/skills')).toBe(true);
+    expect(isReadOnlyCommand('/model')).toBe(true);
+    expect(isReadOnlyCommand('/status')).toBe(true);
+  });
+
+  it('returns false for session-modifying commands', () => {
+    expect(isReadOnlyCommand('/compact')).toBe(false);
+    expect(isReadOnlyCommand('/clear')).toBe(false);
+    expect(isReadOnlyCommand('/done')).toBe(false);
   });
 });
 

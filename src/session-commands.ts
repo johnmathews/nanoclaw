@@ -31,6 +31,13 @@ export function isInterceptedCommand(command: string): boolean {
 }
 
 /**
+ * Check if a command is read-only (available to any authorized sender, not just admins).
+ */
+export function isReadOnlyCommand(command: string): boolean {
+  return READ_ONLY_COMMANDS.has(command);
+}
+
+/**
  * Check if a session command sender is authorized.
  * Allowed: main group (any sender), or trusted/admin sender (is_from_me) in any group.
  */
