@@ -114,62 +114,127 @@ function createSchema(database: Database.Database): void {
       resets_at INTEGER,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS schema_version (
+      version INTEGER PRIMARY KEY,
+      applied_at TEXT NOT NULL
+    );
   `);
 
-  // Add context_mode column if it doesn't exist (migration for existing DBs)
-  try {
-    database.exec(
-      `ALTER TABLE scheduled_tasks ADD COLUMN context_mode TEXT DEFAULT 'isolated'`,
-    );
-  } catch {
-    /* column already exists */
-  }
+  runMigrations(database);
+}
 
-  // Add is_bot_message column if it doesn't exist (migration for existing DBs)
-  try {
-    database.exec(
-      `ALTER TABLE messages ADD COLUMN is_bot_message INTEGER DEFAULT 0`,
+interface Migration {
+  version: number;
+  description: string;
+  up: (database: Database.Database) => void;
+}
+
+const migrations: Migration[] = [
+  {
+    version: 1,
+    description: 'Add context_mode to scheduled_tasks',
+    up: (database) => {
+      try {
+        database.exec(
+          `ALTER TABLE scheduled_tasks ADD COLUMN context_mode TEXT DEFAULT 'isolated'`,
+        );
+      } catch {
+        /* column already exists */
+      }
+    },
+  },
+  {
+    version: 2,
+    description: 'Add is_bot_message to messages',
+    up: (database) => {
+      try {
+        database.exec(
+          `ALTER TABLE messages ADD COLUMN is_bot_message INTEGER DEFAULT 0`,
+        );
+        // Backfill: mark existing bot messages that used the content prefix pattern
+        database
+          .prepare(
+            `UPDATE messages SET is_bot_message = 1 WHERE content LIKE ?`,
+          )
+          .run(`${ASSISTANT_NAME}:%`);
+      } catch {
+        /* column already exists */
+      }
+    },
+  },
+  {
+    version: 3,
+    description: 'Add channel and is_group to chats',
+    up: (database) => {
+      try {
+        database.exec(`ALTER TABLE chats ADD COLUMN channel TEXT`);
+        database.exec(
+          `ALTER TABLE chats ADD COLUMN is_group INTEGER DEFAULT 0`,
+        );
+        // Backfill from JID patterns
+        database.exec(
+          `UPDATE chats SET channel = 'whatsapp', is_group = 1 WHERE jid LIKE '%@g.us'`,
+        );
+        database.exec(
+          `UPDATE chats SET channel = 'whatsapp', is_group = 0 WHERE jid LIKE '%@s.whatsapp.net'`,
+        );
+        database.exec(
+          `UPDATE chats SET channel = 'discord', is_group = 1 WHERE jid LIKE 'dc:%'`,
+        );
+        database.exec(
+          `UPDATE chats SET channel = 'telegram', is_group = 1 WHERE jid LIKE 'tg:%'`,
+        );
+      } catch {
+        /* columns already exist */
+      }
+    },
+  },
+  {
+    version: 4,
+    description: 'Add is_main to registered_groups',
+    up: (database) => {
+      try {
+        database.exec(
+          `ALTER TABLE registered_groups ADD COLUMN is_main INTEGER DEFAULT 0`,
+        );
+        // Backfill: mark the group with folder 'main' as the main group
+        database.exec(
+          `UPDATE registered_groups SET is_main = 1 WHERE folder = 'main'`,
+        );
+      } catch {
+        /* column already exists */
+      }
+    },
+  },
+];
+
+function runMigrations(database: Database.Database): void {
+  const row = database
+    .prepare('SELECT MAX(version) as v FROM schema_version')
+    .get() as { v: number | null } | undefined;
+  const currentVersion = row?.v ?? 0;
+
+  const pending = migrations.filter((m) => m.version > currentVersion);
+  for (const migration of pending) {
+    logger.info(
+      { version: migration.version, description: migration.description },
+      'Running migration',
     );
-    // Backfill: mark existing bot messages that used the content prefix pattern
+    migration.up(database);
     database
-      .prepare(`UPDATE messages SET is_bot_message = 1 WHERE content LIKE ?`)
-      .run(`${ASSISTANT_NAME}:%`);
-  } catch {
-    /* column already exists */
+      .prepare('INSERT INTO schema_version (version, applied_at) VALUES (?, ?)')
+      .run(migration.version, new Date().toISOString());
   }
 
-  // Add channel and is_group columns if they don't exist (migration for existing DBs)
-  try {
-    database.exec(`ALTER TABLE chats ADD COLUMN channel TEXT`);
-    database.exec(`ALTER TABLE chats ADD COLUMN is_group INTEGER DEFAULT 0`);
-    // Backfill from JID patterns
-    database.exec(
-      `UPDATE chats SET channel = 'whatsapp', is_group = 1 WHERE jid LIKE '%@g.us'`,
+  if (pending.length > 0) {
+    logger.info(
+      {
+        migrationsRun: pending.length,
+        currentVersion: pending[pending.length - 1].version,
+      },
+      'Migrations complete',
     );
-    database.exec(
-      `UPDATE chats SET channel = 'whatsapp', is_group = 0 WHERE jid LIKE '%@s.whatsapp.net'`,
-    );
-    database.exec(
-      `UPDATE chats SET channel = 'discord', is_group = 1 WHERE jid LIKE 'dc:%'`,
-    );
-    database.exec(
-      `UPDATE chats SET channel = 'telegram', is_group = 1 WHERE jid LIKE 'tg:%'`,
-    );
-  } catch {
-    /* columns already exist */
-  }
-
-  // Add is_main column if it doesn't exist (migration for existing DBs)
-  try {
-    database.exec(
-      `ALTER TABLE registered_groups ADD COLUMN is_main INTEGER DEFAULT 0`,
-    );
-    // Backfill: mark the group with folder 'main' as the main group
-    database.exec(
-      `UPDATE registered_groups SET is_main = 1 WHERE folder = 'main'`,
-    );
-  } catch {
-    /* column already exists */
   }
 }
 
@@ -188,6 +253,22 @@ export function initDatabase(): void {
 export function _initTestDatabase(): void {
   db = new Database(':memory:');
   createSchema(db);
+}
+
+export function getSchemaVersion(): number {
+  const row = db
+    .prepare('SELECT MAX(version) as v FROM schema_version')
+    .get() as { v: number | null } | undefined;
+  return row?.v ?? 0;
+}
+
+export function getSchemaVersionHistory(): Array<{
+  version: number;
+  applied_at: string;
+}> {
+  return db
+    .prepare('SELECT version, applied_at FROM schema_version ORDER BY version')
+    .all() as Array<{ version: number; applied_at: string }>;
 }
 
 /**
