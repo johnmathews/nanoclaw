@@ -20,6 +20,8 @@ import {
   getRegisteredGroup,
   getTaskById,
   getRateLimits,
+  getSchemaVersion,
+  getSchemaVersionHistory,
   upsertRateLimit,
   setRegisteredGroup,
   storeChatMetadata,
@@ -1147,5 +1149,32 @@ describe('rate_limits', () => {
     upsertRateLimit({ status: 'allowed' });
     const rows = getRateLimits();
     expect(rows).toHaveLength(0);
+  });
+});
+
+describe('schema versioning', () => {
+  it('fresh database has all migrations applied', () => {
+    _initTestDatabase();
+    expect(getSchemaVersion()).toBe(4);
+  });
+
+  it('schema_version table tracks applied migrations', () => {
+    _initTestDatabase();
+    const rows = getSchemaVersionHistory();
+    expect(rows).toHaveLength(4);
+    expect(rows[0]).toHaveProperty('version', 1);
+    expect(rows[3]).toHaveProperty('version', 4);
+    // Each row should have a valid applied_at timestamp
+    for (const row of rows) {
+      expect(row.applied_at).toBeTruthy();
+      expect(new Date(row.applied_at).toISOString()).toBe(row.applied_at);
+    }
+  });
+
+  it('migrations are idempotent - running twice is safe', () => {
+    _initTestDatabase();
+    // Re-initializing should not fail (simulates the old try-catch behavior)
+    _initTestDatabase();
+    expect(getSchemaVersion()).toBe(4);
   });
 });
