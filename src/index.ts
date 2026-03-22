@@ -68,6 +68,7 @@ import {
 import {
   extractCommand,
   isInterceptedCommand,
+  isReadOnlyCommand,
   handleSessionCommand,
   isSessionCommandAllowed,
 } from './session-commands.js';
@@ -617,7 +618,9 @@ async function startMessageLoop(): Promise<void> {
 
             if (isInterceptedCommand(cmd)) {
               // Intercepted commands execute inline (no container needed).
+              // Read-only commands (e.g. /usage) skip auth — available to anyone.
               if (
+                isReadOnlyCommand(cmd) ||
                 isSessionCommandAllowed(
                   isMainGroup,
                   loopCmdMsg.is_from_me === true,
