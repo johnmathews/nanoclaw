@@ -3,12 +3,16 @@ name: CI
 on:
   pull_request:
     branches: [main]
+  push:
+    branches: [main]
 
 jobs:
   ci:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 50
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -21,5 +25,30 @@ jobs:
       - name: Typecheck
         run: npx tsc --noEmit
 
+      - name: Build
+        run: npm run build
+
       - name: Tests
         run: npx vitest run
+
+      - name: Rebase check (skill branches)
+        if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'skill/')
+        run: |
+          git fetch origin main --depth=50
+          MERGE_COMMITS=$(git log --merges origin/main..HEAD --oneline)
+          if [ -n "$MERGE_COMMITS" ]; then
+            echo "::error::Skill branch contains merge commits from main. Please rebase instead."
+            echo "$MERGE_COMMITS"
+            exit 1
+          fi
+
+      - name: Schema version check
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch origin main --depth=1
+          MAIN_MAX=$(git show origin/main:src/db.ts | grep -oP 'version:\s*\K\d+' | sort -rn | head -1 || echo "0")
+          PR_MAX=$(grep -oP 'version:\s*\K\d+' src/db.ts | sort -rn | head -1 || echo "0")
+          if [ -n "$MAIN_MAX" ] && [ -n "$PR_MAX" ] && [ "$PR_MAX" -lt "$MAIN_MAX" ]; then
+            echo "::error::PR schema version ($PR_MAX) is behind main ($MAIN_MAX). Rebase onto main first."
+            exit 1
+          fi
