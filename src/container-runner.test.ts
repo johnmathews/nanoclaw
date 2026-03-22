@@ -8,8 +8,10 @@ const OUTPUT_END_MARKER = '---NANOCLAW_OUTPUT_END---';
 
 // Mock config
 vi.mock('./config.js', () => ({
+  CONTAINER_CPU_LIMIT: '2',
   CONTAINER_IMAGE: 'nanoclaw-agent:latest',
   CONTAINER_MAX_OUTPUT_SIZE: 10485760,
+  CONTAINER_MEMORY_LIMIT: '2g',
   CONTAINER_TIMEOUT: 1800000, // 30min
   CREDENTIAL_PROXY_PORT: 3001,
   DATA_DIR: '/tmp/nanoclaw-test-data',
@@ -790,5 +792,37 @@ describe('container-runner large output truncation', () => {
     );
     expect(result.status).toBe('success');
     expect(result.newSessionId).toBe('sess-before');
+  });
+});
+
+describe('container-runner resource limits', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('passes --memory and --cpus flags to docker run', async () => {
+    const { spawn: spawnMock } = await import('child_process');
+
+    const resultPromise = runContainerAgent(testGroup, testInput, () => {});
+
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    await resultPromise;
+
+    const callArgs = (spawnMock as ReturnType<typeof vi.fn>).mock.calls[0];
+    const args: string[] = callArgs[1];
+    const memIdx = args.indexOf('--memory');
+    const cpuIdx = args.indexOf('--cpus');
+
+    expect(memIdx).toBeGreaterThan(-1);
+    expect(args[memIdx + 1]).toBe('2g');
+    expect(cpuIdx).toBeGreaterThan(-1);
+    expect(args[cpuIdx + 1]).toBe('2');
   });
 });

@@ -8,8 +8,10 @@ import os from 'os';
 import path from 'path';
 
 import {
+  CONTAINER_CPU_LIMIT,
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
+  CONTAINER_MEMORY_LIMIT,
   CONTAINER_TIMEOUT,
   CREDENTIAL_PROXY_PORT,
   DATA_DIR,
@@ -291,6 +293,10 @@ function buildContainerArgs(
   if (groupConfig.model) {
     args.push('-e', `ANTHROPIC_MODEL=${groupConfig.model}`);
   }
+
+  // Resource limits — prevent runaway agents from exhausting the host
+  args.push('--memory', CONTAINER_MEMORY_LIMIT);
+  args.push('--cpus', CONTAINER_CPU_LIMIT);
 
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
