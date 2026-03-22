@@ -134,6 +134,24 @@ After merging any skill branch, run `npm test` and verify all tests pass before 
 round-trip tests in `src/db.test.ts` specifically guard against dropped DB columns — if a merge breaks field persistence,
 these tests will catch it.
 
+CI enforces this automatically: skill branches with merge commits from main are rejected, and PRs whose schema version
+is behind main's are blocked.
+
+## DB Schema Versioning
+
+Migrations are tracked in a `schema_version` table. Each migration has a version number, description, and `up()` function
+in the `migrations` array in `src/db.ts`. The `runMigrations()` function checks the current version and runs only pending
+migrations. Each migration preserves try-catch for idempotency (safe to re-run against DBs that already have the columns).
+
+To add a new migration: append to the `migrations` array with the next version number. Existing DBs without the
+`schema_version` table are treated as version 0 — all migrations run on first startup.
+
+## Container Resource Limits
+
+Containers run with `--memory 2g --cpus 2` by default. Override via environment variables:
+- `CONTAINER_MEMORY_LIMIT` (default: `2g`)
+- `CONTAINER_CPU_LIMIT` (default: `2`)
+
 ## Slash Commands
 
 Any `\command` (or `/command`) from a channel is detected generically — no whitelist. The system has two categories:
