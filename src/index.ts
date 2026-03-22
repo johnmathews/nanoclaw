@@ -38,7 +38,6 @@ import {
   getNewMessages,
   getReactionsForChat,
   getReactionsForMessages,
-  getRateLimits,
   getRouterState,
   initDatabase,
   Reaction,
@@ -53,6 +52,7 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
+import { groupMessagesByJid } from './message-loop.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
 import {
   restoreRemoteControl,
@@ -99,6 +99,7 @@ let lastAgentTimestamp: Record<string, string> = {};
 // Used to roll back if the container dies after piping.
 let cursorBeforePipe: Record<string, string> = {};
 let messageLoopRunning = false;
+let stopping = false;
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
@@ -262,8 +263,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
               isTriggerAllowed(chatJid, msg.sender, loadSenderAllowlist())))
         );
       },
-      executeInterceptedCommand: (command) =>
-        executeHostCommand(command, { getRateLimits }),
+      executeInterceptedCommand: (command) => executeHostCommand(command),
     },
   });
   if (cmdResult.handled) return cmdResult.success;
@@ -567,32 +567,21 @@ async function startMessageLoop(): Promise<void> {
 
   logger.info(`NanoClaw running (trigger: @${ASSISTANT_NAME})`);
 
-  while (true) {
+  while (!stopping) {
     try {
       const jids = Object.keys(registeredGroups);
-      const { messages, newTimestamp } = getNewMessages(
-        jids,
-        lastTimestamp,
-        ASSISTANT_NAME,
-      );
+      const { messages } = getNewMessages(jids, lastTimestamp, ASSISTANT_NAME);
 
       if (messages.length > 0) {
         logger.info({ count: messages.length }, 'New messages');
 
-        // Advance the "seen" cursor for all messages immediately
-        lastTimestamp = newTimestamp;
-        saveState();
-
         // Deduplicate by group
-        const messagesByGroup = new Map<string, NewMessage[]>();
-        for (const msg of messages) {
-          const existing = messagesByGroup.get(msg.chat_jid);
-          if (existing) {
-            existing.push(msg);
-          } else {
-            messagesByGroup.set(msg.chat_jid, [msg]);
-          }
-        }
+        const messagesByGroup = groupMessagesByJid(messages);
+
+        // Track the max timestamp of messages we actually dispatch.
+        // Only advance the global cursor past dispatched messages — messages
+        // for disconnected channels stay in the DB for the next poll cycle.
+        let maxDispatchedTimestamp = '';
 
         for (const [chatJid, groupMessages] of messagesByGroup) {
           const group = registeredGroups[chatJid];
@@ -602,6 +591,14 @@ async function startMessageLoop(): Promise<void> {
           if (!channel) {
             logger.warn({ chatJid }, 'No channel owns JID, skipping messages');
             continue;
+          }
+
+          // Channel found — this group's messages will be dispatched.
+          // Track the max timestamp for deferred cursor advance.
+          const groupMaxTs =
+            groupMessages[groupMessages.length - 1]?.timestamp || '';
+          if (groupMaxTs > maxDispatchedTimestamp) {
+            maxDispatchedTimestamp = groupMaxTs;
           }
 
           const isMainGroup = group.isMain === true;
@@ -630,7 +627,7 @@ async function startMessageLoop(): Promise<void> {
                   { group: group.name, command: cmd },
                   'Intercepted command (inline)',
                 );
-                executeHostCommand(cmd, { getRateLimits })
+                executeHostCommand(cmd)
                   .then((response) => channel.sendMessage(chatJid, response))
                   .catch((err) =>
                     logger.error({ chatJid, err }, 'Intercepted command error'),
@@ -731,12 +728,20 @@ async function startMessageLoop(): Promise<void> {
             queue.enqueueMessageCheck(chatJid);
           }
         }
+
+        // Advance the global "seen" cursor only past messages we dispatched.
+        // Messages for disconnected channels stay behind the cursor for retry.
+        if (maxDispatchedTimestamp > lastTimestamp) {
+          lastTimestamp = maxDispatchedTimestamp;
+          saveState();
+        }
       }
     } catch (err) {
       logger.error({ err }, 'Error in message loop');
     }
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
   }
+  logger.info('Message loop stopped cleanly');
 }
 
 /**
@@ -803,6 +808,7 @@ async function main(): Promise<void> {
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
+    stopping = true;
     proxyServer.close();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
