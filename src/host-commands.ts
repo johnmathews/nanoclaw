@@ -1,12 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { TIMEZONE } from './config.js';
-import type { RateLimitRow } from './db.js';
 import { logger } from './logger.js';
-
-export interface HostCommandDeps {
-  getRateLimits: () => RateLimitRow[];
-}
 
 const RATE_LIMIT_LABELS: Record<string, string> = {
   five_hour: 'Current session',
@@ -14,12 +9,6 @@ const RATE_LIMIT_LABELS: Record<string, string> = {
   seven_day_opus: 'Current week (Opus only)',
   seven_day_sonnet: 'Current week (Sonnet only)',
   extra_usage: 'Extra usage credits',
-};
-
-const STATUS_LABELS: Record<string, string> = {
-  allowed: 'OK',
-  allowed_warning: 'Approaching limit',
-  rejected: 'Rate limited',
 };
 
 function formatResetTime(resetTime: string | number, timezone: string): string {
@@ -98,7 +87,7 @@ const CREDENTIALS_PATH = path.join(
   '.credentials.json',
 );
 
-const TOKEN_REFRESH_URL = 'https://platform.claude.com/v1/oauth/token';
+const TOKEN_REFRESH_URL = 'https://console.anthropic.com/v1/oauth/token';
 const OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 // Refresh 5 minutes before expiry to avoid race conditions
 const REFRESH_BUFFER_MS = 5 * 60 * 1000;
@@ -138,16 +127,14 @@ async function refreshOAuthToken(
   if (!refreshToken) return null;
 
   try {
-    const body = new URLSearchParams({
-      grant_type: 'refresh_token',
-      refresh_token: refreshToken,
-      client_id: OAUTH_CLIENT_ID,
-    });
-
     const resp = await fetch(TOKEN_REFRESH_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: body.toString(),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: OAUTH_CLIENT_ID,
+      }),
     });
 
     if (!resp.ok) {
@@ -191,23 +178,63 @@ async function getValidAccessToken(): Promise<string | null> {
     if (refreshed) {
       creds = refreshed;
     } else {
-      // Token is expired and refresh failed — return null so we fall back
-      if (Date.now() >= expiresAt) return null;
+      // Refresh failed — re-read credentials.json in case another process
+      // (e.g. Claude Code) refreshed the token since we last read it.
+      const reread = readCredentials();
+      if (
+        reread?.claudeAiOauth?.accessToken &&
+        reread.claudeAiOauth.accessToken !== creds.claudeAiOauth.accessToken
+      ) {
+        logger.debug('Picked up externally refreshed token');
+        creds = reread;
+      } else if (reread?.claudeAiOauth?.refreshToken) {
+        // Same access token but try refresh once more after a brief pause
+        // (covers transient network errors and rate-limit backoff)
+        await new Promise((r) => setTimeout(r, 2000));
+        const retried = await refreshOAuthToken(reread);
+        if (retried) {
+          creds = retried;
+        } else if (Date.now() >= expiresAt) {
+          return null;
+        }
+      } else if (Date.now() >= expiresAt) {
+        return null;
+      }
     }
   }
 
   return creds.claudeAiOauth.accessToken;
 }
 
-async function fetchUsageFromApi(): Promise<UsageApiResponse | null> {
-  const token = await getValidAccessToken();
-  if (!token) return null;
+/** Why the usage API call failed — used to give actionable error messages. */
+type UsageFailure =
+  | { reason: 'no_credentials' }
+  | { reason: 'token_expired' }
+  | { reason: 'api_error'; status: number }
+  | { reason: 'network_error'; message: string };
 
-  const resp = await fetch('https://console.anthropic.com/api/oauth/usage', {
-    headers: { 'x-api-key': token },
+async function fetchUsageFromApi(): Promise<
+  { ok: true; data: UsageApiResponse } | { ok: false; failure: UsageFailure }
+> {
+  const token = await getValidAccessToken();
+  if (!token) {
+    const creds = readCredentials();
+    if (!creds?.claudeAiOauth?.accessToken) {
+      return { ok: false, failure: { reason: 'no_credentials' } };
+    }
+    return { ok: false, failure: { reason: 'token_expired' } };
+  }
+
+  const resp = await fetch('https://api.anthropic.com/api/oauth/usage', {
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'anthropic-beta': 'oauth-2025-04-20',
+    },
   });
-  if (!resp.ok) return null;
-  return (await resp.json()) as UsageApiResponse;
+  if (!resp.ok) {
+    return { ok: false, failure: { reason: 'api_error', status: resp.status } };
+  }
+  return { ok: true, data: (await resp.json()) as UsageApiResponse };
 }
 
 const DISPLAY_ORDER = [
@@ -242,64 +269,51 @@ function formatApiUsage(data: UsageApiResponse): string {
     : 'No usage data available.';
 }
 
-// --- DB-based fallback ---
-
-function formatRateLimitSection(row: RateLimitRow): string {
-  const label = RATE_LIMIT_LABELS[row.rate_limit_type] || row.rate_limit_type;
-  const lines: string[] = [];
-
-  lines.push(`*${label}*`);
-
-  if (row.utilization != null) {
-    lines.push(renderProgressBar(row.utilization));
-  } else {
-    lines.push(STATUS_LABELS[row.status] || row.status);
+function formatUsageFailure(failure: UsageFailure): string {
+  switch (failure.reason) {
+    case 'no_credentials':
+      return [
+        '*Usage unavailable — no OAuth credentials found.*',
+        '',
+        'Run `claude` on the server to authenticate, then try again.',
+      ].join('\n');
+    case 'token_expired':
+      return [
+        '*Usage unavailable — OAuth token expired and refresh failed.*',
+        '',
+        'Run `claude /login` on the server to re-authenticate, then try again.',
+      ].join('\n');
+    case 'api_error':
+      return [
+        `*Usage unavailable — API returned ${failure.status}.*`,
+        '',
+        failure.status === 429
+          ? 'Rate limited. Wait a minute and try again.'
+          : 'Run `claude /login` on the server to re-authenticate, then try again.',
+      ].join('\n');
+    case 'network_error':
+      return [
+        '*Usage unavailable — network error.*',
+        '',
+        `${failure.message}`,
+      ].join('\n');
   }
-
-  if (row.resets_at) {
-    lines.push(formatResetTime(row.resets_at, TIMEZONE));
-  }
-
-  return lines.join('\n');
-}
-
-export function executeUsageCommand(deps: HostCommandDeps): string {
-  const rows = deps.getRateLimits();
-
-  if (rows.length === 0) {
-    return 'No usage data yet. Send a message first — rate limits appear after the first invocation.';
-  }
-
-  const order = [
-    'five_hour',
-    'seven_day',
-    'seven_day_opus',
-    'seven_day_sonnet',
-  ];
-  const sorted = [...rows].sort((a, b) => {
-    const ai = order.indexOf(a.rate_limit_type);
-    const bi = order.indexOf(b.rate_limit_type);
-    return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
-  });
-
-  return sorted.map(formatRateLimitSection).join('\n\n');
 }
 
 // --- Command dispatch ---
 
-export async function executeHostCommand(
-  command: string,
-  deps: HostCommandDeps,
-): Promise<string> {
+export async function executeHostCommand(command: string): Promise<string> {
   if (command === '/usage') {
-    // Try API first, fall back to DB-stored rate limit events
     try {
-      const apiData = await fetchUsageFromApi();
-      if (apiData) return formatApiUsage(apiData);
+      const result = await fetchUsageFromApi();
+      if (result.ok) return formatApiUsage(result.data);
+      logger.debug({ failure: result.failure }, 'Usage API failed');
+      return formatUsageFailure(result.failure);
     } catch (err) {
-      logger.debug({ err }, 'Usage API fetch failed, falling back to DB');
+      const message = err instanceof Error ? err.message : String(err);
+      logger.debug({ err }, 'Usage API fetch threw');
+      return formatUsageFailure({ reason: 'network_error', message });
     }
-    return executeUsageCommand(deps);
   }
   return `Unknown command: ${command}`;
 }
