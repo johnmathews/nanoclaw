@@ -277,7 +277,11 @@ function buildContainerArgs(
   // Pass optional secrets from .env into the container.
   // Uses readEnvFile() (not process.env) because .env is intentionally
   // kept out of the process environment to avoid leaking to all children.
-  const containerSecrets = readEnvFile(['PARALLEL_API_KEY', 'GITHUB_TOKEN', 'DOCS_MCP_URL']);
+  const containerSecrets = readEnvFile([
+    'PARALLEL_API_KEY',
+    'GITHUB_TOKEN',
+    'DOCS_MCP_URL',
+  ]);
   if (containerSecrets.PARALLEL_API_KEY) {
     args.push('-e', `PARALLEL_API_KEY=${containerSecrets.PARALLEL_API_KEY}`);
   }

@@ -105,7 +105,9 @@ describe('isReadOnlyCommand', () => {
       expect(isSessionCommandAllowed(false, false)).toBe(false);
       // ...but the combined gate (isReadOnlyCommand || isSessionCommandAllowed)
       // must still allow the command through
-      expect(isReadOnlyCommand(cmd) || isSessionCommandAllowed(false, false)).toBe(true);
+      expect(
+        isReadOnlyCommand(cmd) || isSessionCommandAllowed(false, false),
+      ).toBe(true);
     }
   });
 });
