@@ -118,6 +118,40 @@ describe('StatusTracker', () => {
       await tracker.flush();
       expect(deps.sendReaction).not.toHaveBeenCalled();
     });
+
+    it('skips reactions when channel has native typing indicators', async () => {
+      const nativeDeps = {
+        ...makeDeps(),
+        hasNativeTyping: vi.fn(() => true),
+      };
+      const nativeTracker = new StatusTracker(nativeDeps);
+
+      const result = nativeTracker.markReceived(
+        'msg1',
+        'main@s.whatsapp.net',
+        false,
+      );
+      expect(result).toBe(false);
+      await nativeTracker.flush();
+      expect(nativeDeps.sendReaction).not.toHaveBeenCalled();
+    });
+
+    it('sends reactions when hasNativeTyping returns false', async () => {
+      const nonNativeDeps = {
+        ...makeDeps(),
+        hasNativeTyping: vi.fn(() => false),
+      };
+      const nonNativeTracker = new StatusTracker(nonNativeDeps);
+
+      const result = nonNativeTracker.markReceived(
+        'msg1',
+        'main@s.whatsapp.net',
+        false,
+      );
+      expect(result).toBe(true);
+      await nonNativeTracker.flush();
+      expect(nonNativeDeps.sendReaction).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('duplicate tracking', () => {

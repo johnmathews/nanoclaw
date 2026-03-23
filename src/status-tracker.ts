@@ -57,6 +57,8 @@ export interface StatusTrackerDeps {
   sendMessage: (chatJid: string, text: string) => Promise<void>;
   isMainGroup: (chatJid: string) => boolean;
   isContainerAlive: (chatJid: string) => boolean;
+  /** If true, the channel has native typing indicators and status reactions are unnecessary. */
+  hasNativeTyping?: (chatJid: string) => boolean;
 }
 
 export class StatusTracker {
@@ -72,6 +74,7 @@ export class StatusTracker {
 
   markReceived(messageId: string, chatJid: string, fromMe: boolean): boolean {
     if (!this.deps.isMainGroup(chatJid)) return false;
+    if (this.deps.hasNativeTyping?.(chatJid)) return false;
     if (this.tracked.has(messageId)) return false;
 
     const msg: TrackedMessage = {

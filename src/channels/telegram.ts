@@ -43,6 +43,7 @@ async function sendTelegramMessage(
 
 export class TelegramChannel implements Channel {
   name = 'telegram';
+  hasNativeTyping = true;
 
   private bot: Bot | null = null;
   private opts: TelegramChannelOpts;

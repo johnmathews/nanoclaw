@@ -82,13 +82,29 @@ The agent runs on its own WhatsApp Business account (`ASSISTANT_HAS_OWN_NUMBER=t
 `git remote add whatsapp https://github.com/qwibitai/nanoclaw-whatsapp.git && git fetch whatsapp main && (git merge whatsapp/main || { git checkout --theirs package-lock.json && git add package-lock.json && git merge --continue; }) && npm run build`)
 to install it. Existing auth credentials and groups are preserved.
 
-## Slack Working Indicator
+## Channel Typing Indicators
 
-Slack channels show an :eyes: reaction on the triggering message while the agent works. The reaction is added via
-`setTyping(true, messageTs)` and removed when the first response is sent or `setTyping(false)` is called. Reactions
-don't trigger unread notifications — unlike posting a placeholder message, which does. The bot needs the
-`reactions:write` scope. The `setTyping` interface accepts an optional `messageTs` parameter (the Slack message
-timestamp to react to).
+Channels declare `hasNativeTyping = true` if they have built-in typing/working indicators. This prevents the
+StatusTracker from sending redundant emoji reactions (which can also cause feedback loops).
+
+- **WhatsApp**: Native `sendPresenceUpdate('composing')` — ephemeral typing bubble
+- **Telegram**: Native `sendChatAction('typing')` — ephemeral typing indicator
+- **Slack**: `:eyes:` reaction added via `setTyping(true, messageTs)`, removed on first response or `setTyping(false)`
+
+The StatusTracker's progress reactions (received/thinking/working/done) are only sent for channels where
+`hasNativeTyping` is false or undefined. Currently all channels have native indicators, so StatusTracker reactions
+are disabled. The bot needs the `reactions:write` scope for the Slack `:eyes:` reaction.
+
+## Session Management
+
+The Claude Agent SDK stores conversation history in `.jsonl` session files under
+`data/sessions/{group}/.claude/projects/-workspace-group/`. The SDK has built-in auto-compaction that triggers
+when the session approaches the context window limit. Users can also send `/compact` to manually summarize history,
+or `/clear` to start a fresh session.
+
+**Host-side safety net**: Before resuming a session, the host checks the session file size. If it exceeds 10MB,
+the session is automatically cleared to prevent prompt-too-long deadlocks (where the session is too large for any
+request, including `/compact`, to succeed).
 
 ## Per-Group Model Configuration
 

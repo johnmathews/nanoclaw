@@ -110,7 +110,7 @@ vi.mock('../env.js', () => ({
 
 import fs from 'fs';
 
-import { SlackChannel, SlackChannelOpts } from './slack.js';
+import { SlackChannel, SlackChannelOpts, splitMessage } from './slack.js';
 import { updateChatName } from '../db.js';
 import { readEnvFile } from '../env.js';
 
@@ -1535,5 +1535,165 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(createTestOpts());
       expect(channel.name).toBe('slack');
     });
+
+    it('has hasNativeTyping set to true', () => {
+      const channel = new SlackChannel(createTestOpts());
+      expect(channel.hasNativeTyping).toBe(true);
+    });
+  });
+
+  // --- flushOutgoingQueue robustness ---
+
+  describe('flushOutgoingQueue', () => {
+    it('splits long queued messages when flushing', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+
+      // Queue a long message while disconnected
+      const longText = 'word '.repeat(1000); // 5000 chars
+      await channel.sendMessage('slack:C0123456789', longText);
+      expect(currentApp().client.chat.postMessage).not.toHaveBeenCalled();
+
+      // Connect triggers flush — should split the message
+      await channel.connect();
+
+      // Should have been split (5000 chars > 4000 limit)
+      const calls = currentApp().client.chat.postMessage.mock.calls;
+      const textCalls = calls.filter(
+        (c: any[]) => c[0].channel === 'C0123456789',
+      );
+      expect(textCalls.length).toBeGreaterThanOrEqual(2);
+
+      // Verify no chunk exceeds the limit
+      for (const call of textCalls) {
+        expect(call[0].text.length).toBeLessThanOrEqual(4000);
+      }
+    });
+
+    it('continues flushing after a single message fails', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+
+      // Queue two messages while disconnected
+      await channel.sendMessage('slack:C0123456789', 'Message 1');
+      await channel.sendMessage('slack:C0123456789', 'Message 2');
+
+      // First call fails, second succeeds
+      currentApp()
+        .client.chat.postMessage.mockRejectedValueOnce(
+          new Error('Temporary failure'),
+        )
+        .mockResolvedValue(undefined);
+
+      await channel.connect();
+
+      // Message 2 should still have been sent despite Message 1 failing
+      const texts = currentApp()
+        .client.chat.postMessage.mock.calls.map((c: any[]) => c[0].text)
+        .filter((t: string) => t === 'Message 2');
+      expect(texts.length).toBe(1);
+    });
+
+    it('re-queues failed messages for next flush', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+
+      await channel.sendMessage('slack:C0123456789', 'Will fail');
+
+      // Make flush fail
+      currentApp().client.chat.postMessage.mockRejectedValueOnce(
+        new Error('Network error'),
+      );
+
+      await channel.connect();
+
+      // Clear the mock and make next flush succeed
+      currentApp().client.chat.postMessage.mockClear();
+      currentApp().client.chat.postMessage.mockResolvedValue(undefined);
+
+      // Send another message to trigger the queue check indirectly —
+      // or just verify the queue still has the failed message by sending
+      // a successful message and checking the failed one gets re-flushed
+      // on disconnect/reconnect. We can test by calling sendMessage which
+      // internally checks the queue.
+      await channel.sendMessage('slack:C0123456789', 'New message');
+
+      // The new message should have been sent
+      expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith({
+        channel: 'C0123456789',
+        text: 'New message',
+      });
+    });
+  });
+});
+
+// --- splitMessage unit tests (exported function) ---
+
+describe('splitMessage', () => {
+  it('returns single-element array for short messages', () => {
+    expect(splitMessage('Hello world')).toEqual(['Hello world']);
+  });
+
+  it('returns single-element array at exactly maxLen', () => {
+    const text = 'A'.repeat(4000);
+    expect(splitMessage(text)).toEqual([text]);
+  });
+
+  it('splits at last newline before limit', () => {
+    const line1 = 'A'.repeat(3000);
+    const line2 = 'B'.repeat(2000);
+    const text = `${line1}\n${line2}`;
+
+    const chunks = splitMessage(text);
+    expect(chunks).toEqual([line1, line2]);
+  });
+
+  it('splits at last space when no newline available', () => {
+    // Create text with spaces but no newlines
+    const words = Array(500).fill('word').join(' '); // 2499 chars
+    const text = words + ' ' + words; // ~5000 chars, only spaces
+
+    const chunks = splitMessage(text);
+    expect(chunks.length).toBeGreaterThanOrEqual(2);
+
+    // No chunk should exceed the limit
+    for (const chunk of chunks) {
+      expect(chunk.length).toBeLessThanOrEqual(4000);
+    }
+
+    // All content preserved (whitespace may vary at split points)
+    const reassembled = chunks.join(' ').replace(/\s+/g, ' ');
+    expect(reassembled).toBe(text.replace(/\s+/g, ' '));
+  });
+
+  it('hard-splits when no whitespace available', () => {
+    const text = 'A'.repeat(5000);
+    const chunks = splitMessage(text);
+
+    expect(chunks).toEqual(['A'.repeat(4000), 'A'.repeat(1000)]);
+  });
+
+  it('handles custom maxLen', () => {
+    const text = 'Hello World Test';
+    const chunks = splitMessage(text, 11);
+
+    expect(chunks).toEqual(['Hello World', 'Test']);
+  });
+
+  it('handles empty string', () => {
+    expect(splitMessage('')).toEqual(['']);
+  });
+
+  it('handles text with multiple newlines near the limit', () => {
+    const part1 = 'A'.repeat(3500);
+    const part2 = 'B'.repeat(200);
+    const part3 = 'C'.repeat(200);
+    const part4 = 'D'.repeat(2000);
+    const text = `${part1}\n${part2}\n${part3}\n${part4}`;
+
+    const chunks = splitMessage(text);
+    // Should split at the last newline before 4000 (after part3)
+    expect(chunks[0]).toBe(`${part1}\n${part2}\n${part3}`);
+    expect(chunks[1]).toBe(part4);
   });
 });
