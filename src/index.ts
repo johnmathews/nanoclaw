@@ -4,6 +4,7 @@ import path from 'path';
 import {
   ASSISTANT_NAME,
   CREDENTIAL_PROXY_PORT,
+  DATA_DIR,
   IDLE_TIMEOUT,
   POLL_INTERVAL,
   TIMEZONE,
@@ -45,6 +46,7 @@ import {
   upsertRateLimit,
   setRouterState,
   setSession,
+  deleteSession,
   storeChatMetadata,
   storeMessage,
   storeReaction,
@@ -444,7 +446,44 @@ async function runAgent(
   onProgress?: (text: string) => void,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
-  const sessionId = sessions[group.folder];
+  let sessionId: string | undefined = sessions[group.folder];
+
+  // Safety net: if the session file is dangerously large, clear it to prevent
+  // prompt-too-long deadlocks. The SDK auto-compacts between turns, but a flood
+  // of messages (e.g. a reaction loop) can overwhelm it.
+  if (sessionId) {
+    const sessionFile = path.join(
+      DATA_DIR,
+      'sessions',
+      group.folder,
+      '.claude',
+      'projects',
+      '-workspace-group',
+      `${sessionId}.jsonl`,
+    );
+    try {
+      const stat = fs.statSync(sessionFile);
+      const sizeMB = stat.size / (1024 * 1024);
+      if (sizeMB > 10) {
+        logger.warn(
+          { group: group.name, sessionId, sizeMB: sizeMB.toFixed(1) },
+          'Session file too large, clearing to prevent prompt-too-long deadlock',
+        );
+        fs.unlinkSync(sessionFile);
+        // Also remove subagents directory if it exists
+        const subagentsDir = path.join(
+          path.dirname(sessionFile),
+          sessionId,
+        );
+        fs.rmSync(subagentsDir, { recursive: true, force: true });
+        delete sessions[group.folder];
+        deleteSession(group.folder);
+        sessionId = undefined;
+      }
+    } catch {
+      // File doesn't exist or can't be read — fine, session will start fresh
+    }
+  }
 
   // Update tasks snapshot for container to read (filtered by group)
   const tasks = getAllTasks();

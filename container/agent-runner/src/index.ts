@@ -438,6 +438,19 @@ async function runQuery(
       log(`Task notification: task=${tn.task_id} status=${tn.status} summary=${tn.summary}`);
     }
 
+    // Log compaction events for visibility
+    if (message.type === 'system' && (message as { subtype?: string }).subtype === 'compact_boundary') {
+      const cb = message as { compact_metadata?: { trigger?: string; pre_tokens?: number } };
+      log(`Compaction: trigger=${cb.compact_metadata?.trigger} pre_tokens=${cb.compact_metadata?.pre_tokens}`);
+    }
+
+    if (message.type === 'system' && (message as { subtype?: string }).subtype === 'status') {
+      const st = message as { status?: string };
+      if (st.status === 'compacting') {
+        log('Session auto-compacting...');
+      }
+    }
+
     // Capture rate limit info from the SDK (plan utilization, reset times)
     if ((message as { type: string }).type === 'rate_limit_event') {
       const rle = message as { rate_limit_info?: {
