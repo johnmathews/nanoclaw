@@ -1601,10 +1601,9 @@ describe('SlackChannel', () => {
       await channel.sendMessage('slack:C0123456789', 'Will fail');
 
       // Make flush fail
-      currentApp()
-        .client.chat.postMessage.mockRejectedValueOnce(
-          new Error('Network error'),
-        );
+      currentApp().client.chat.postMessage.mockRejectedValueOnce(
+        new Error('Network error'),
+      );
 
       await channel.connect();
 

@@ -42,7 +42,10 @@ const MAX_MESSAGE_LENGTH = 4000;
  * Prefers breaking at newlines, then spaces, to avoid splitting mid-word
  * or mid-codeblock.
  */
-export function splitMessage(text: string, maxLen = MAX_MESSAGE_LENGTH): string[] {
+export function splitMessage(
+  text: string,
+  maxLen = MAX_MESSAGE_LENGTH,
+): string[] {
   if (text.length <= maxLen) return [text];
 
   const chunks: string[] = [];

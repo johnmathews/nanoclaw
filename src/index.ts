@@ -471,10 +471,7 @@ async function runAgent(
         );
         fs.unlinkSync(sessionFile);
         // Also remove subagents directory if it exists
-        const subagentsDir = path.join(
-          path.dirname(sessionFile),
-          sessionId,
-        );
+        const subagentsDir = path.join(path.dirname(sessionFile), sessionId);
         fs.rmSync(subagentsDir, { recursive: true, force: true });
         delete sessions[group.folder];
         deleteSession(group.folder);
