@@ -48,6 +48,7 @@ export interface WhatsAppChannelOpts {
 
 export class WhatsAppChannel implements Channel {
   name = 'whatsapp';
+  hasNativeTyping = true;
 
   private sock!: WASocket;
   private connected = false;
@@ -337,12 +338,16 @@ export class WhatsAppChannel implements Channel {
             ? new Date(Number(reaction.senderTimestampMs)).toISOString()
             : new Date().toISOString();
 
-          // Detect if the reactor is the bot itself
+          // Detect if the reactor is the bot itself.
+          // In DMs (ASSISTANT_HAS_OWN_NUMBER), reaction.key has no participant
+          // and remoteJid is the OTHER person's JID, so JID comparison alone
+          // misidentifies bot reactions as user reactions. fromMe is reliable.
           const botPhoneJid = this.sock.user?.id
             ?.replace(/:.*@/, '@')
             ?.replace('@lid', '@s.whatsapp.net');
           const botLid = this.sock.user?.lid?.replace(/:.*@/, '@');
           const isFromMe =
+            reaction.key?.fromMe === true ||
             reactorJid === botPhoneJid ||
             reactorJid === botLid ||
             reactorJid.replace(/:.*@/, '@') === botPhoneJid;

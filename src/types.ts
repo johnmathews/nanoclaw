@@ -86,6 +86,9 @@ export interface Channel {
   isConnected(): boolean;
   ownsJid(jid: string): boolean;
   disconnect(): Promise<void>;
+  // If true, the channel has native typing indicators (e.g. WhatsApp composing,
+  // Telegram typing action) so StatusTracker should NOT send emoji reactions.
+  hasNativeTyping?: boolean;
   // Optional: typing indicator. Channels that support it implement it.
   setTyping?(jid: string, isTyping: boolean, messageTs?: string): Promise<void>;
   // Optional: update working indicator with progress text (e.g. "Reading files...")

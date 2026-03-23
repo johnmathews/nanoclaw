@@ -956,6 +956,10 @@ async function main(): Promise<void> {
       return group?.isMain === true;
     },
     isContainerAlive: (chatJid) => queue.isActive(chatJid),
+    hasNativeTyping: (chatJid) => {
+      const channel = findChannel(channels, chatJid);
+      return channel?.hasNativeTyping === true;
+    },
   });
 
   // Create and connect all registered channels.

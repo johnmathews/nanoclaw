@@ -203,6 +203,11 @@ describe('WhatsAppChannel', () => {
       expect(channel.isConnected()).toBe(true);
     });
 
+    it('has hasNativeTyping set to true', () => {
+      const channel = new WhatsAppChannel(createTestOpts());
+      expect(channel.hasNativeTyping).toBe(true);
+    });
+
     it('sets up LID to phone mapping on open', async () => {
       const opts = createTestOpts();
       const channel = new WhatsAppChannel(opts);
@@ -1524,6 +1529,39 @@ describe('WhatsAppChannel', () => {
           key: { id: 'msg-react-lid', remoteJid: 'registered@g.us' },
           reaction: {
             key: { remoteJid: '9876543210@lid' },
+            text: '👀',
+            senderTimestampMs: BigInt(Date.now()),
+          },
+        },
+      ]);
+
+      await new Promise((r) => setTimeout(r, 0));
+
+      expect(onReaction).toHaveBeenCalledWith(
+        'registered@g.us',
+        expect.objectContaining({
+          is_from_me: true,
+        }),
+      );
+    });
+
+    it('detects bot own reactions via fromMe flag (DM/own-number mode)', async () => {
+      const onReaction = vi.fn();
+      const opts = createTestOpts({ onReaction });
+      const channel = new WhatsAppChannel(opts);
+
+      await connectChannel(channel);
+
+      // In a DM, reaction.key has no participant and remoteJid is the OTHER
+      // person's JID, so JID comparison alone fails. fromMe should catch it.
+      fakeSocket._ev.emit('messages.reaction', [
+        {
+          key: { id: 'msg-react-dm', remoteJid: 'registered@g.us' },
+          reaction: {
+            key: {
+              remoteJid: '5559999999@s.whatsapp.net', // other person's JID
+              fromMe: true, // bot sent this reaction
+            },
             text: '👀',
             senderTimestampMs: BigInt(Date.now()),
           },
