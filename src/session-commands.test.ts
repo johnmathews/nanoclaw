@@ -89,6 +89,25 @@ describe('isReadOnlyCommand', () => {
     expect(isReadOnlyCommand('/clear')).toBe(false);
     expect(isReadOnlyCommand('/done')).toBe(false);
   });
+
+  // Regression: read-only SDK commands (non-intercepted) must be allowed to
+  // proceed in non-main groups even without admin auth. The message loop uses
+  // isReadOnlyCommand(cmd) || isSessionCommandAllowed(...) to gate closeStdin.
+  // Without the isReadOnlyCommand check, /model and /skills were stuck waiting
+  // for the idle timeout because closeStdin was never called.
+  it('non-intercepted read-only commands bypass session auth gate', () => {
+    const readOnlySdkCommands = ['/model', '/skills', '/status'];
+    for (const cmd of readOnlySdkCommands) {
+      // These are read-only but NOT intercepted — they go to the SDK
+      expect(isReadOnlyCommand(cmd)).toBe(true);
+      expect(isInterceptedCommand(cmd)).toBe(false);
+      // In non-main group with non-admin sender, session auth fails...
+      expect(isSessionCommandAllowed(false, false)).toBe(false);
+      // ...but the combined gate (isReadOnlyCommand || isSessionCommandAllowed)
+      // must still allow the command through
+      expect(isReadOnlyCommand(cmd) || isSessionCommandAllowed(false, false)).toBe(true);
+    }
+  });
 });
 
 describe('isSessionCommandAllowed', () => {

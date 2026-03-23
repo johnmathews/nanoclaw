@@ -368,6 +368,7 @@ async function runQuery(
         'mcp__nanoclaw__*',
         'mcp__ollama__*',
         'mcp__gmail__*',
+        'mcp__docs__*',
         'mcp__parallel-search__*',
         'mcp__parallel-task__*',
       ],
@@ -393,6 +394,12 @@ async function runQuery(
           command: 'npx',
           args: ['-y', '@gongrzhe/server-gmail-autoauth-mcp'],
         },
+        ...(process.env.DOCS_MCP_URL ? {
+          docs: {
+            type: 'http' as const,
+            url: process.env.DOCS_MCP_URL,
+          },
+        } : {}),
         ...(process.env.PARALLEL_API_KEY ? {
           'parallel-search': {
             type: 'http' as const,

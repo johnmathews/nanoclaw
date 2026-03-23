@@ -89,7 +89,9 @@ StatusTracker from sending redundant emoji reactions (which can also cause feedb
 
 - **WhatsApp**: Native `sendPresenceUpdate('composing')` — ephemeral typing bubble
 - **Telegram**: Native `sendChatAction('typing')` — ephemeral typing indicator
-- **Slack**: `:eyes:` reaction added via `setTyping(true, messageTs)`, removed on first response or `setTyping(false)`
+- **Slack**: `:eyes:` reaction added via `setTyping(true, messageTs)`, removed via `setTyping(false)` after each
+  successful output and when the container exits. `sendMessage()`/`sendBlocks()` do NOT touch the reaction — this
+  prevents indicator gaps in multi-turn conversations where the container is still alive processing piped messages
 
 The StatusTracker's progress reactions (received/thinking/working/done) are only sent for channels where
 `hasNativeTyping` is false or undefined. Currently all channels have native indicators, so StatusTracker reactions
@@ -116,8 +118,9 @@ Each group can override the default model by placing a `config.json` in its grou
 
 Supported aliases: `opus` → `claude-opus-4-6`, `sonnet` → `claude-sonnet-4-6`, `haiku` → `claude-haiku-4-5-20251001`.
 Full model IDs are also accepted. The file is read on every container spawn (no cache), so edits take effect immediately.
-The resolved model is passed as `ANTHROPIC_MODEL` env var to the container. If no `config.json` or no `model` field, the
-SDK default is used.
+The resolved model is passed as `ANTHROPIC_MODEL` env var to the container. The default model is `claude-opus-4-6` —
+used when no `config.json` exists or when it has no `model` field. To change the default, edit `DEFAULT_MODEL` in
+`src/group-config.ts`.
 
 ## Image Attachment Pipeline
 
@@ -168,6 +171,18 @@ Containers run with `--memory 2g --cpus 2` by default. Override via environment 
 - `CONTAINER_MEMORY_LIMIT` (default: `2g`)
 - `CONTAINER_CPU_LIMIT` (default: `2`)
 
+## Optional MCP Servers
+
+Agent containers can connect to external MCP servers via env vars in `.env`:
+
+- `DOCS_MCP_URL` — HTTP MCP documentation server (e.g. `http://192.168.2.106:8085/mcp`). Exposes `search_docs`,
+  `query_docs`, `get_document`, `list_sources`, `reindex`. Tools are allowed as `mcp__docs__*`.
+- `PARALLEL_API_KEY` — Parallel AI search and task MCP servers. Tools allowed as `mcp__parallel-search__*` and
+  `mcp__parallel-task__*`.
+
+These are conditional — if the env var is not set, the MCP server is not configured. Env vars are passed to
+containers via `src/container-runner.ts` (explicit `-e` flags, not inherited from the process environment).
+
 ## Slash Commands
 
 Any `\command` (or `/command`) from a channel is detected generically — no whitelist. The system has two categories:
@@ -176,8 +191,12 @@ Any `\command` (or `/command`) from a channel is detected generically — no whi
 - **Intercepted commands** (`/usage`): handled on the host via `executeHostCommand()` in `src/host-commands.ts`
 
 All commands are detected by `extractCommand()` in `src/session-commands.ts`. Intercepted commands execute inline in the
-message loop; SDK commands are enqueued for container processing. Both share the same auth model (main group or
-`is_from_me`). Backslash is normalized to forward slash (Slack intercepts `/` as native slash commands).
+message loop; SDK commands are enqueued for container processing. Backslash is normalized to forward slash (Slack
+intercepts `/` as native slash commands).
+
+**Auth model:** Session-modifying commands (`/compact`, `/clear`, `/done`) require admin access (main group or
+`is_from_me`). Read-only commands (`/usage`, `/model`, `/skills`, `/status`) are available to any sender. Both the
+message loop's `closeStdin` gate and `handleSessionCommand` must agree — read-only commands bypass auth in both places.
 
 ## Usage Tracking
 
