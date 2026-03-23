@@ -3,6 +3,7 @@
  */
 
 import fs from 'fs';
+import path from 'path';
 
 export interface ParsedMessage {
   role: 'user' | 'assistant';
@@ -77,7 +78,8 @@ export function formatSlashCommandError(errorText: string, availableCommands: st
   return `${errorText}\n\nAvailable commands: ${availableCommands.join(', ')}`;
 }
 
-/** Built-in SDK slash commands (stable across versions). */
+/** Built-in slash commands shown in /skills output. Includes both SDK-forwarded
+ *  commands (/compact, /done) and agent-runner-handled commands (/clear). */
 const SDK_COMMANDS = ['/clear', '/compact', '/done'];
 
 /** Host-side intercepted commands that don't go through the SDK. */
@@ -106,6 +108,22 @@ export function formatSkillsList(sdkCommands: string[], skillsDir?: string): str
 
   const lines = sorted.map((cmd) => `• ${cmd}`);
   return `*Available Commands*\n\n${lines.join('\n')}`;
+}
+
+/**
+ * Clear a session by deleting the session file. Returns true if a file was deleted.
+ */
+export function clearSessionFile(sessionId: string | undefined, homeDir: string): boolean {
+  if (!sessionId) return false;
+  const sessFile = path.join(
+    homeDir, '.claude', 'projects', '-workspace-group', `${sessionId}.jsonl`,
+  );
+  try {
+    fs.unlinkSync(sessFile);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function sanitizeFilename(summary: string): string {

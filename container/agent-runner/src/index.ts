@@ -27,6 +27,7 @@ import {
   formatTranscriptMarkdown,
   formatSlashCommandError,
   formatSkillsList,
+  clearSessionFile,
 } from './utils.js';
 import type { RateLimitSnapshot } from './utils.js';
 
@@ -370,6 +371,7 @@ async function runQuery(
         'mcp__docs__*',
         'mcp__parallel-search__*',
         'mcp__parallel-task__*',
+        'mcp__journal__*',
       ],
       env: sdkEnv,
       permissionMode: 'bypassPermissions',
@@ -393,6 +395,12 @@ async function runQuery(
           docs: {
             type: 'http' as const,
             url: process.env.DOCS_MCP_URL,
+          },
+        } : {}),
+        ...(process.env.JOURNAL_MCP_URL ? {
+          journal: {
+            type: 'http' as const,
+            url: process.env.JOURNAL_MCP_URL,
           },
         } : {}),
         ...(process.env.PARALLEL_API_KEY ? {
@@ -563,6 +571,20 @@ async function main(): Promise<void> {
         status: 'success',
         result: formatSkillsList([], skillsDir),
         newSessionId: sessionId,
+      });
+      return;
+    }
+
+    // /clear: handled on agent-runner side — SDK's /clear has supportsNonInteractive=false.
+    // Delete the session file so next query starts fresh.
+    if (trimmedPrompt === '/clear') {
+      const homeDir = process.env.HOME || '/home/node';
+      const deleted = clearSessionFile(sessionId, homeDir);
+      log(deleted ? `Cleared session file for ${sessionId}` : 'No session file to clear');
+      writeOutput({
+        status: 'success',
+        result: 'Session cleared.',
+        newSessionId: '',
       });
       return;
     }
