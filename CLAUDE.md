@@ -104,6 +104,11 @@ The Claude Agent SDK stores conversation history in `.jsonl` session files under
 when the session approaches the context window limit. Users can also send `/compact` to manually summarize history,
 or `/clear` to start a fresh session.
 
+`/clear` is handled by the agent-runner (not forwarded to the SDK) because the SDK's built-in `/clear` has
+`supportsNonInteractive=false`. The agent-runner deletes the session file directly and returns `newSessionId: ''`.
+The host treats empty-string session IDs as a deletion signal, calling `deleteSession()` and removing the in-memory
+entry.
+
 **Host-side safety net**: Before resuming a session, the host checks the session file size. If it exceeds 10MB,
 the session is automatically cleared to prevent prompt-too-long deadlocks (where the session is too large for any
 request, including `/compact`, to succeed).
@@ -177,6 +182,9 @@ Agent containers can connect to external MCP servers via env vars in `.env`:
 
 - `DOCS_MCP_URL` — HTTP MCP documentation server (e.g. `http://192.168.2.106:8085/mcp`). Exposes `search_docs`,
   `query_docs`, `get_document`, `list_sources`, `reindex`. Tools are allowed as `mcp__docs__*`.
+- `JOURNAL_MCP_URL` — Journal analysis MCP server (e.g. `http://192.168.2.105:8400/mcp`). Exposes
+  `journal_search_entries`, `journal_get_entries_by_date`, `journal_list_entries`, `journal_get_statistics`,
+  `journal_get_mood_trends`, `journal_get_topic_frequency`, `journal_ingest_entry`. Tools allowed as `mcp__journal__*`.
 - `PARALLEL_API_KEY` — Parallel AI search and task MCP servers. Tools allowed as `mcp__parallel-search__*` and
   `mcp__parallel-task__*`.
 
@@ -185,18 +193,22 @@ containers via `src/container-runner.ts` (explicit `-e` flags, not inherited fro
 
 ## Slash Commands
 
-Any `\command` (or `/command`) from a channel is detected generically — no whitelist. The system has two categories:
+Any `\command` (or `/command`) from a channel is detected generically — no whitelist. The system has three categories:
 
-- **SDK commands** (e.g., `/compact`, `/clear`, `/done`): forwarded to the SDK inside a container
+- **SDK commands** (e.g., `/compact`, `/done`): forwarded to the SDK inside a container
+- **Agent-runner commands** (`/clear`, `/skills`): handled in the agent-runner without SDK involvement (the SDK's
+  built-in versions have `supportsNonInteractive=false`)
 - **Intercepted commands** (`/usage`): handled on the host via `executeHostCommand()` in `src/host-commands.ts`
 
 All commands are detected by `extractCommand()` in `src/session-commands.ts`. Intercepted commands execute inline in the
-message loop; SDK commands are enqueued for container processing. Backslash is normalized to forward slash (Slack
-intercepts `/` as native slash commands).
+message loop; SDK and agent-runner commands are enqueued for container processing. Backslash is normalized to forward
+slash (Slack intercepts `/` as native slash commands).
 
-**Auth model:** Session-modifying commands (`/compact`, `/clear`, `/done`) require admin access (main group or
-`is_from_me`). Read-only commands (`/usage`, `/model`, `/skills`, `/status`) are available to any sender. Both the
-message loop's `closeStdin` gate and `handleSessionCommand` must agree — read-only commands bypass auth in both places.
+**Auth model:** Session-modifying commands (`/compact`, `/clear`, `/done`) require admin access: main group,
+`is_from_me`, or direct conversation groups (`requiresTrigger=false`). The `requiresTrigger=false` rule means that if
+all senders in a group are trusted to talk to the agent, they're also trusted to manage its session. Read-only commands
+(`/usage`, `/model`, `/skills`, `/status`) are available to any sender. Both the message loop's `closeStdin` gate and
+`handleSessionCommand` must agree — read-only commands bypass auth in both places.
 
 ## Usage Tracking
 

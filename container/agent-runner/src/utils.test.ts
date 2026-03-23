@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import fs from 'fs';
+import path from 'path';
 import {
   sanitizeFilename,
   generateFallbackName,
@@ -7,6 +9,7 @@ import {
   formatSlashCommandError,
   formatSkillsList,
   discoverSkillCommands,
+  clearSessionFile,
   writeOutput,
   writeProgress,
   OUTPUT_START_MARKER,
@@ -396,5 +399,39 @@ describe('formatSkillsList', () => {
 describe('discoverSkillCommands', () => {
   it('returns empty array for non-existent directory', () => {
     expect(discoverSkillCommands('/nonexistent/path')).toEqual([]);
+  });
+});
+
+// ─── clearSessionFile ──────────────────────────────────────────────────
+
+describe('clearSessionFile', () => {
+  const tmpDir = path.join('/tmp', `nanoclaw-test-${process.pid}`);
+  const sessDir = path.join(tmpDir, '.claude', 'projects', '-workspace-group');
+
+  beforeEach(() => {
+    fs.mkdirSync(sessDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('deletes existing session file and returns true', () => {
+    const sessId = 'abc-123';
+    fs.writeFileSync(path.join(sessDir, `${sessId}.jsonl`), 'test data');
+    expect(clearSessionFile(sessId, tmpDir)).toBe(true);
+    expect(fs.existsSync(path.join(sessDir, `${sessId}.jsonl`))).toBe(false);
+  });
+
+  it('returns false when session file does not exist', () => {
+    expect(clearSessionFile('nonexistent-id', tmpDir)).toBe(false);
+  });
+
+  it('returns false when sessionId is undefined', () => {
+    expect(clearSessionFile(undefined, tmpDir)).toBe(false);
+  });
+
+  it('returns false when sessionId is empty string', () => {
+    expect(clearSessionFile('', tmpDir)).toBe(false);
   });
 });

@@ -39,13 +39,15 @@ export function isReadOnlyCommand(command: string): boolean {
 
 /**
  * Check if a session command sender is authorized.
- * Allowed: main group (any sender), or trusted/admin sender (is_from_me) in any group.
+ * Allowed: main group, trusted/admin sender (is_from_me), or direct conversation
+ * groups (requiresTrigger=false) where all senders are implicitly trusted.
  */
 export function isSessionCommandAllowed(
   isMainGroup: boolean,
   isFromMe: boolean,
+  requiresTrigger: boolean = true,
 ): boolean {
-  return isMainGroup || isFromMe;
+  return isMainGroup || isFromMe || !requiresTrigger;
 }
 
 /** Minimal agent result interface — matches the subset of ContainerOutput used here. */
@@ -89,6 +91,7 @@ export async function handleSessionCommand(opts: {
   groupName: string;
   triggerPattern: RegExp;
   timezone: string;
+  requiresTrigger: boolean;
   deps: SessionCommandDeps;
 }): Promise<{ handled: false } | { handled: true; success: boolean }> {
   const {
@@ -97,6 +100,7 @@ export async function handleSessionCommand(opts: {
     groupName,
     triggerPattern,
     timezone,
+    requiresTrigger,
     deps,
   } = opts;
 
@@ -114,7 +118,11 @@ export async function handleSessionCommand(opts: {
   // Session-modifying commands (e.g. /compact, /clear) require admin access.
   if (
     !READ_ONLY_COMMANDS.has(command) &&
-    !isSessionCommandAllowed(isMainGroup, cmdMsg.is_from_me === true)
+    !isSessionCommandAllowed(
+      isMainGroup,
+      cmdMsg.is_from_me === true,
+      requiresTrigger,
+    )
   ) {
     if (deps.canSenderInteract(cmdMsg)) {
       await deps.sendMessage('Session commands require admin access.');

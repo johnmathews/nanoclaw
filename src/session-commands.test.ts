@@ -121,8 +121,13 @@ describe('isSessionCommandAllowed', () => {
     expect(isSessionCommandAllowed(false, true)).toBe(true);
   });
 
-  it('denies untrusted sender in non-main group', () => {
+  it('denies untrusted sender in non-main group with trigger required', () => {
     expect(isSessionCommandAllowed(false, false)).toBe(false);
+    expect(isSessionCommandAllowed(false, false, true)).toBe(false);
+  });
+
+  it('allows any sender in direct conversation group (requiresTrigger=false)', () => {
+    expect(isSessionCommandAllowed(false, false, false)).toBe(true);
   });
 
   it('allows trusted sender in main group', () => {
@@ -171,6 +176,7 @@ describe('handleSessionCommand', () => {
       groupName: 'test',
       triggerPattern: trigger,
       timezone: 'UTC',
+      requiresTrigger: true,
       deps,
     });
     expect(result.handled).toBe(false);
@@ -184,6 +190,7 @@ describe('handleSessionCommand', () => {
       groupName: 'test',
       triggerPattern: trigger,
       timezone: 'UTC',
+      requiresTrigger: true,
       deps,
     });
     expect(result).toEqual({ handled: true, success: true });
@@ -202,6 +209,7 @@ describe('handleSessionCommand', () => {
       groupName: 'test',
       triggerPattern: trigger,
       timezone: 'UTC',
+      requiresTrigger: true,
       deps,
     });
     expect(result).toEqual({ handled: true, success: true });
@@ -216,6 +224,7 @@ describe('handleSessionCommand', () => {
       groupName: 'test',
       triggerPattern: trigger,
       timezone: 'UTC',
+      requiresTrigger: true,
       deps,
     });
     expect(result).toEqual({ handled: true, success: true });
@@ -230,6 +239,7 @@ describe('handleSessionCommand', () => {
       groupName: 'test',
       triggerPattern: trigger,
       timezone: 'UTC',
+      requiresTrigger: true,
       deps,
     });
     expect(result).toEqual({ handled: true, success: true });
@@ -251,6 +261,7 @@ describe('handleSessionCommand', () => {
       groupName: 'test',
       triggerPattern: trigger,
       timezone: 'UTC',
+      requiresTrigger: true,
       deps,
     });
     expect(result).toEqual({ handled: true, success: true });
@@ -270,6 +281,7 @@ describe('handleSessionCommand', () => {
       groupName: 'test',
       triggerPattern: trigger,
       timezone: 'UTC',
+      requiresTrigger: true,
       deps,
     });
     expect(result).toEqual({ handled: true, success: true });
@@ -278,6 +290,24 @@ describe('handleSessionCommand', () => {
     );
     expect(deps.runAgent).not.toHaveBeenCalled();
     expect(deps.advanceCursor).toHaveBeenCalledWith('100');
+  });
+
+  it('allows session commands from any sender in direct conversation group (requiresTrigger=false)', async () => {
+    const deps = makeDeps();
+    const result = await handleSessionCommand({
+      missedMessages: [makeMsg('/clear', { is_from_me: false })],
+      isMainGroup: false,
+      groupName: 'test',
+      triggerPattern: trigger,
+      timezone: 'UTC',
+      requiresTrigger: false,
+      deps,
+    });
+    expect(result).toEqual({ handled: true, success: true });
+    expect(deps.sendMessage).not.toHaveBeenCalledWith(
+      'Session commands require admin access.',
+    );
+    expect(deps.runAgent).toHaveBeenCalledWith('/clear', expect.any(Function));
   });
 
   it('allows read-only intercepted command from any sender in non-main group', async () => {
@@ -290,6 +320,7 @@ describe('handleSessionCommand', () => {
       groupName: 'test',
       triggerPattern: trigger,
       timezone: 'UTC',
+      requiresTrigger: true,
       deps,
     });
     expect(result).toEqual({ handled: true, success: true });
@@ -307,6 +338,7 @@ describe('handleSessionCommand', () => {
       groupName: 'test',
       triggerPattern: trigger,
       timezone: 'UTC',
+      requiresTrigger: true,
       deps,
     });
     expect(result).toEqual({ handled: true, success: true });
@@ -324,6 +356,7 @@ describe('handleSessionCommand', () => {
       groupName: 'test',
       triggerPattern: trigger,
       timezone: 'UTC',
+      requiresTrigger: true,
       deps,
     });
     expect(result).toEqual({ handled: true, success: true });
@@ -343,6 +376,7 @@ describe('handleSessionCommand', () => {
       groupName: 'test',
       triggerPattern: trigger,
       timezone: 'UTC',
+      requiresTrigger: true,
       deps,
     });
     expect(result).toEqual({ handled: true, success: true });
@@ -362,6 +396,7 @@ describe('handleSessionCommand', () => {
       groupName: 'test',
       triggerPattern: trigger,
       timezone: 'UTC',
+      requiresTrigger: true,
       deps,
     });
     expect(result).toEqual({ handled: true, success: true });
@@ -386,6 +421,7 @@ describe('handleSessionCommand', () => {
       groupName: 'test',
       triggerPattern: trigger,
       timezone: 'UTC',
+      requiresTrigger: true,
       deps,
     });
     expect(deps.setTyping).toHaveBeenCalledWith(true, 'slack-ts-123');
@@ -402,6 +438,7 @@ describe('handleSessionCommand', () => {
       groupName: 'test',
       triggerPattern: trigger,
       timezone: 'UTC',
+      requiresTrigger: true,
       deps,
     });
     expect(deps.setTyping).toHaveBeenCalledWith(true, 'slack-ts-456');
@@ -416,6 +453,7 @@ describe('handleSessionCommand', () => {
       groupName: 'test',
       triggerPattern: trigger,
       timezone: 'UTC',
+      requiresTrigger: true,
       deps,
     });
     expect(result).toEqual({ handled: true, success: true });
@@ -439,6 +477,7 @@ describe('handleSessionCommand', () => {
       groupName: 'test',
       triggerPattern: trigger,
       timezone: 'UTC',
+      requiresTrigger: true,
       deps,
     });
     expect(result).toEqual({ handled: true, success: true });
@@ -459,6 +498,7 @@ describe('handleSessionCommand', () => {
       groupName: 'test',
       triggerPattern: trigger,
       timezone: 'UTC',
+      requiresTrigger: true,
       deps,
     });
     expect(result).toEqual({ handled: true, success: true });

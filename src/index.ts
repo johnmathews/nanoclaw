@@ -242,6 +242,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     groupName: group.name,
     triggerPattern: TRIGGER_PATTERN,
     timezone: TIMEZONE,
+    requiresTrigger: group.requiresTrigger !== false,
     deps: {
       sendMessage: (text) => channel.sendMessage(chatJid, text),
       setTyping: (typing, messageTs) =>
@@ -519,6 +520,9 @@ async function runAgent(
         if (output.newSessionId) {
           sessions[group.folder] = output.newSessionId;
           setSession(group.folder, output.newSessionId);
+        } else if (output.newSessionId === '') {
+          delete sessions[group.folder];
+          deleteSession(group.folder);
         }
         if (output.rateLimits) {
           for (const snapshot of output.rateLimits) {
@@ -550,6 +554,9 @@ async function runAgent(
     if (output.newSessionId) {
       sessions[group.folder] = output.newSessionId;
       setSession(group.folder, output.newSessionId);
+    } else if (output.newSessionId === '') {
+      delete sessions[group.folder];
+      deleteSession(group.folder);
     }
 
     if (output.status === 'error') {
@@ -688,6 +695,7 @@ async function startMessageLoop(): Promise<void> {
               isSessionCommandAllowed(
                 isMainGroup,
                 loopCmdMsg.is_from_me === true,
+                group.requiresTrigger !== false,
               )
             ) {
               queue.closeStdin(chatJid);

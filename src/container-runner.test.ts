@@ -656,6 +656,34 @@ describe('container-runner session ID tracking', () => {
     // newSessionId is only updated when present, so first one persists
     expect(result.newSessionId).toBe('the-session');
   });
+
+  it('passes empty-string newSessionId through to onOutput for session clearing', async () => {
+    const onOutput = vi.fn(async () => {});
+    const resultPromise = runContainerAgent(
+      testGroup,
+      testInput,
+      () => {},
+      onOutput,
+    );
+
+    // Agent-runner /clear returns newSessionId: '' to signal session deletion
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'Session cleared.',
+      newSessionId: '',
+    });
+    await vi.advanceTimersByTimeAsync(10);
+
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+
+    await resultPromise;
+
+    // onOutput receives the raw parsed output including empty string
+    expect(onOutput).toHaveBeenCalledWith(
+      expect.objectContaining({ newSessionId: '' }),
+    );
+  });
 });
 
 describe('container-runner stdin JSON writing', () => {
