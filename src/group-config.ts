@@ -27,7 +27,8 @@ export function readGroupConfig(groupFolder: string): GroupConfig {
   try {
     raw = fs.readFileSync(configPath, 'utf-8');
   } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { model: DEFAULT_MODEL };
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT')
+      return { model: DEFAULT_MODEL };
     logger.warn({ groupFolder, error: err }, 'Failed to read group config');
     return { model: DEFAULT_MODEL };
   }
