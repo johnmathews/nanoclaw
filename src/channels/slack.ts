@@ -37,8 +37,39 @@ interface SlackFile {
 // Messages exceeding this are split into sequential chunks.
 const MAX_MESSAGE_LENGTH = 4000;
 
+/**
+ * Split a message into chunks that fit within Slack's character limit.
+ * Prefers breaking at newlines, then spaces, to avoid splitting mid-word
+ * or mid-codeblock.
+ */
+export function splitMessage(text: string, maxLen = MAX_MESSAGE_LENGTH): string[] {
+  if (text.length <= maxLen) return [text];
+
+  const chunks: string[] = [];
+  let remaining = text;
+
+  while (remaining.length > 0) {
+    if (remaining.length <= maxLen) {
+      chunks.push(remaining);
+      break;
+    }
+
+    // Find the best break point: last newline within limit, then last space
+    let breakAt = remaining.lastIndexOf('\n', maxLen);
+    if (breakAt <= 0) breakAt = remaining.lastIndexOf(' ', maxLen);
+    if (breakAt <= 0) breakAt = maxLen; // no good break point, hard split
+
+    chunks.push(remaining.slice(0, breakAt));
+    remaining = remaining.slice(breakAt).replace(/^[\n ]/, ''); // trim leading whitespace at split point
+  }
+
+  return chunks;
+}
+
 // Emoji used as a reaction on the triggering message while the agent works
 const WORKING_REACTION = 'eyes';
+
+const CHANNEL_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -59,6 +90,7 @@ export interface SlackChannelOpts {
 
 export class SlackChannel implements Channel {
   name = 'slack';
+  hasNativeTyping = true;
 
   private app: App;
   private botToken: string;
@@ -68,6 +100,7 @@ export class SlackChannel implements Channel {
   private flushing = false;
   private userNameCache = new Map<string, string>();
   private workingReactions = new Map<string, string>(); // channelId → message ts (for removing reaction)
+  private channelSyncTimerStarted = false;
 
   private opts: SlackChannelOpts;
 
@@ -271,8 +304,16 @@ export class SlackChannel implements Channel {
     // Flush any messages queued before connection
     await this.flushOutgoingQueue();
 
-    // Sync channel names on startup
+    // Sync channel names on startup and periodically (24h)
     await this.syncChannelMetadata();
+    if (!this.channelSyncTimerStarted) {
+      this.channelSyncTimerStarted = true;
+      setInterval(() => {
+        this.syncChannelMetadata().catch((err) =>
+          logger.error({ err }, 'Periodic Slack channel sync failed'),
+        );
+      }, CHANNEL_SYNC_INTERVAL_MS);
+    }
   }
 
   async sendMessage(jid: string, text: string): Promise<void> {
@@ -291,16 +332,11 @@ export class SlackChannel implements Channel {
       // Remove the working reaction now that the real response is arriving
       this.removeWorkingReaction(channelId);
 
-      // Slack limits messages to ~4000 characters; split if needed
-      if (text.length <= MAX_MESSAGE_LENGTH) {
-        await this.app.client.chat.postMessage({ channel: channelId, text });
-      } else {
-        for (let i = 0; i < text.length; i += MAX_MESSAGE_LENGTH) {
-          await this.app.client.chat.postMessage({
-            channel: channelId,
-            text: text.slice(i, i + MAX_MESSAGE_LENGTH),
-          });
-        }
+      for (const chunk of splitMessage(text)) {
+        await this.app.client.chat.postMessage({
+          channel: channelId,
+          text: chunk,
+        });
       }
       logger.info({ jid, length: text.length }, 'Slack message sent');
     } catch (err) {
@@ -600,18 +636,31 @@ export class SlackChannel implements Channel {
         { count: this.outgoingQueue.length },
         'Flushing Slack outgoing queue',
       );
+      const failed: Array<{ jid: string; text: string }> = [];
       while (this.outgoingQueue.length > 0) {
         const item = this.outgoingQueue.shift()!;
         const channelId = item.jid.replace(/^slack:/, '');
-        await this.app.client.chat.postMessage({
-          channel: channelId,
-          text: item.text,
-        });
-        logger.info(
-          { jid: item.jid, length: item.text.length },
-          'Queued Slack message sent',
-        );
+        try {
+          for (const chunk of splitMessage(item.text)) {
+            await this.app.client.chat.postMessage({
+              channel: channelId,
+              text: chunk,
+            });
+          }
+          logger.info(
+            { jid: item.jid, length: item.text.length },
+            'Queued Slack message sent',
+          );
+        } catch (err) {
+          logger.warn(
+            { jid: item.jid, err },
+            'Failed to send queued Slack message, will retry on next flush',
+          );
+          failed.push(item);
+        }
       }
+      // Re-queue failed messages for next flush attempt
+      this.outgoingQueue.push(...failed);
     } finally {
       this.flushing = false;
     }
