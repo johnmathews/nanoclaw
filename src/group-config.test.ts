@@ -70,37 +70,37 @@ describe('readGroupConfig', () => {
     expect(config.model).toBe('claude-sonnet-4-6');
   });
 
-  it('returns {} when file is missing', () => {
+  it('returns default model (opus) when file is missing', () => {
     vi.mocked(fs.readFileSync).mockImplementation(() => {
       const err = new Error('ENOENT') as NodeJS.ErrnoException;
       err.code = 'ENOENT';
       throw err;
     });
     const config = readGroupConfig('missing-group');
-    expect(config).toEqual({});
+    expect(config).toEqual({ model: 'claude-opus-4-6' });
     expect(logger.warn).not.toHaveBeenCalled();
   });
 
-  it('returns {} and warns on invalid JSON', () => {
+  it('returns default model and warns on invalid JSON', () => {
     vi.mocked(fs.readFileSync).mockReturnValue('not json{');
     const config = readGroupConfig('bad-json');
-    expect(config).toEqual({});
+    expect(config).toEqual({ model: 'claude-opus-4-6' });
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ groupFolder: 'bad-json' }),
       'Invalid JSON in group config',
     );
   });
 
-  it('returns {} when no model field present', () => {
+  it('returns default model when no model field present', () => {
     vi.mocked(fs.readFileSync).mockReturnValue('{"other": "value"}');
     const config = readGroupConfig('no-model');
-    expect(config).toEqual({});
+    expect(config).toEqual({ model: 'claude-opus-4-6' });
   });
 
-  it('returns {} when model field is not a string', () => {
+  it('returns default model when model field is not a string', () => {
     vi.mocked(fs.readFileSync).mockReturnValue('{"model": 42}');
     const config = readGroupConfig('bad-model');
-    expect(config).toEqual({});
+    expect(config).toEqual({ model: 'claude-opus-4-6' });
   });
 
   it('trims whitespace from model value', () => {
@@ -125,7 +125,7 @@ describe('readGroupConfig', () => {
       throw err;
     });
     const config = readGroupConfig('no-access');
-    expect(config).toEqual({});
+    expect(config).toEqual({ model: 'claude-opus-4-6' });
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ groupFolder: 'no-access' }),
       'Failed to read group config',

@@ -382,6 +382,9 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
       if (result.status === 'success') {
         statusTracker.markAllDone(chatJid);
+        // Remove typing indicator after each response so it doesn't linger.
+        // It will be re-added by the message loop when the next message is piped.
+        channel.setTyping?.(chatJid, false)?.catch(() => {});
         queue.notifyIdle(chatJid);
       }
 
@@ -678,7 +681,10 @@ async function startMessageLoop(): Promise<void> {
 
             // SDK commands: close active container and enqueue for processing.
             // Only close if authorized — otherwise untrusted user could DoS.
+            // Read-only commands (e.g. /model, /skills) also allowed — they skip
+            // auth in handleSessionCommand and shouldn't be blocked here.
             if (
+              isReadOnlyCommand(cmd) ||
               isSessionCommandAllowed(
                 isMainGroup,
                 loopCmdMsg.is_from_me === true,

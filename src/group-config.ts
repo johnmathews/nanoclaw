@@ -14,6 +14,8 @@ const MODEL_ALIASES: Record<string, string> = {
   haiku: 'claude-haiku-4-5-20251001',
 };
 
+const DEFAULT_MODEL = 'claude-opus-4-6';
+
 export function resolveModelAlias(alias: string): string {
   const trimmed = alias.trim();
   return MODEL_ALIASES[trimmed.toLowerCase()] || trimmed;
@@ -25,9 +27,9 @@ export function readGroupConfig(groupFolder: string): GroupConfig {
   try {
     raw = fs.readFileSync(configPath, 'utf-8');
   } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return {};
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { model: DEFAULT_MODEL };
     logger.warn({ groupFolder, error: err }, 'Failed to read group config');
-    return {};
+    return { model: DEFAULT_MODEL };
   }
 
   let parsed: unknown;
@@ -35,7 +37,7 @@ export function readGroupConfig(groupFolder: string): GroupConfig {
     parsed = JSON.parse(raw);
   } catch (err) {
     logger.warn({ groupFolder, error: err }, 'Invalid JSON in group config');
-    return {};
+    return { model: DEFAULT_MODEL };
   }
 
   const config: GroupConfig = {};
@@ -50,5 +52,6 @@ export function readGroupConfig(groupFolder: string): GroupConfig {
     );
   }
 
+  if (!config.model) config.model = DEFAULT_MODEL;
   return config;
 }

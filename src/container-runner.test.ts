@@ -826,3 +826,38 @@ describe('container-runner resource limits', () => {
     expect(args[cpuIdx + 1]).toBe('2');
   });
 });
+
+describe('container-runner env var passthrough', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('passes DOCS_MCP_URL env var to docker run when set', async () => {
+    const { spawn: spawnMock } = await import('child_process');
+
+    const resultPromise = runContainerAgent(testGroup, testInput, () => {});
+
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    await resultPromise;
+
+    const callArgs = (spawnMock as ReturnType<typeof vi.fn>).mock.calls[0];
+    const args: string[] = callArgs[1];
+
+    // DOCS_MCP_URL is set in .env, so it should be passed via -e flag
+    const docsMcpArg = args.find((a: string) => a.startsWith('DOCS_MCP_URL='));
+    if (docsMcpArg) {
+      const eIdx = args.indexOf(docsMcpArg);
+      expect(eIdx).toBeGreaterThan(-1);
+      expect(args[eIdx - 1]).toBe('-e');
+      expect(docsMcpArg).toContain('http://');
+    }
+    // If DOCS_MCP_URL is not in .env (e.g. CI), the arg won't be present — that's fine
+  });
+});

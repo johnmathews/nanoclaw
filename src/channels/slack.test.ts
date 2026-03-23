@@ -1436,10 +1436,14 @@ describe('SlackChannel', () => {
     });
   });
 
-  // --- sendMessage removes :eyes: reaction ---
+  // --- sendMessage does NOT remove :eyes: reaction ---
+  // The reaction lifecycle is managed by setTyping() only.
+  // sendMessage must not eagerly remove the reaction, because in multi-turn
+  // conversations with a running container, removing the reaction on each
+  // response creates a gap where the user has no typing indicator.
 
-  describe('sendMessage clears working reaction', () => {
-    it('removes :eyes: reaction when first response is sent', async () => {
+  describe('sendMessage preserves working reaction', () => {
+    it('does NOT remove :eyes: reaction when sending a response', async () => {
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);
       await channel.connect();
@@ -1448,22 +1452,68 @@ describe('SlackChannel', () => {
       await channel.setTyping('slack:C0123456789', true, '1234567890.123456');
       currentApp().client.reactions.remove.mockClear();
 
-      // Send response — should auto-remove reaction
+      // Send response — should NOT touch reaction
       await channel.sendMessage('slack:C0123456789', 'Here is the answer');
 
+      expect(currentApp().client.reactions.remove).not.toHaveBeenCalled();
+    });
+
+    it('reaction persists across multiple sendMessage calls', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      await channel.setTyping('slack:C0123456789', true, '1234567890.123456');
+      currentApp().client.reactions.remove.mockClear();
+
+      // Multiple responses — reaction should survive all of them
+      await channel.sendMessage('slack:C0123456789', 'First response');
+      await channel.sendMessage('slack:C0123456789', 'Second response');
+      await channel.sendMessage('slack:C0123456789', 'Third response');
+
+      expect(currentApp().client.reactions.remove).not.toHaveBeenCalled();
+    });
+
+    it('reaction is only removed via setTyping(false)', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      // Add reaction
+      await channel.setTyping('slack:C0123456789', true, '1234567890.123456');
+      currentApp().client.reactions.remove.mockClear();
+
+      // Send multiple responses — reaction stays
+      await channel.sendMessage('slack:C0123456789', 'Response 1');
+      await channel.sendMessage('slack:C0123456789', 'Response 2');
+      expect(currentApp().client.reactions.remove).not.toHaveBeenCalled();
+
+      // Explicit setTyping(false) — NOW reaction is removed
+      await channel.setTyping('slack:C0123456789', false);
       expect(currentApp().client.reactions.remove).toHaveBeenCalledWith({
         channel: 'C0123456789',
         timestamp: '1234567890.123456',
         name: 'eyes',
       });
     });
+  });
 
-    it('does not call reactions.remove when no working reaction exists', async () => {
+  // --- sendBlocks preserves :eyes: reaction ---
+
+  describe('sendBlocks preserves working reaction', () => {
+    it('does NOT remove :eyes: reaction when sending blocks', async () => {
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);
       await channel.connect();
 
-      await channel.sendMessage('slack:C0123456789', 'Unprompted message');
+      await channel.setTyping('slack:C0123456789', true, '1234567890.123456');
+      currentApp().client.reactions.remove.mockClear();
+
+      await channel.sendBlocks(
+        'slack:C0123456789',
+        [{ type: 'section', text: { type: 'mrkdwn', text: 'test' } }],
+        'fallback text',
+      );
 
       expect(currentApp().client.reactions.remove).not.toHaveBeenCalled();
     });

@@ -332,9 +332,6 @@ export class SlackChannel implements Channel {
     }
 
     try {
-      // Remove the working reaction now that the real response is arriving
-      this.removeWorkingReaction(channelId);
-
       for (const chunk of splitMessage(text)) {
         await this.app.client.chat.postMessage({
           channel: channelId,
@@ -370,9 +367,6 @@ export class SlackChannel implements Channel {
       );
       return;
     }
-
-    // Remove the working reaction now that the real response is arriving
-    this.removeWorkingReaction(channelId);
 
     try {
       await this.app.client.chat.postMessage({
