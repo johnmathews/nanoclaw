@@ -16,6 +16,9 @@ groups/
 *.keys.json
 .env
 
+# Test coverage
+coverage/
+
 # Temp files
 .tmp-*
 .pages

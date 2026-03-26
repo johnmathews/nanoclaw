@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
+import path from 'path';
 
 // Sentinel markers must match container-runner.ts
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -887,5 +888,75 @@ describe('container-runner env var passthrough', () => {
       expect(docsMcpArg).toContain('http://');
     }
     // If DOCS_MCP_URL is not in .env (e.g. CI), the arg won't be present — that's fine
+  });
+});
+
+describe('container-runner volume mounts', () => {
+  beforeEach(async () => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+    // Reset fs mocks to defaults
+    const fsMod = await import('fs');
+    (fsMod.default.existsSync as ReturnType<typeof vi.fn>).mockImplementation(() => false);
+    // Clear spawn mock calls from previous tests
+    const { spawn: spawnMock } = await import('child_process');
+    (spawnMock as ReturnType<typeof vi.fn>).mockClear();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('mounts google-calendar-mcp directory when it exists', async () => {
+    const fsMod = await import('fs');
+    const osSpy = await import('os');
+    const homeDir = osSpy.homedir();
+
+    // Make existsSync return true for the calendar dir (and false for others)
+    const calendarPath = path.join(homeDir, '.config', 'google-calendar-mcp');
+    (fsMod.default.existsSync as ReturnType<typeof vi.fn>).mockImplementation(
+      (p: string) => p === calendarPath,
+    );
+
+    const { spawn: spawnMock } = await import('child_process');
+
+    const resultPromise = runContainerAgent(testGroup, testInput, () => {});
+
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    await resultPromise;
+
+    const callArgs = (spawnMock as ReturnType<typeof vi.fn>).mock.calls[0];
+    const args: string[] = callArgs[1];
+
+    // Find -v flag that maps to google-calendar-mcp
+    const calendarMount = args.find(
+      (a: string) => a.includes('google-calendar-mcp') && a.includes(':'),
+    );
+    expect(calendarMount).toBeDefined();
+    expect(calendarMount).toContain('/home/node/.config/google-calendar-mcp');
+  });
+
+  it('skips google-calendar-mcp mount when directory does not exist', async () => {
+    const fsMod = await import('fs');
+    (fsMod.default.existsSync as ReturnType<typeof vi.fn>).mockReturnValue(false);
+
+    const { spawn: spawnMock } = await import('child_process');
+
+    const resultPromise = runContainerAgent(testGroup, testInput, () => {});
+
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    await resultPromise;
+
+    const callArgs = (spawnMock as ReturnType<typeof vi.fn>).mock.calls[0];
+    const args: string[] = callArgs[1];
+
+    const calendarMount = args.find(
+      (a: string) => a.includes('google-calendar-mcp') && a.includes(':'),
+    );
+    expect(calendarMount).toBeUndefined();
   });
 });
