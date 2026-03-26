@@ -135,6 +135,24 @@ From the main channel (your self-chat), you can manage groups and tasks:
 @agent join the Family Chat group
 ```
 
+### Slash Commands
+
+Any user can run read-only commands from any channel:
+
+| Command | Effect |
+|---------|--------|
+| `/status` | Service health: uptime, channels, queue, cursor age, tasks |
+| `/usage` | API rate limit utilization with progress bars |
+| `/model` | Show current model |
+| `/skills` | List available agent skills |
+
+Session commands (admin only — main channel, `is_from_me`, or direct groups):
+
+| Command | Effect |
+|---------|--------|
+| `/compact` | Summarize and compress session history |
+| `/clear` | Start a fresh session |
+
 ## Customizing
 
 NanoClaw doesn't use configuration files. To make changes, just tell Claude Code what you want:
@@ -203,7 +221,10 @@ Key files:
 - `src/container-runner.ts` - Spawns streaming agent containers
 - `src/task-scheduler.ts` - Runs scheduled tasks
 - `src/db.ts` - SQLite operations (messages, groups, sessions, state)
+- `src/health.ts` - Health data collection (shared by /status and HTTP endpoint)
+- `src/watchdog.ts` - Systemd watchdog integration
 - `groups/*/CLAUDE.md` - Per-group memory
+- `scripts/smoke-test.ts` - External health smoke test
 
 ## FAQ
 

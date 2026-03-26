@@ -536,13 +536,15 @@ This allows the agent to understand the conversation context even if it wasn't m
 
 ## Commands
 
-### Commands Available in Any Group
+### Natural Language Commands (via trigger word)
+
+Available in any group:
 
 | Command | Example | Effect |
 |---------|---------|--------|
 | `@Assistant [message]` | `@agent what's the weather?` | Talk to Claude |
 
-### Commands Available in Main Channel Only
+Available in main channel only:
 
 | Command | Example | Effect |
 |---------|---------|--------|
@@ -550,6 +552,29 @@ This allows the agent to understand the conversation context even if it wasn't m
 | `@Assistant remove group "Name"` | `@agent remove group "Work Team"` | Unregister a group |
 | `@Assistant list groups` | `@agent list groups` | Show registered groups |
 | `@Assistant remember [fact]` | `@agent remember I prefer dark mode` | Add to global memory |
+
+### Slash Commands
+
+Slash commands use `/command` syntax (or `\command` — backslash is normalized). Three categories:
+
+**Host-intercepted commands** — handled inline, no container spawn:
+
+| Command | Auth | Effect |
+|---------|------|--------|
+| `/status` | Any user | Service health: uptime, channels, queue, cursor, tasks |
+| `/usage` | Any user | API rate limit utilization with progress bars and reset times |
+
+**SDK commands** — forwarded to the Claude Agent SDK inside a container:
+
+| Command | Auth | Effect |
+|---------|------|--------|
+| `/compact` | Admin | Summarize and compress session history |
+| `/clear` | Admin | Start a fresh session (deletes session file) |
+| `/model` | Any user | Show current model |
+| `/skills` | Any user | List available agent skills |
+
+**Auth model:** Admin = main group, `is_from_me`, or direct conversation groups (`requiresTrigger=false`).
+Read-only commands (`/status`, `/usage`, `/model`, `/skills`) bypass auth.
 
 ---
 
