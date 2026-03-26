@@ -571,6 +571,18 @@ async function runAgent(
         { group: group.name, error: output.error },
         'Container agent error',
       );
+      // Clear stale session so next invocation starts fresh
+      if (
+        output.error &&
+        /session|conversation not found|resume/i.test(output.error)
+      ) {
+        delete sessions[group.folder];
+        deleteSession(group.folder);
+        logger.info(
+          { group: group.name },
+          'Cleared stale session after resume error',
+        );
+      }
       // Notify user about API errors via the streaming callback
       if (output.error && onOutput) {
         const errLower = output.error.toLowerCase();
