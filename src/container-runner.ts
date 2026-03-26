@@ -48,6 +48,7 @@ export interface ContainerInput {
   isMain: boolean;
   isScheduledTask?: boolean;
   assistantName?: string;
+  script?: string;
   /** Base64-encoded image data, loaded on the host before container spawn.
    *  No file-path dependency — the container receives the data directly. */
   imageAttachments?: Array<{ mediaType: string; data: string }>;
@@ -781,6 +782,7 @@ export function writeTasksSnapshot(
     id: string;
     groupFolder: string;
     prompt: string;
+    script?: string | null;
     schedule_type: string;
     schedule_value: string;
     status: string;

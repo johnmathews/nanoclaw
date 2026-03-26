@@ -3,15 +3,18 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import {
   _initTestDatabase,
   createTask,
+  deleteSession,
   deleteTask,
   getAllChats,
   getAllRegisteredGroups,
+  getAllSessions,
   getLatestMessage,
   getMessageContent,
   getMessageFromMe,
   getMessagesByReaction,
   getMessagesSince,
   getNewMessages,
+  getSession,
   getReactionsForChat,
   getReactionsForMessage,
   getReactionsForMessages,
@@ -24,6 +27,7 @@ import {
   getSchemaVersionHistory,
   upsertRateLimit,
   setRegisteredGroup,
+  setSession,
   storeChatMetadata,
   storeMessage,
   storeReaction,
@@ -1155,15 +1159,15 @@ describe('rate_limits', () => {
 describe('schema versioning', () => {
   it('fresh database has all migrations applied', () => {
     _initTestDatabase();
-    expect(getSchemaVersion()).toBe(4);
+    expect(getSchemaVersion()).toBe(5);
   });
 
   it('schema_version table tracks applied migrations', () => {
     _initTestDatabase();
     const rows = getSchemaVersionHistory();
-    expect(rows).toHaveLength(4);
+    expect(rows).toHaveLength(5);
     expect(rows[0]).toHaveProperty('version', 1);
-    expect(rows[3]).toHaveProperty('version', 4);
+    expect(rows[4]).toHaveProperty('version', 5);
     // Each row should have a valid applied_at timestamp
     for (const row of rows) {
       expect(row.applied_at).toBeTruthy();
@@ -1175,6 +1179,87 @@ describe('schema versioning', () => {
     _initTestDatabase();
     // Re-initializing should not fail (simulates the old try-catch behavior)
     _initTestDatabase();
-    expect(getSchemaVersion()).toBe(4);
+    expect(getSchemaVersion()).toBe(5);
+  });
+});
+
+// --- Session CRUD ---
+
+describe('session management', () => {
+  it('stores and retrieves a session', () => {
+    setSession('whatsapp_main', 'session-abc');
+    expect(getSession('whatsapp_main')).toBe('session-abc');
+  });
+
+  it('returns undefined for unknown group', () => {
+    expect(getSession('nonexistent')).toBeUndefined();
+  });
+
+  it('overwrites session on update', () => {
+    setSession('whatsapp_main', 'session-old');
+    setSession('whatsapp_main', 'session-new');
+    expect(getSession('whatsapp_main')).toBe('session-new');
+  });
+
+  it('deletes a session', () => {
+    setSession('whatsapp_main', 'session-abc');
+    deleteSession('whatsapp_main');
+    expect(getSession('whatsapp_main')).toBeUndefined();
+  });
+
+  it('deleteSession is a no-op for unknown group', () => {
+    expect(() => deleteSession('nonexistent')).not.toThrow();
+  });
+
+  it('getAllSessions returns all stored sessions', () => {
+    setSession('group_a', 'sess-1');
+    setSession('group_b', 'sess-2');
+    const all = getAllSessions();
+    expect(all).toEqual({ group_a: 'sess-1', group_b: 'sess-2' });
+  });
+
+  it('getAllSessions excludes deleted sessions', () => {
+    setSession('group_a', 'sess-1');
+    setSession('group_b', 'sess-2');
+    deleteSession('group_a');
+    const all = getAllSessions();
+    expect(all).toEqual({ group_b: 'sess-2' });
+  });
+
+  it('stale session recovery: delete clears session so next lookup returns undefined', () => {
+    setSession('whatsapp_main', 'stale-session-xyz');
+    expect(getSession('whatsapp_main')).toBe('stale-session-xyz');
+    deleteSession('whatsapp_main');
+    expect(getSession('whatsapp_main')).toBeUndefined();
+    expect(getAllSessions()).toEqual({});
+  });
+});
+
+// --- Session error detection pattern ---
+
+describe('session error detection pattern', () => {
+  const SESSION_ERROR_PATTERN = /session|conversation not found|resume/i;
+
+  it('matches "No conversation found with session ID"', () => {
+    expect(
+      SESSION_ERROR_PATTERN.test(
+        'No conversation found with session ID abc-123',
+      ),
+    ).toBe(true);
+  });
+
+  it('matches "session expired"', () => {
+    expect(SESSION_ERROR_PATTERN.test('session expired')).toBe(true);
+  });
+
+  it('matches "failed to resume"', () => {
+    expect(SESSION_ERROR_PATTERN.test('failed to resume conversation')).toBe(
+      true,
+    );
+  });
+
+  it('does not match unrelated errors', () => {
+    expect(SESSION_ERROR_PATTERN.test('rate limit exceeded')).toBe(false);
+    expect(SESSION_ERROR_PATTERN.test('network timeout')).toBe(false);
   });
 });

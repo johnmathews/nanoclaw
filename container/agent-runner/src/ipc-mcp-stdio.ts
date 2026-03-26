@@ -191,6 +191,12 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
       .describe(
         '(Main group only) JID of the group to schedule the task for. Defaults to the current group.',
       ),
+    script: z
+      .string()
+      .optional()
+      .describe(
+        'Optional bash script to run before waking the agent. Script must output JSON on the last line of stdout: { "wakeAgent": boolean, "data"?: any }. If wakeAgent is false, the agent is not called. Test your script with bash -c "..." before scheduling.',
+      ),
   },
   async (args) => {
     // Validate schedule_value before writing IPC
@@ -257,6 +263,7 @@ SCHEDULE VALUE FORMAT (all times are LOCAL timezone):
     const data = {
       type: 'schedule_task',
       prompt: args.prompt,
+      script: args.script || undefined,
       schedule_type: args.schedule_type,
       schedule_value: args.schedule_value,
       context_mode: args.context_mode || 'group',
