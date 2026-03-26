@@ -176,9 +176,22 @@ Containers run with `--memory 2g --cpus 2` by default. Override via environment 
 - `CONTAINER_MEMORY_LIMIT` (default: `2g`)
 - `CONTAINER_CPU_LIMIT` (default: `2`)
 
-## Optional MCP Servers
+## MCP Servers
 
-Agent containers can connect to external MCP servers via env vars in `.env`:
+### Always-on MCP Servers
+
+These MCP servers are always configured for agent containers:
+
+- **Gmail** (`@gongrzhe/server-gmail-autoauth-mcp`) — Email read/send via Gmail API. Credentials mounted from
+  `~/.gmail-mcp/` on the host to `/home/node/.gmail-mcp/` in the container. Tools allowed as `mcp__gmail__*`.
+- **Google Calendar** (`@cocal/google-calendar-mcp`) — Calendar read/write via Google Calendar API. OAuth credentials
+  read from `/home/node/.gmail-mcp/gcp-oauth.keys.json` (shared with Gmail). Token storage mounted from
+  `~/.config/google-calendar-mcp/` on the host to `/home/node/.config/google-calendar-mcp/` in the container (writable,
+  for OAuth token refresh). Tools allowed as `mcp__google-calendar__*`.
+
+### Conditional MCP Servers
+
+Agent containers can connect to additional MCP servers via env vars in `.env`:
 
 - `DOCS_MCP_URL` — HTTP MCP documentation server (e.g. `http://192.168.2.106:8085/mcp`). Exposes `search_docs`,
   `query_docs`, `get_document`, `list_sources`, `reindex`. Tools are allowed as `mcp__docs__*`.
