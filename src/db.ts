@@ -794,6 +794,15 @@ export function logTaskRun(log: TaskRunLog): void {
   );
 }
 
+export function getRecentTaskFailureCount(sinceISO: string): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) as count FROM task_run_logs WHERE status = 'error' AND run_at >= ?`,
+    )
+    .get(sinceISO) as { count: number };
+  return row.count;
+}
+
 // --- Router state accessors ---
 
 export function getRouterState(key: string): string | undefined {

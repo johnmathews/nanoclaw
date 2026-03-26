@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'fs';
-import { executeHostCommand, renderProgressBar } from './host-commands.js';
+import {
+  executeHostCommand,
+  registerHealthProvider,
+  renderProgressBar,
+} from './host-commands.js';
+import type { HealthData } from './health.js';
 
 describe('renderProgressBar', () => {
   it('renders correct width and percentage', () => {
@@ -323,5 +328,51 @@ describe('executeHostCommand', () => {
     const result = await executeHostCommand('/usage');
     expect(result).toContain('Current session');
     expect(result).not.toContain('Current week');
+  });
+});
+
+describe('/status command', () => {
+  const mockHealth: HealthData = {
+    uptimeSeconds: 3600,
+    channels: [
+      { name: 'WhatsApp', connected: true },
+      { name: 'Slack', connected: true },
+    ],
+    messageLoopRunning: true,
+    queue: { active: 1, max: 5, waiting: 0 },
+    registeredGroupCount: 4,
+    activeSessionCount: 2,
+    lastMessageTimestamp: '2026-03-26T10:00:00Z',
+    lastMessageAge: '5m ago',
+    tasks: {
+      activeCount: 3,
+      pausedCount: 1,
+      nextRunTime: '2026-03-26T10:10:00Z',
+      recentFailures: 0,
+    },
+    healthy: true,
+  };
+
+  it('returns formatted status when health provider is registered', async () => {
+    registerHealthProvider(() => mockHealth);
+    const result = await executeHostCommand('/status');
+    expect(result).toContain('*NanoClaw Status*');
+    expect(result).toContain('Message loop: running');
+    expect(result).toContain('WhatsApp: connected');
+    expect(result).toContain('Slack: connected');
+    expect(result).toContain('Active: 1/5');
+    expect(result).toContain('Registered: 4');
+    expect(result).toContain('Sessions: 2');
+  });
+
+  it('returns error when health provider is not registered', async () => {
+    // Re-register with null by importing fresh — but since module state persists,
+    // test the error path by registering a throwing provider
+    registerHealthProvider(() => {
+      throw new Error('test error');
+    });
+    const result = await executeHostCommand('/status');
+    expect(result).toContain('*Status error:*');
+    expect(result).toContain('test error');
   });
 });

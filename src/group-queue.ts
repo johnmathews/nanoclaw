@@ -35,6 +35,14 @@ export class GroupQueue {
     null;
   private shuttingDown = false;
 
+  getActiveCount(): number {
+    return this.activeCount;
+  }
+
+  getWaitingCount(): number {
+    return this.waitingGroups.length;
+  }
+
   private getGroup(groupJid: string): GroupState {
     let state = this.groups.get(groupJid);
     if (!state) {

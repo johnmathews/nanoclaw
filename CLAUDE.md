@@ -23,7 +23,10 @@ isolated filesystem and memory.
 | `src/image.ts`                      | Image processing, base64 loading, reference parsing        |
 | `src/transcription.ts`              | Voice message transcription via OpenAI Whisper             |
 | `src/db.ts`                         | SQLite operations                                          |
-| `src/host-commands.ts`              | Host-side commands (/usage) — no container spawn needed    |
+| `src/host-commands.ts`              | Host-side commands (/usage, /status) — no container spawn  |
+| `src/health.ts`                     | Health data collection (pure function, used by all levels) |
+| `src/health-server.ts`              | HTTP health endpoint (GET /health on port 3002)            |
+| `src/watchdog.ts`                   | Systemd watchdog integration (sd_notify)                   |
 | `src/session-commands.ts`           | Session + host command extraction and handling             |
 | `store/messages.db`                 | SQLite database (messages, chats, tasks, sessions, state)  |
 | `groups/{name}/CLAUDE.md`           | Per-group memory (isolated)                                |
@@ -211,7 +214,7 @@ Any `\command` (or `/command`) from a channel is detected generically — no whi
 - **SDK commands** (e.g., `/compact`, `/done`): forwarded to the SDK inside a container
 - **Agent-runner commands** (`/clear`, `/skills`): handled in the agent-runner without SDK involvement (the SDK's
   built-in versions have `supportsNonInteractive=false`)
-- **Intercepted commands** (`/usage`): handled on the host via `executeHostCommand()` in `src/host-commands.ts`
+- **Intercepted commands** (`/usage`, `/status`): handled on the host via `executeHostCommand()` in `src/host-commands.ts`
 
 All commands are detected by `extractCommand()` in `src/session-commands.ts`. Intercepted commands execute inline in the
 message loop; SDK and agent-runner commands are enqueued for container processing. Backslash is normalized to forward
@@ -232,6 +235,25 @@ DB-stored rate limit snapshots captured from the SDK's `rate_limit_event` messag
 
 Intercepted commands execute **inline** in the message loop (not deferred to `processGroupMessages`). This prevents a
 race where the next poll cycle would include the command message in `allPending` and pipe it to an active container.
+
+## Health Monitoring
+
+Three-level health monitoring system:
+
+1. **`/status` command** — any channel user can send `/status` to get service health: uptime, channel connectivity,
+   container queue, message cursor age, scheduled task summary. Implemented in `src/host-commands.ts` via a health
+   provider callback registered by the orchestrator. Health data collection is in `src/health.ts` (pure function).
+
+2. **HTTP health endpoint** — `GET http://127.0.0.1:3002/health` returns JSON with HTTP 200 (healthy) or 503 (degraded).
+   Port configurable via `HEALTH_PORT` env var. Implemented in `src/health-server.ts`.
+
+3. **Systemd watchdog** — the message loop sends `WATCHDOG=1` every 2 seconds via `systemd-notify`. If 15 consecutive
+   heartbeats are missed (30s), systemd restarts the service. Also sends `READY=1` on startup and `STOPPING=1` on
+   shutdown. Requires `Type=notify`, `NotifyAccess=all`, and `WatchdogSec=30s` in the service file.
+   Implemented in `src/watchdog.ts`.
+
+4. **Smoke test** — `npx tsx scripts/smoke-test.ts` checks the health endpoint and DB for staleness. `--full` mode
+   injects a test message and waits for a response. Exit code 0 = healthy, 1 = unhealthy.
 
 ## Container Build Cache
 

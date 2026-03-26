@@ -64,8 +64,9 @@ describe('extractCommand', () => {
 });
 
 describe('isInterceptedCommand', () => {
-  it('returns true for /usage', () => {
+  it('returns true for intercepted commands', () => {
     expect(isInterceptedCommand('/usage')).toBe(true);
+    expect(isInterceptedCommand('/status')).toBe(true);
   });
 
   it('returns false for SDK commands', () => {
@@ -96,7 +97,7 @@ describe('isReadOnlyCommand', () => {
   // Without the isReadOnlyCommand check, /model and /skills were stuck waiting
   // for the idle timeout because closeStdin was never called.
   it('non-intercepted read-only commands bypass session auth gate', () => {
-    const readOnlySdkCommands = ['/model', '/skills', '/status'];
+    const readOnlySdkCommands = ['/model', '/skills'];
     for (const cmd of readOnlySdkCommands) {
       // These are read-only but NOT intercepted — they go to the SDK
       expect(isReadOnlyCommand(cmd)).toBe(true);
