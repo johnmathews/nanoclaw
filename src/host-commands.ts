@@ -1,6 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 import { TIMEZONE } from './config.js';
+import type { HealthData } from './health.js';
+import { formatHealthText } from './health.js';
 import { logger } from './logger.js';
 
 const RATE_LIMIT_LABELS: Record<string, string> = {
@@ -300,9 +302,29 @@ function formatUsageFailure(failure: UsageFailure): string {
   }
 }
 
+// --- Health provider ---
+
+let healthProvider: (() => HealthData) | null = null;
+
+export function registerHealthProvider(fn: () => HealthData): void {
+  healthProvider = fn;
+}
+
 // --- Command dispatch ---
 
 export async function executeHostCommand(command: string): Promise<string> {
+  if (command === '/status') {
+    if (!healthProvider) {
+      return '*Status unavailable — health provider not initialized.*';
+    }
+    try {
+      return formatHealthText(healthProvider());
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error({ err }, 'Health check failed');
+      return `*Status error:* ${message}`;
+    }
+  }
   if (command === '/usage') {
     try {
       const result = await fetchUsageFromApi();

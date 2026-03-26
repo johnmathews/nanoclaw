@@ -5,7 +5,9 @@ import {
   ASSISTANT_NAME,
   CREDENTIAL_PROXY_PORT,
   DATA_DIR,
+  HEALTH_PORT,
   IDLE_TIMEOUT,
+  MAX_CONCURRENT_CONTAINERS,
   POLL_INTERVAL,
   TIMEZONE,
   TRIGGER_PATTERN,
@@ -39,6 +41,7 @@ import {
   getNewMessages,
   getReactionsForChat,
   getReactionsForMessages,
+  getRecentTaskFailureCount,
   getRouterState,
   initDatabase,
   Reaction,
@@ -74,7 +77,9 @@ import {
   handleSessionCommand,
   isSessionCommandAllowed,
 } from './session-commands.js';
-import { executeHostCommand } from './host-commands.js';
+import { collectHealth } from './health.js';
+import { startHealthServer } from './health-server.js';
+import { executeHostCommand, registerHealthProvider } from './host-commands.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import {
   Channel,
@@ -88,6 +93,7 @@ import {
   type LoadedImage,
 } from './image.js';
 import { StatusTracker } from './status-tracker.js';
+import { initWatchdog } from './watchdog.js';
 import { logger } from './logger.js';
 
 // Re-export for backwards compatibility during refactor
@@ -106,6 +112,7 @@ let stopping = false;
 const channels: Channel[] = [];
 const queue = new GroupQueue();
 let statusTracker: StatusTracker;
+let watchdog: ReturnType<typeof initWatchdog> = null;
 
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
@@ -789,6 +796,7 @@ async function startMessageLoop(): Promise<void> {
     } catch (err) {
       logger.error({ err }, 'Error in message loop');
     }
+    watchdog?.tick();
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL));
   }
   logger.info('Message loop stopped cleanly');
@@ -856,9 +864,12 @@ async function main(): Promise<void> {
   );
 
   // Graceful shutdown handlers
+  let healthServer: ReturnType<typeof startHealthServer> | null = null;
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
     stopping = true;
+    watchdog?.close();
+    healthServer?.close();
     proxyServer.close();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
@@ -1127,6 +1138,34 @@ async function main(): Promise<void> {
   // Recover status tracker AFTER channels connect, so recovery reactions
   // can actually be sent via the WhatsApp channel.
   await statusTracker.recover();
+  // Health data — shared by /status command and HTTP health endpoint
+  function getHealth() {
+    const tasks = getAllTasks();
+    return collectHealth({
+      channels,
+      messageLoopRunning,
+      queueActiveCount: queue.getActiveCount(),
+      queueWaitingCount: queue.getWaitingCount(),
+      maxConcurrentContainers: MAX_CONCURRENT_CONTAINERS,
+      registeredGroupCount: Object.keys(registeredGroups).length,
+      activeSessionCount: Object.keys(sessions).length,
+      lastMessageTimestamp: lastTimestamp,
+      activeTasks: tasks.filter((t) => t.status === 'active').length,
+      pausedTasks: tasks.filter((t) => t.status === 'paused').length,
+      nextTaskRunTime:
+        tasks
+          .filter((t) => t.status === 'active' && t.next_run)
+          .sort((a, b) => (a.next_run! < b.next_run! ? -1 : 1))[0]?.next_run ??
+        null,
+      recentTaskFailures: getRecentTaskFailureCount(
+        new Date(Date.now() - 86_400_000).toISOString(),
+      ),
+    });
+  }
+  registerHealthProvider(getHealth);
+  healthServer = startHealthServer(HEALTH_PORT, getHealth);
+  watchdog = initWatchdog();
+
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();
   startMessageLoop().catch((err) => {

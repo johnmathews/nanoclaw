@@ -2,7 +2,7 @@ import type { NewMessage } from './types.js';
 import { logger } from './logger.js';
 
 /** Commands intercepted on the host (no container spawn). */
-const INTERCEPTED_COMMANDS = new Set(['/usage']);
+const INTERCEPTED_COMMANDS = new Set(['/usage', '/status']);
 
 /** Read-only commands that any authorized sender can use (not just admins). */
 const READ_ONLY_COMMANDS = new Set(['/usage', '/skills', '/model', '/status']);

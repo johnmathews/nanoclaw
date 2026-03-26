@@ -56,6 +56,7 @@ export const IDLE_TIMEOUT = parseInt(process.env.IDLE_TIMEOUT || '1800000', 10);
 export const CONTAINER_MEMORY_LIMIT =
   process.env.CONTAINER_MEMORY_LIMIT || '2g';
 export const CONTAINER_CPU_LIMIT = process.env.CONTAINER_CPU_LIMIT || '2';
+export const HEALTH_PORT = parseInt(process.env.HEALTH_PORT || '3002', 10);
 export const MAX_CONCURRENT_CONTAINERS = Math.max(
   1,
   parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '5', 10) || 5,
