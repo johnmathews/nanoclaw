@@ -6,6 +6,10 @@ on:
     branches: [main]
     paths: ['src/**', 'container/**', 'launchd/**', 'CLAUDE.md']
 
+concurrency:
+  group: auto-commit-main
+  cancel-in-progress: false
+
 jobs:
   update-tokens:
     runs-on: ubuntu-latest

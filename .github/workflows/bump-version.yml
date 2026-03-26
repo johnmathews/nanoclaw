@@ -5,6 +5,10 @@ on:
     branches: [main]
     paths: ['src/**', 'container/**']
 
+concurrency:
+  group: auto-commit-main
+  cancel-in-progress: false
+
 jobs:
   bump-version:
     runs-on: ubuntu-latest

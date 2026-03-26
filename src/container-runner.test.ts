@@ -897,7 +897,9 @@ describe('container-runner volume mounts', () => {
     fakeProc = createFakeProcess();
     // Reset fs mocks to defaults
     const fsMod = await import('fs');
-    (fsMod.default.existsSync as ReturnType<typeof vi.fn>).mockImplementation(() => false);
+    (fsMod.default.existsSync as ReturnType<typeof vi.fn>).mockImplementation(
+      () => false,
+    );
     // Clear spawn mock calls from previous tests
     const { spawn: spawnMock } = await import('child_process');
     (spawnMock as ReturnType<typeof vi.fn>).mockClear();
@@ -940,7 +942,9 @@ describe('container-runner volume mounts', () => {
 
   it('skips google-calendar-mcp mount when directory does not exist', async () => {
     const fsMod = await import('fs');
-    (fsMod.default.existsSync as ReturnType<typeof vi.fn>).mockReturnValue(false);
+    (fsMod.default.existsSync as ReturnType<typeof vi.fn>).mockReturnValue(
+      false,
+    );
 
     const { spawn: spawnMock } = await import('child_process');
 
