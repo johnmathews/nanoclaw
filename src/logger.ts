@@ -59,18 +59,46 @@ function log(
   }
 }
 
-export const logger = {
-  debug: (dataOrMsg: Record<string, unknown> | string, msg?: string) =>
-    log('debug', dataOrMsg, msg),
-  info: (dataOrMsg: Record<string, unknown> | string, msg?: string) =>
-    log('info', dataOrMsg, msg),
-  warn: (dataOrMsg: Record<string, unknown> | string, msg?: string) =>
-    log('warn', dataOrMsg, msg),
-  error: (dataOrMsg: Record<string, unknown> | string, msg?: string) =>
-    log('error', dataOrMsg, msg),
-  fatal: (dataOrMsg: Record<string, unknown> | string, msg?: string) =>
-    log('fatal', dataOrMsg, msg),
-};
+export interface Logger {
+  debug: (dataOrMsg: Record<string, unknown> | string, msg?: string) => void;
+  info: (dataOrMsg: Record<string, unknown> | string, msg?: string) => void;
+  warn: (dataOrMsg: Record<string, unknown> | string, msg?: string) => void;
+  error: (dataOrMsg: Record<string, unknown> | string, msg?: string) => void;
+  fatal: (dataOrMsg: Record<string, unknown> | string, msg?: string) => void;
+  child: (bindings?: Record<string, unknown>) => Logger;
+  level: string;
+  trace: (dataOrMsg: Record<string, unknown> | string, msg?: string) => void;
+}
+
+function createLogger(bindings?: Record<string, unknown>): Logger {
+  const boundLog = (
+    level: Level,
+    dataOrMsg: Record<string, unknown> | string,
+    msg?: string,
+  ) => {
+    if (bindings && typeof dataOrMsg === 'object') {
+      log(level, { ...bindings, ...dataOrMsg }, msg);
+    } else if (bindings && typeof dataOrMsg === 'string') {
+      log(level, bindings, dataOrMsg);
+    } else {
+      log(level, dataOrMsg, msg);
+    }
+  };
+
+  return {
+    debug: (dataOrMsg, msg?) => boundLog('debug', dataOrMsg, msg),
+    info: (dataOrMsg, msg?) => boundLog('info', dataOrMsg, msg),
+    warn: (dataOrMsg, msg?) => boundLog('warn', dataOrMsg, msg),
+    error: (dataOrMsg, msg?) => boundLog('error', dataOrMsg, msg),
+    fatal: (dataOrMsg, msg?) => boundLog('fatal', dataOrMsg, msg),
+    trace: () => {}, // noop — baileys calls trace extensively
+    level: 'info',
+    child: (childBindings?: Record<string, unknown>) =>
+      createLogger({ ...bindings, ...childBindings }),
+  };
+}
+
+export const logger: Logger = createLogger();
 
 // Route uncaught errors through logger so they get timestamps in stderr
 process.on('uncaughtException', (err) => {

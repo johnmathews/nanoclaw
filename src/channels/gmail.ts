@@ -84,10 +84,27 @@ export class GmailChannel implements Channel {
 
     this.gmail = google.gmail({ version: 'v1', auth: this.oauth2Client });
 
-    // Verify connection
-    const profile = await this.gmail.users.getProfile({ userId: 'me' });
-    this.userEmail = profile.data.emailAddress || '';
-    logger.info({ email: this.userEmail }, 'Gmail channel connected');
+    // Verify connection — if token is expired/revoked, log and skip (don't crash)
+    try {
+      const profile = await this.gmail.users.getProfile({ userId: 'me' });
+      this.userEmail = profile.data.emailAddress || '';
+      logger.info({ email: this.userEmail }, 'Gmail channel connected');
+    } catch (err: any) {
+      const errorCode = err?.response?.data?.error;
+      if (errorCode === 'invalid_grant') {
+        logger.error(
+          'Gmail OAuth token expired or revoked. Skipping Gmail channel. ' +
+            'Re-authenticate by removing ~/.gmail-mcp/credentials.json and running: ' +
+            'GOOGLE_OAUTH_CREDENTIALS=~/.gmail-mcp/gcp-oauth.keys.json ' +
+            'CREDENTIALS_PATH=~/.gmail-mcp/credentials.json ' +
+            'npx -y @gongrzhe/server-gmail-autoauth-mcp',
+        );
+        this.gmail = null;
+        this.oauth2Client = null;
+        return;
+      }
+      throw err;
+    }
 
     // Start polling with error backoff
     const schedulePoll = () => {

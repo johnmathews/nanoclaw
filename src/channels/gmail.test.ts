@@ -1,7 +1,25 @@
+import fs from 'fs';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Mock registry (registerChannel runs at import time)
 vi.mock('./registry.js', () => ({ registerChannel: vi.fn() }));
+
+// Mock googleapis
+const { mockGetProfile } = vi.hoisted(() => ({ mockGetProfile: vi.fn() }));
+vi.mock('googleapis', () => {
+  class MockOAuth2 {
+    setCredentials = vi.fn();
+    on = vi.fn();
+  }
+  return {
+    google: {
+      auth: { OAuth2: MockOAuth2 },
+      gmail: vi.fn().mockReturnValue({
+        users: { getProfile: mockGetProfile },
+      }),
+    },
+  };
+});
 
 import { GmailChannel, GmailChannelOpts } from './gmail.js';
 
@@ -51,6 +69,41 @@ describe('GmailChannel', () => {
     it('sets connected to false', async () => {
       await channel.disconnect();
       expect(channel.isConnected()).toBe(false);
+    });
+  });
+
+  describe('connect with expired token', () => {
+    it('does not crash when OAuth token is expired/revoked', async () => {
+      // Provide fake credential files
+      const fakeKeys = JSON.stringify({
+        installed: {
+          client_id: 'fake-id',
+          client_secret: 'fake-secret',
+          redirect_uris: ['http://localhost'],
+        },
+      });
+      const fakeTokens = JSON.stringify({
+        access_token: 'expired',
+        refresh_token: 'expired',
+      });
+
+      vi.spyOn(fs, 'existsSync').mockReturnValue(true);
+      vi.spyOn(fs, 'readFileSync').mockImplementation((p: any) => {
+        if (String(p).includes('gcp-oauth.keys.json')) return fakeKeys;
+        if (String(p).includes('credentials.json')) return fakeTokens;
+        return '';
+      });
+
+      // Simulate invalid_grant error from Google
+      mockGetProfile.mockRejectedValueOnce({
+        response: { data: { error: 'invalid_grant' } },
+      });
+
+      // Should not throw — should degrade gracefully
+      await channel.connect();
+      expect(channel.isConnected()).toBe(false);
+
+      vi.restoreAllMocks();
     });
   });
 
