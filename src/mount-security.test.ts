@@ -20,15 +20,20 @@ vi.mock('./config.js', () => ({
   MOUNT_ALLOWLIST_PATH: '/fake/allowlist.json',
 }));
 
-vi.mock('pino', () => {
-  const mockLogger = {
-    debug: vi.fn(),
-    info: vi.fn(),
-    warn: vi.fn(),
-    error: vi.fn(),
-  };
-  return { default: () => mockLogger };
-});
+const mockLogger = {
+  debug: vi.fn(),
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  fatal: vi.fn(),
+  trace: vi.fn(),
+  level: 'info',
+  child: vi.fn(),
+};
+
+vi.mock('./logger.js', () => ({
+  logger: mockLogger,
+}));
 
 import type { MountAllowlist, AdditionalMount } from './types.js';
 
@@ -162,7 +167,7 @@ describe('loadMountAllowlist', () => {
     expect(mockReadFileSync).toHaveBeenCalledTimes(1);
   });
 
-  it('caches error on second call after load failure', () => {
+  it('does not cache file-not-found (file may appear later without restart)', () => {
     mockExistsSync.mockReturnValue(false);
 
     const first = loadMountAllowlist();
@@ -170,8 +175,21 @@ describe('loadMountAllowlist', () => {
 
     expect(first).toBeNull();
     expect(second).toBeNull();
-    // existsSync only called on first attempt
-    expect(mockExistsSync).toHaveBeenCalledTimes(1);
+    // existsSync called each time — file-not-found is NOT cached
+    expect(mockExistsSync).toHaveBeenCalledTimes(2);
+  });
+
+  it('caches parse errors permanently', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue('not valid json {{{');
+
+    const first = loadMountAllowlist();
+    const second = loadMountAllowlist();
+
+    expect(first).toBeNull();
+    expect(second).toBeNull();
+    // Only read once — parse error is cached
+    expect(mockReadFileSync).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -402,14 +420,9 @@ describe('validateAdditionalMounts', () => {
     expect(result[0].containerPath).toBe('/workspace/extra/project');
   });
 
-  it('logs warnings for rejected mounts', async () => {
-    // Need to get the pino mock's logger to check calls
-    const pino = await import('pino');
-    const loggerInstance = (
-      pino.default as unknown as () => Record<string, ReturnType<typeof vi.fn>>
-    )();
-
+  it('logs warnings for rejected mounts', () => {
     setupAllowlist();
+    mockLogger.warn.mockClear();
 
     const mounts: AdditionalMount[] = [
       { hostPath: '/not-allowed/path', containerPath: 'nope' },
@@ -417,7 +430,7 @@ describe('validateAdditionalMounts', () => {
 
     validateAdditionalMounts(mounts, 'test-group', true);
 
-    expect(loggerInstance.warn).toHaveBeenCalled();
+    expect(mockLogger.warn).toHaveBeenCalled();
   });
 });
 
