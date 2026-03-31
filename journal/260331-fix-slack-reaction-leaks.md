@@ -37,3 +37,19 @@ Promoted to `warn` level so failures are visible in `journalctl` output.
 8 new tests covering orphan prevention (4 tests) and edge cases (4 tests): same-ts no-op,
 add failure after old removal, idempotent setTyping(false), double-stop from streaming +
 container exit.
+
+## Research: alternatives to reactions
+
+Investigated whether Slack offers better typing indicators than reactions. Findings:
+
+- **Native typing indicator:** Impossible with modern APIs (legacy RTM only, deprecated).
+- **`chat.postEphemeral`:** Cannot be updated or deleted — stale messages accumulate. Not viable.
+- **`assistant.threads.setStatus`:** Best native option — shows "App is thinking..." with no
+  notification, auto-clears on reply. Only works in threads (`thread_ts` required). Since NanoClaw
+  uses flat channel messages (not threads), this doesn't apply today.
+- **Placeholder message + `chat.update`:** Sends a notification on initial post. Defeats the purpose.
+
+**Decision:** Stick with reactions for flat channel conversations. The bugs fixed above were the
+actual reliability problems. If NanoClaw switches to thread-based replies in the future,
+`assistant.threads.setStatus` is the upgrade path. Slack streaming APIs (`chat.startStream` etc.)
+are also noted for future progressive text delivery.
