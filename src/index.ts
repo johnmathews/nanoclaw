@@ -1167,6 +1167,11 @@ async function main(): Promise<void> {
         await channel.reactToLatestMessage(jid, emoji);
       }
     },
+    setTyping: async (jid, isTyping) => {
+      const channel = findChannel(channels, jid);
+      if (!channel) return;
+      await channel.setTyping?.(jid, isTyping);
+    },
     registeredGroups: () => registeredGroups,
     registerGroup,
     syncGroups: async (force: boolean) => {

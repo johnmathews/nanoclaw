@@ -94,7 +94,10 @@ StatusTracker from sending redundant emoji reactions (which can also cause feedb
 - **Telegram**: Native `sendChatAction('typing')` — ephemeral typing indicator
 - **Slack**: `:eyes:` reaction added via `setTyping(true, messageTs)`, removed via `setTyping(false)` after each
   successful output and when the container exits. `sendMessage()`/`sendBlocks()` do NOT touch the reaction — this
-  prevents indicator gaps in multi-turn conversations where the container is still alive processing piped messages
+  prevents indicator gaps in multi-turn conversations where the container is still alive processing piped messages.
+  When piped messages switch the reaction to a new message, the old reaction is removed first to prevent orphaned
+  indicators. IPC-delivered messages (`send_message` tool) also clear the typing indicator, since they bypass the
+  streaming output path. Reaction removal failures are logged at `warn` level for production visibility
 
 The StatusTracker's progress reactions (received/thinking/working/done) are only sent for channels where
 `hasNativeTyping` is false or undefined. Currently all channels have native indicators, so StatusTracker reactions

@@ -1436,6 +1436,169 @@ describe('SlackChannel', () => {
     });
   });
 
+  // --- setTyping removes old reaction when switching to a new message ---
+
+  describe('setTyping orphaned reaction prevention', () => {
+    it('removes reaction from old message when switching to new messageTs', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+
+      // Add reaction to message A
+      await channel.setTyping('slack:C0123456789', true, 'ts-msg-A');
+      currentApp().client.reactions.add.mockClear();
+      currentApp().client.reactions.remove.mockClear();
+
+      // Switch to message B — should remove from A first, then add to B
+      await channel.setTyping('slack:C0123456789', true, 'ts-msg-B');
+
+      expect(currentApp().client.reactions.remove).toHaveBeenCalledWith({
+        channel: 'C0123456789',
+        timestamp: 'ts-msg-A',
+        name: 'eyes',
+      });
+      expect(currentApp().client.reactions.add).toHaveBeenCalledWith({
+        channel: 'C0123456789',
+        timestamp: 'ts-msg-B',
+        name: 'eyes',
+      });
+    });
+
+    it('does not remove reaction when messageTs is the same', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+
+      await channel.setTyping('slack:C0123456789', true, 'ts-msg-A');
+      currentApp().client.reactions.remove.mockClear();
+
+      // Same messageTs — should not remove, just re-add
+      await channel.setTyping('slack:C0123456789', true, 'ts-msg-A');
+
+      expect(currentApp().client.reactions.remove).not.toHaveBeenCalled();
+    });
+
+    it('does not remove reaction when no prior reaction exists', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+
+      // First setTyping with messageTs — no prior reaction
+      await channel.setTyping('slack:C0123456789', true, 'ts-msg-A');
+
+      expect(currentApp().client.reactions.remove).not.toHaveBeenCalled();
+      expect(currentApp().client.reactions.add).toHaveBeenCalledWith({
+        channel: 'C0123456789',
+        timestamp: 'ts-msg-A',
+        name: 'eyes',
+      });
+    });
+
+    it('handles multiple piped messages without orphaning reactions', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+
+      // Simulate: message A, then B piped, then C piped, then container exits
+      await channel.setTyping('slack:C0123456789', true, 'ts-A');
+      currentApp().client.reactions.remove.mockClear();
+
+      await channel.setTyping('slack:C0123456789', true, 'ts-B');
+      expect(currentApp().client.reactions.remove).toHaveBeenCalledWith({
+        channel: 'C0123456789',
+        timestamp: 'ts-A',
+        name: 'eyes',
+      });
+      currentApp().client.reactions.remove.mockClear();
+
+      await channel.setTyping('slack:C0123456789', true, 'ts-C');
+      expect(currentApp().client.reactions.remove).toHaveBeenCalledWith({
+        channel: 'C0123456789',
+        timestamp: 'ts-B',
+        name: 'eyes',
+      });
+      currentApp().client.reactions.remove.mockClear();
+
+      // Container exits — remove from C
+      await channel.setTyping('slack:C0123456789', false);
+      expect(currentApp().client.reactions.remove).toHaveBeenCalledWith({
+        channel: 'C0123456789',
+        timestamp: 'ts-C',
+        name: 'eyes',
+      });
+    });
+  });
+
+  // --- Edge cases: reaction cleanup resilience ---
+
+  describe('setTyping edge cases', () => {
+    it('leaves no indicator if reactions.add fails after old reaction was removed', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+
+      // Add reaction to message A
+      await channel.setTyping('slack:C0123456789', true, 'ts-A');
+      currentApp().client.reactions.remove.mockClear();
+
+      // Switch to B, but reactions.add fails for the new message
+      currentApp().client.reactions.add.mockRejectedValueOnce(
+        new Error('channel_not_found'),
+      );
+      await channel.setTyping('slack:C0123456789', true, 'ts-B');
+
+      // Old reaction was removed
+      expect(currentApp().client.reactions.remove).toHaveBeenCalledWith({
+        channel: 'C0123456789',
+        timestamp: 'ts-A',
+        name: 'eyes',
+      });
+
+      // Map should NOT have an entry (add failed, line 427 didn't execute)
+      // so setTyping(false) should be a no-op
+      currentApp().client.reactions.remove.mockClear();
+      await channel.setTyping('slack:C0123456789', false);
+      expect(currentApp().client.reactions.remove).not.toHaveBeenCalled();
+    });
+
+    it('setTyping(false) is idempotent when called multiple times', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+
+      await channel.setTyping('slack:C0123456789', true, 'ts-A');
+
+      // First stop — removes reaction
+      await channel.setTyping('slack:C0123456789', false);
+      expect(currentApp().client.reactions.remove).toHaveBeenCalledTimes(1);
+      currentApp().client.reactions.remove.mockClear();
+
+      // Second stop — should be no-op (map already cleared)
+      await channel.setTyping('slack:C0123456789', false);
+      expect(currentApp().client.reactions.remove).not.toHaveBeenCalled();
+    });
+
+    it('interleaved setTyping(true) for same message does not double-remove', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+
+      // Two setTyping(true) with same ts — no removal should happen
+      await channel.setTyping('slack:C0123456789', true, 'ts-A');
+      currentApp().client.reactions.remove.mockClear();
+
+      await channel.setTyping('slack:C0123456789', true, 'ts-A');
+      expect(currentApp().client.reactions.remove).not.toHaveBeenCalled();
+    });
+
+    it('setTyping(false) after streaming output + container exit is safe', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+
+      // Simulate: typing starts, streaming callback calls setTyping(false),
+      // then container exit also calls setTyping(false)
+      await channel.setTyping('slack:C0123456789', true, 'ts-A');
+      await channel.setTyping('slack:C0123456789', false); // streaming callback
+      currentApp().client.reactions.remove.mockClear();
+
+      await channel.setTyping('slack:C0123456789', false); // container exit
+      expect(currentApp().client.reactions.remove).not.toHaveBeenCalled();
+    });
+  });
+
   // --- sendMessage does NOT remove :eyes: reaction ---
   // The reaction lifecycle is managed by setTyping() only.
   // sendMessage must not eagerly remove the reaction, because in multi-turn

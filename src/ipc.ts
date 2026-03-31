@@ -22,6 +22,7 @@ export interface IpcDeps {
     emoji: string,
     messageId?: string,
   ) => Promise<void>;
+  setTyping?: (jid: string, isTyping: boolean) => Promise<void>;
   registeredGroups: () => Record<string, RegisteredGroup>;
   registerGroup: (jid: string, group: RegisteredGroup) => void;
   syncGroups: (force: boolean) => Promise<void>;
@@ -96,6 +97,9 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
                   await deps.sendMessage(data.chatJid, data.text);
+                  // Clear typing indicator — IPC messages bypass the streaming
+                  // output path, so setTyping(false) would never fire otherwise.
+                  await deps.setTyping?.(data.chatJid, false);
                   logger.info(
                     { chatJid: data.chatJid, sourceGroup },
                     'IPC message sent',
@@ -121,6 +125,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
                     data.blocks,
                     data.fallbackText || '',
                   );
+                  await deps.setTyping?.(data.chatJid, false);
                   logger.info(
                     { chatJid: data.chatJid, sourceGroup },
                     'IPC blocks sent',

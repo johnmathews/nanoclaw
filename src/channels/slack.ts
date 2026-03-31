@@ -412,6 +412,12 @@ export class SlackChannel implements Channel {
       // Reactions don't trigger notifications — unlike posting a message.
       const ts = messageTs || this.workingReactions.get(channelId);
       if (!ts) return;
+      // If switching to a new message, remove the reaction from the old one first
+      // to prevent orphaned reactions when piped messages overwrite the tracking map.
+      const existingTs = this.workingReactions.get(channelId);
+      if (existingTs && existingTs !== ts) {
+        this.removeWorkingReaction(channelId);
+      }
       try {
         await this.app.client.reactions.add({
           channel: channelId,
@@ -442,7 +448,7 @@ export class SlackChannel implements Channel {
         name: WORKING_REACTION,
       })
       .catch((err) => {
-        logger.debug({ channelId, err }, 'Failed to remove working reaction');
+        logger.warn({ channelId, err }, 'Failed to remove working reaction');
       });
   }
 
