@@ -78,6 +78,44 @@ cherry-picks commits and features into our fork. This agent is making mistakes:
 5. Skipped CI for fork PRs in `.github/workflows/ci.yml` to prevent `action_required` noise
 6. Fixed `gh` CLI default repo to point at our fork
 
+## Follow-up: stray conflict marker broke all containers
+
+The initial fix (commit `142d2c7`) resolved the host-side TypeScript errors but left a
+`<<<<<<< HEAD` merge conflict marker at line 393 of `container/agent-runner/src/index.ts`.
+This went unnoticed because the host build succeeded — the agent-runner source is not compiled
+at build time. It's mounted into containers at runtime and compiled there via `npx tsx`.
+
+**Symptom:** Every container spawn crashed immediately with `TS1185: Merge conflict marker
+encountered`. Messages across all channels (main-group, server-bot, git-maintenance) were
+retried up to 6 times then dropped. The only visible sign in Slack was the `:eyes:` typing
+indicator appearing and disappearing repeatedly (added on spawn, removed on crash, re-added
+on retry).
+
+**Fix:** Removed the stray `<<<<<<< HEAD` line (`51154e9`).
+
+**Why it wasn't caught:** The agent-runner lives in `container/agent-runner/src/` and is only
+compiled inside Docker containers at runtime. `npm run build` only compiles the host code in
+`src/`. There is no CI step that typechecks the agent-runner source. This is a gap — the
+cherry-pick verification lesson below should include the agent-runner.
+
+## Follow-up: broken test suite
+
+Three tests were also failing, masking CI's ability to catch real regressions:
+
+1. **mount-security.test.ts — wrong mock target**: The test mocked `pino` to spy on logger
+   calls, but `logger.ts` was rewritten as a custom logger (no pino dependency). The mock
+   was targeting a module that's no longer imported. Fixed by mocking `./logger.js` directly.
+
+2. **mount-security.test.ts — wrong cache expectation**: Test expected file-not-found to be
+   cached (single `existsSync` call), but the code explicitly does NOT cache this case
+   (comment: "file may be created later without restart"). Fixed test to expect 2 calls and
+   added a separate test for parse error caching (which IS permanent).
+
+3. **claw-skill.test.ts — timeout race**: Default 5s vitest timeout was too tight. The test
+   spawns a mock container with `sleep 30` that ignores SIGTERM, requiring a 5s grace period
+   before SIGKILL. The test was timing out before the kill could complete. Fixed by increasing
+   test timeout to 20s.
+
 ## Lessons for the upstream monitoring agent
 
 The agent's cherry-pick workflow MUST include post-application verification:
