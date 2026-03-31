@@ -8,6 +8,9 @@ on:
 
 jobs:
   ci:
+    # Skip fork PRs — they require manual approval anyway, and the pending
+    # "action_required" state generates spurious "run failed" notifications.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

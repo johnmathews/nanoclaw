@@ -52,7 +52,6 @@ import {
   upsertRateLimit,
   setRouterState,
   setSession,
-  deleteSession,
   storeChatMetadata,
   storeMessage,
   storeReaction,
