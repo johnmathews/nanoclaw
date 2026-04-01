@@ -148,7 +148,9 @@ describe('formatMessages', () => {
     // First message has no thread_ts
     expect(result).toContain('>channel msg</message>');
     // Second message has thread_ts
-    expect(result).toContain('thread_ts="1704067200.000000">thread reply</message>');
+    expect(result).toContain(
+      'thread_ts="1704067200.000000">thread reply</message>',
+    );
   });
 });
 

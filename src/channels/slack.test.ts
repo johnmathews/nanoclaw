@@ -1317,7 +1317,9 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(opts);
       await channel.connect();
 
-      const blocks = [{ type: 'section', text: { type: 'mrkdwn', text: 'test' } }];
+      const blocks = [
+        { type: 'section', text: { type: 'mrkdwn', text: 'test' } },
+      ];
       await channel.sendBlocks(
         'slack:C0123456789',
         blocks,
@@ -1338,7 +1340,9 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(opts);
       await channel.connect();
 
-      const blocks = [{ type: 'section', text: { type: 'mrkdwn', text: 'test' } }];
+      const blocks = [
+        { type: 'section', text: { type: 'mrkdwn', text: 'test' } },
+      ];
       await channel.sendBlocks('slack:C0123456789', blocks, 'fallback text');
 
       expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith({

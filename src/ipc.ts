@@ -97,7 +97,11 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   isMain ||
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
-                  await deps.sendMessage(data.chatJid, data.text, data.threadTs);
+                  await deps.sendMessage(
+                    data.chatJid,
+                    data.text,
+                    data.threadTs,
+                  );
                   // Clear typing indicator — IPC messages bypass the streaming
                   // output path, so setTyping(false) would never fire otherwise.
                   await deps.setTyping?.(data.chatJid, false);

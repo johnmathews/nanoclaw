@@ -338,9 +338,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   const threadedMessages = missedMessages.filter((m) => m.thread_ts);
   // Use the thread_ts from the most recent threaded message (all should share
   // the same thread_ts if they're from the same thread).
-  const activeThreadTs = threadedMessages.length > 0
-    ? threadedMessages[threadedMessages.length - 1].thread_ts
-    : undefined;
+  const activeThreadTs =
+    threadedMessages.length > 0
+      ? threadedMessages[threadedMessages.length - 1].thread_ts
+      : undefined;
 
   let promptMessages = missedMessages;
   if (activeThreadTs) {
@@ -847,9 +848,10 @@ async function startMessageLoop(): Promise<void> {
           // Thread-aware context for piped messages: if the new messages are
           // from a thread, include the full thread history for context.
           const pipeThreaded = messagesToSend.filter((m) => m.thread_ts);
-          const pipeThreadTs = pipeThreaded.length > 0
-            ? pipeThreaded[pipeThreaded.length - 1].thread_ts
-            : undefined;
+          const pipeThreadTs =
+            pipeThreaded.length > 0
+              ? pipeThreaded[pipeThreaded.length - 1].thread_ts
+              : undefined;
           if (pipeThreadTs) {
             const threadHist = getThreadMessages(
               chatJid,

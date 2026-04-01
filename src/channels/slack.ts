@@ -99,7 +99,11 @@ export class SlackChannel implements Channel {
   private botToken: string;
   private botUserId: string | undefined;
   private connected = false;
-  private outgoingQueue: Array<{ jid: string; text: string; threadTs?: string }> = [];
+  private outgoingQueue: Array<{
+    jid: string;
+    text: string;
+    threadTs?: string;
+  }> = [];
   private flushing = false;
   private userNameCache = new Map<string, string>();
   private workingReactions = new Map<string, string>(); // channelId → message ts (for removing reaction)
@@ -325,7 +329,11 @@ export class SlackChannel implements Channel {
     }
   }
 
-  async sendMessage(jid: string, text: string, threadTs?: string): Promise<void> {
+  async sendMessage(
+    jid: string,
+    text: string,
+    threadTs?: string,
+  ): Promise<void> {
     const channelId = jid.replace(/^slack:/, '');
 
     if (!this.connected) {
@@ -650,7 +658,8 @@ export class SlackChannel implements Channel {
         { count: this.outgoingQueue.length },
         'Flushing Slack outgoing queue',
       );
-      const failed: Array<{ jid: string; text: string; threadTs?: string }> = [];
+      const failed: Array<{ jid: string; text: string; threadTs?: string }> =
+        [];
       while (this.outgoingQueue.length > 0) {
         const item = this.outgoingQueue.shift()!;
         const channelId = item.jid.replace(/^slack:/, '');
