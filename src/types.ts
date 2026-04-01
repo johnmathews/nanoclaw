@@ -51,6 +51,11 @@ export interface NewMessage {
   timestamp: string;
   is_from_me?: boolean;
   is_bot_message?: boolean;
+  /** Slack thread_ts — identifies which thread this message belongs to.
+   *  For thread parents: thread_ts === id (the message's own ts).
+   *  For thread replies: thread_ts === parent message's ts.
+   *  Undefined for non-threaded messages and non-Slack channels. */
+  thread_ts?: string;
 }
 
 export interface ScheduledTask {
@@ -83,7 +88,7 @@ export interface TaskRunLog {
 export interface Channel {
   name: string;
   connect(): Promise<void>;
-  sendMessage(jid: string, text: string): Promise<void>;
+  sendMessage(jid: string, text: string, threadTs?: string): Promise<void>;
   isConnected(): boolean;
   ownsJid(jid: string): boolean;
   disconnect(): Promise<void>;

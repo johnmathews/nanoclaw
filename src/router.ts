@@ -46,7 +46,10 @@ export function formatMessages(
       msgReactions && msgReactions.length > 0
         ? `\n  <reactions>${formatReactionAnnotation(msgReactions)}</reactions>`
         : '';
-    return `<message sender="${escapeXml(m.sender_name)}" time="${escapeXml(displayTime)}">${escapeXml(m.content)}${reactionSuffix}</message>`;
+    const threadAttr = m.thread_ts
+      ? ` thread_ts="${escapeXml(m.thread_ts)}"`
+      : '';
+    return `<message sender="${escapeXml(m.sender_name)}" time="${escapeXml(displayTime)}"${threadAttr}>${escapeXml(m.content)}${reactionSuffix}</message>`;
   });
 
   const header = `<context timezone="${escapeXml(timezone)}" />\n`;

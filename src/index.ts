@@ -42,6 +42,7 @@ import {
   getMessageFromMe,
   getMessagesSince,
   getNewMessages,
+  getThreadMessages,
   getReactionsForChat,
   getReactionsForMessages,
   getRecentTaskFailureCount,
@@ -330,8 +331,46 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     statusTracker.markThinking(msg.id);
   }
 
-  const reactionMap = buildReactionMap(missedMessages, chatJid);
-  const prompt = formatMessages(missedMessages, TIMEZONE, reactionMap);
+  // --- Thread-aware context ---
+  // Detect if the triggering messages are from a Slack thread.
+  // If so, fetch the full thread history so the agent has complete context,
+  // and track the threadTs so output goes back to the same thread.
+  const threadedMessages = missedMessages.filter((m) => m.thread_ts);
+  // Use the thread_ts from the most recent threaded message (all should share
+  // the same thread_ts if they're from the same thread).
+  const activeThreadTs = threadedMessages.length > 0
+    ? threadedMessages[threadedMessages.length - 1].thread_ts
+    : undefined;
+
+  let promptMessages = missedMessages;
+  if (activeThreadTs) {
+    // Fetch full thread history from DB for context
+    const threadHistory = getThreadMessages(
+      chatJid,
+      activeThreadTs,
+      ASSISTANT_NAME,
+    );
+    if (threadHistory.length > 0) {
+      // Merge: use thread history as context, but ensure the new pending
+      // messages are included (they may not be in the thread query yet if
+      // they just arrived). Deduplicate by message ID.
+      const seen = new Set(threadHistory.map((m) => m.id));
+      const additional = missedMessages.filter((m) => !seen.has(m.id));
+      promptMessages = [...threadHistory, ...additional];
+    }
+    logger.info(
+      {
+        group: group.name,
+        threadTs: activeThreadTs,
+        threadMessages: promptMessages.length,
+        newMessages: missedMessages.length,
+      },
+      'Thread-aware context: providing full thread history',
+    );
+  }
+
+  const reactionMap = buildReactionMap(promptMessages, chatJid);
+  const prompt = formatMessages(promptMessages, TIMEZONE, reactionMap);
 
   // Load images into memory NOW, before any cleanup or container spawn.
   // This eliminates the file-based handoff — data goes directly via stdin.
@@ -404,7 +443,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
         const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
         logger.info({ group: group.name }, `Agent output: ${raw.length} chars`);
         if (text) {
-          await channel.sendMessage(chatJid, text);
+          await channel.sendMessage(chatJid, text, activeThreadTs);
           outputSentToUser = true;
         }
         // Only reset idle timer on actual results, not session-update markers (result: null)
@@ -802,8 +841,28 @@ async function startMessageLoop(): Promise<void> {
             ASSISTANT_NAME,
             MAX_MESSAGES_PER_PROMPT,
           );
-          const messagesToSend =
+          let messagesToSend =
             allPending.length > 0 ? allPending : groupMessages;
+
+          // Thread-aware context for piped messages: if the new messages are
+          // from a thread, include the full thread history for context.
+          const pipeThreaded = messagesToSend.filter((m) => m.thread_ts);
+          const pipeThreadTs = pipeThreaded.length > 0
+            ? pipeThreaded[pipeThreaded.length - 1].thread_ts
+            : undefined;
+          if (pipeThreadTs) {
+            const threadHist = getThreadMessages(
+              chatJid,
+              pipeThreadTs,
+              ASSISTANT_NAME,
+            );
+            if (threadHist.length > 0) {
+              const seen = new Set(threadHist.map((m) => m.id));
+              const extra = messagesToSend.filter((m) => !seen.has(m.id));
+              messagesToSend = [...threadHist, ...extra];
+            }
+          }
+
           const pipeReactionMap = buildReactionMap(messagesToSend, chatJid);
           const formatted = formatMessages(
             messagesToSend,
@@ -1123,12 +1182,12 @@ async function main(): Promise<void> {
     },
   });
   startIpcWatcher({
-    sendMessage: (jid, text) => {
+    sendMessage: (jid, text, threadTs) => {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
-      return channel.sendMessage(jid, text);
+      return channel.sendMessage(jid, text, threadTs);
     },
-    sendBlocks: (jid, blocks, fallbackText) => {
+    sendBlocks: (jid, blocks, fallbackText, threadTs) => {
       const channel = findChannel(channels, jid);
       if (!channel) throw new Error(`No channel for JID: ${jid}`);
       // Duck-type: if the channel supports sendBlocks, use it; otherwise fall back to text
@@ -1142,11 +1201,12 @@ async function main(): Promise<void> {
               jid: string,
               blocks: unknown[],
               fallbackText: string,
+              threadTs?: string,
             ) => Promise<void>;
           }
-        ).sendBlocks(jid, blocks, fallbackText);
+        ).sendBlocks(jid, blocks, fallbackText, threadTs);
       }
-      return channel.sendMessage(jid, fallbackText);
+      return channel.sendMessage(jid, fallbackText, threadTs);
     },
     sendReaction: async (jid, emoji, messageId) => {
       const channel = findChannel(channels, jid);

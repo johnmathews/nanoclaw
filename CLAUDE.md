@@ -85,6 +85,29 @@ The agent runs on its own WhatsApp Business account (`ASSISTANT_HAS_OWN_NUMBER=t
 `git remote add whatsapp https://github.com/qwibitai/nanoclaw-whatsapp.git && git fetch whatsapp main && (git merge whatsapp/main || { git checkout --theirs package-lock.json && git add package-lock.json && git merge --continue; }) && npm run build`)
 to install it. Existing auth credentials and groups are preserved.
 
+## Slack Thread Support
+
+When a user replies in a Slack thread and mentions the agent, the agent sees the **full thread history** as context
+and replies within the same thread. Non-threaded messages continue to work as before (replies go to the channel root).
+
+**How it works:**
+
+1. Slack's `thread_ts` is captured on incoming messages. Thread replies have `thread_ts` set to the parent message's ts;
+   non-threaded messages and thread parents have `thread_ts = undefined`.
+2. The `thread_ts` is stored in the `messages` DB table (migration v6) and included in `NewMessage`.
+3. When `processGroupMessages` detects threaded messages, it fetches the full thread from DB via `getThreadMessages()`
+   and includes it as context in the prompt. The `<message>` XML includes a `thread_ts` attribute so the agent knows
+   which thread it's replying to.
+4. The agent's streaming output is routed to the thread via `channel.sendMessage(jid, text, threadTs)`.
+5. The `send_message` and `send_blocks` MCP tools accept an optional `thread_id` parameter for explicit thread targeting.
+6. The IPC layer passes `threadTs` through from container to host to channel.
+
+**Design decisions:**
+- Thread parents (where `thread_ts === ts`) are treated as non-threaded to avoid creating unnecessary thread context
+  for the first message in a thread.
+- The `Channel` interface's `sendMessage` accepts an optional `threadTs` parameter. Non-Slack channels ignore it.
+- Thread context is also provided for the pipe path (messages piped to an already-running container).
+
 ## Channel Typing Indicators
 
 Channels declare `hasNativeTyping = true` if they have built-in typing/working indicators. This prevents the

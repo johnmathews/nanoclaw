@@ -41,7 +41,7 @@ const server = new McpServer({
 
 server.tool(
   'send_message',
-  "Send a message to the user or group immediately while you're still running. Use this for progress updates or to send multiple messages. You can call this multiple times. Note: when running as a scheduled task, your final output is NOT sent to the user — use this tool if you need to communicate with the user or group.",
+  "Send a message to the user or group immediately while you're still running. Use this for progress updates or to send multiple messages. You can call this multiple times. Note: when running as a scheduled task, your final output is NOT sent to the user — use this tool if you need to communicate with the user or group. On Slack, set thread_id to reply within a specific thread.",
   {
     text: z.string().describe('The message text to send'),
     sender: z
@@ -50,6 +50,12 @@ server.tool(
       .describe(
         'Your role/identity name (e.g. "Researcher"). When set, messages appear from a dedicated bot in Telegram.',
       ),
+    thread_id: z
+      .string()
+      .optional()
+      .describe(
+        'Thread ID to reply in (Slack only). When set, the message is posted as a reply in the specified thread instead of the main channel. Use the thread_ts value from the incoming message context.',
+      ),
   },
   async (args) => {
     const data: Record<string, string | undefined> = {
@@ -57,6 +63,7 @@ server.tool(
       chatJid,
       text: args.text,
       sender: args.sender || undefined,
+      threadTs: args.thread_id || undefined,
       groupFolder,
       timestamp: new Date().toISOString(),
     };
@@ -69,10 +76,14 @@ server.tool(
 
 server.tool(
   'send_blocks',
-  "Send a Slack Block Kit message with interactive elements (checkboxes, buttons, etc). Use this for structured reports where users need to select options and confirm actions. Falls back to plain text on non-Slack channels.",
+  "Send a Slack Block Kit message with interactive elements (checkboxes, buttons, etc). Use this for structured reports where users need to select options and confirm actions. Falls back to plain text on non-Slack channels. Set thread_id to post blocks within a thread.",
   {
     blocks: z.string().describe('JSON string of Slack Block Kit blocks array'),
     fallback_text: z.string().describe('Plain text fallback for notifications and non-Slack channels'),
+    thread_id: z
+      .string()
+      .optional()
+      .describe('Thread ID to reply in (Slack only). Posts the blocks as a reply in the specified thread.'),
   },
   async (args) => {
     let parsedBlocks: unknown[];
@@ -96,6 +107,7 @@ server.tool(
       chatJid,
       blocks: parsedBlocks,
       fallbackText: args.fallback_text,
+      threadTs: args.thread_id || undefined,
       groupFolder,
       timestamp: new Date().toISOString(),
     };

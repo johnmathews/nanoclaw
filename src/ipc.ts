@@ -11,11 +11,12 @@ import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
 
 export interface IpcDeps {
-  sendMessage: (jid: string, text: string) => Promise<void>;
+  sendMessage: (jid: string, text: string, threadTs?: string) => Promise<void>;
   sendBlocks: (
     jid: string,
     blocks: unknown[],
     fallbackText: string,
+    threadTs?: string,
   ) => Promise<void>;
   sendReaction?: (
     jid: string,
@@ -96,7 +97,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
                   isMain ||
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
-                  await deps.sendMessage(data.chatJid, data.text);
+                  await deps.sendMessage(data.chatJid, data.text, data.threadTs);
                   // Clear typing indicator — IPC messages bypass the streaming
                   // output path, so setTyping(false) would never fire otherwise.
                   await deps.setTyping?.(data.chatJid, false);
@@ -124,6 +125,7 @@ export function startIpcWatcher(deps: IpcDeps): void {
                     data.chatJid,
                     data.blocks,
                     data.fallbackText || '',
+                    data.threadTs,
                   );
                   await deps.setTyping?.(data.chatJid, false);
                   logger.info(

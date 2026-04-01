@@ -99,7 +99,7 @@ export class SlackChannel implements Channel {
   private botToken: string;
   private botUserId: string | undefined;
   private connected = false;
-  private outgoingQueue: Array<{ jid: string; text: string }> = [];
+  private outgoingQueue: Array<{ jid: string; text: string; threadTs?: string }> = [];
   private flushing = false;
   private userNameCache = new Map<string, string>();
   private workingReactions = new Map<string, string>(); // channelId → message ts (for removing reaction)
@@ -225,9 +225,14 @@ export class SlackChannel implements Channel {
       const files = (msg as { files?: SlackFile[] }).files;
       if (!msg.text && (!files || files.length === 0)) return;
 
-      // Threaded replies are flattened into the channel conversation.
-      // The agent sees them alongside channel-level messages; responses
-      // always go to the channel, not back into the thread.
+      // Capture thread_ts for thread-aware routing.
+      // For thread replies: thread_ts is the parent message's ts (thread_ts !== ts).
+      // For thread parents with replies: thread_ts === ts.
+      // For non-threaded messages: thread_ts is undefined.
+      const threadTs = (msg as { thread_ts?: string }).thread_ts;
+      // Only store thread_ts for actual thread replies (not the parent message
+      // which has thread_ts === ts, and not non-threaded messages).
+      const isThreadReply = threadTs !== undefined && threadTs !== msg.ts;
 
       const jid = `slack:${msg.channel}`;
       const timestamp = new Date(parseFloat(msg.ts) * 1000).toISOString();
@@ -284,6 +289,7 @@ export class SlackChannel implements Channel {
         timestamp,
         is_from_me: isBotMessage,
         is_bot_message: isBotMessage,
+        thread_ts: isThreadReply ? threadTs : undefined,
       });
     });
   }
@@ -319,11 +325,11 @@ export class SlackChannel implements Channel {
     }
   }
 
-  async sendMessage(jid: string, text: string): Promise<void> {
+  async sendMessage(jid: string, text: string, threadTs?: string): Promise<void> {
     const channelId = jid.replace(/^slack:/, '');
 
     if (!this.connected) {
-      this.outgoingQueue.push({ jid, text });
+      this.outgoingQueue.push({ jid, text, threadTs });
       logger.info(
         { jid, queueSize: this.outgoingQueue.length },
         'Slack disconnected, message queued',
@@ -336,11 +342,12 @@ export class SlackChannel implements Channel {
         await this.app.client.chat.postMessage({
           channel: channelId,
           text: chunk,
+          ...(threadTs ? { thread_ts: threadTs } : {}),
         });
       }
-      logger.info({ jid, length: text.length }, 'Slack message sent');
+      logger.info({ jid, length: text.length, threadTs }, 'Slack message sent');
     } catch (err) {
-      this.outgoingQueue.push({ jid, text });
+      this.outgoingQueue.push({ jid, text, threadTs });
       logger.warn(
         { jid, err, queueSize: this.outgoingQueue.length },
         'Failed to send Slack message, queued',
@@ -352,6 +359,7 @@ export class SlackChannel implements Channel {
     jid: string,
     blocks: unknown[],
     fallbackText: string,
+    threadTs?: string,
   ): Promise<void> {
     const channelId = jid.replace(/^slack:/, '');
 
@@ -360,6 +368,7 @@ export class SlackChannel implements Channel {
       this.outgoingQueue.push({
         jid,
         text: fallbackText || 'Block Kit message (view in Slack)',
+        threadTs,
       });
       logger.info(
         { jid },
@@ -373,8 +382,9 @@ export class SlackChannel implements Channel {
         channel: channelId,
         text: fallbackText,
         blocks: blocks as [],
+        ...(threadTs ? { thread_ts: threadTs } : {}),
       });
-      logger.info({ jid }, 'Slack blocks message sent');
+      logger.info({ jid, threadTs }, 'Slack blocks message sent');
     } catch (err) {
       logger.warn(
         { jid, err },
@@ -383,6 +393,7 @@ export class SlackChannel implements Channel {
       await this.sendMessage(
         jid,
         fallbackText || 'Block Kit message failed to render.',
+        threadTs,
       );
     }
   }
@@ -639,7 +650,7 @@ export class SlackChannel implements Channel {
         { count: this.outgoingQueue.length },
         'Flushing Slack outgoing queue',
       );
-      const failed: Array<{ jid: string; text: string }> = [];
+      const failed: Array<{ jid: string; text: string; threadTs?: string }> = [];
       while (this.outgoingQueue.length > 0) {
         const item = this.outgoingQueue.shift()!;
         const channelId = item.jid.replace(/^slack:/, '');
@@ -648,6 +659,7 @@ export class SlackChannel implements Channel {
             await this.app.client.chat.postMessage({
               channel: channelId,
               text: chunk,
+              ...(item.threadTs ? { thread_ts: item.threadTs } : {}),
             });
           }
           logger.info(
