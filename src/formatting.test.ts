@@ -121,6 +121,35 @@ describe('formatMessages', () => {
     expect(result).toContain('PM');
     expect(result).toContain('<context timezone="America/New_York" />');
   });
+
+  it('includes thread_ts attribute for threaded messages', () => {
+    const result = formatMessages(
+      [makeMsg({ thread_ts: '1704067200.000000' })],
+      TZ,
+    );
+    expect(result).toContain('thread_ts="1704067200.000000"');
+  });
+
+  it('omits thread_ts attribute for non-threaded messages', () => {
+    const result = formatMessages([makeMsg()], TZ);
+    expect(result).not.toContain('thread_ts');
+  });
+
+  it('mixes threaded and non-threaded messages', () => {
+    const msgs = [
+      makeMsg({ id: '1', content: 'channel msg' }),
+      makeMsg({
+        id: '2',
+        content: 'thread reply',
+        thread_ts: '1704067200.000000',
+      }),
+    ];
+    const result = formatMessages(msgs, TZ);
+    // First message has no thread_ts
+    expect(result).toContain('>channel msg</message>');
+    // Second message has thread_ts
+    expect(result).toContain('thread_ts="1704067200.000000">thread reply</message>');
+  });
 });
 
 // --- TRIGGER_PATTERN ---

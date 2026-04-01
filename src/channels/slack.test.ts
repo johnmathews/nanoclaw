@@ -472,7 +472,7 @@ describe('SlackChannel', () => {
       );
     });
 
-    it('flattens threaded replies into channel messages', async () => {
+    it('captures thread_ts for thread replies', async () => {
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);
       await channel.connect();
@@ -484,16 +484,16 @@ describe('SlackChannel', () => {
       });
       await triggerMessageEvent(event);
 
-      // Threaded replies are delivered as regular channel messages
       expect(opts.onMessage).toHaveBeenCalledWith(
         'slack:C0123456789',
         expect.objectContaining({
           content: 'Thread reply',
+          thread_ts: '1704067200.000000',
         }),
       );
     });
 
-    it('delivers thread parent messages normally', async () => {
+    it('does not set thread_ts for thread parent messages', async () => {
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);
       await channel.connect();
@@ -509,11 +509,12 @@ describe('SlackChannel', () => {
         'slack:C0123456789',
         expect.objectContaining({
           content: 'Thread parent',
+          thread_ts: undefined,
         }),
       );
     });
 
-    it('delivers messages without thread_ts normally', async () => {
+    it('does not set thread_ts for non-threaded messages', async () => {
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);
       await channel.connect();
@@ -521,7 +522,12 @@ describe('SlackChannel', () => {
       const event = createMessageEvent({ text: 'Normal message' });
       await triggerMessageEvent(event);
 
-      expect(opts.onMessage).toHaveBeenCalled();
+      expect(opts.onMessage).toHaveBeenCalledWith(
+        'slack:C0123456789',
+        expect.objectContaining({
+          thread_ts: undefined,
+        }),
+      );
     });
   });
 
@@ -1218,6 +1224,127 @@ describe('SlackChannel', () => {
       expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith({
         channel: 'C0123456789',
         text: 'Second queued',
+      });
+    });
+  });
+
+  // --- Thread support ---
+
+  describe('sendMessage with thread_ts', () => {
+    it('passes thread_ts to chat.postMessage when provided', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      await channel.sendMessage(
+        'slack:C0123456789',
+        'Thread reply',
+        '1704067200.000000',
+      );
+
+      expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith({
+        channel: 'C0123456789',
+        text: 'Thread reply',
+        thread_ts: '1704067200.000000',
+      });
+    });
+
+    it('omits thread_ts from chat.postMessage when not provided', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      await channel.sendMessage('slack:C0123456789', 'Channel message');
+
+      expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith({
+        channel: 'C0123456789',
+        text: 'Channel message',
+      });
+    });
+
+    it('preserves thread_ts across message splits', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      const longText = 'A'.repeat(4500);
+      await channel.sendMessage(
+        'slack:C0123456789',
+        longText,
+        '1704067200.000000',
+      );
+
+      // Both chunks should have thread_ts
+      expect(currentApp().client.chat.postMessage).toHaveBeenCalledTimes(2);
+      expect(currentApp().client.chat.postMessage).toHaveBeenNthCalledWith(1, {
+        channel: 'C0123456789',
+        text: 'A'.repeat(4000),
+        thread_ts: '1704067200.000000',
+      });
+      expect(currentApp().client.chat.postMessage).toHaveBeenNthCalledWith(2, {
+        channel: 'C0123456789',
+        text: 'A'.repeat(500),
+        thread_ts: '1704067200.000000',
+      });
+    });
+
+    it('preserves thread_ts in queued messages', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+
+      // Queue while disconnected
+      await channel.sendMessage(
+        'slack:C0123456789',
+        'Queued thread reply',
+        '1704067200.000000',
+      );
+      expect(currentApp().client.chat.postMessage).not.toHaveBeenCalled();
+
+      // Connect triggers flush
+      await channel.connect();
+
+      expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith({
+        channel: 'C0123456789',
+        text: 'Queued thread reply',
+        thread_ts: '1704067200.000000',
+      });
+    });
+  });
+
+  describe('sendBlocks with thread_ts', () => {
+    it('passes thread_ts to chat.postMessage for blocks', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      const blocks = [{ type: 'section', text: { type: 'mrkdwn', text: 'test' } }];
+      await channel.sendBlocks(
+        'slack:C0123456789',
+        blocks,
+        'fallback text',
+        '1704067200.000000',
+      );
+
+      expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith({
+        channel: 'C0123456789',
+        text: 'fallback text',
+        blocks,
+        thread_ts: '1704067200.000000',
+      });
+    });
+
+    it('omits thread_ts from blocks when not provided', async () => {
+      const opts = createTestOpts();
+      const channel = new SlackChannel(opts);
+      await channel.connect();
+
+      const blocks = [{ type: 'section', text: { type: 'mrkdwn', text: 'test' } }];
+      await channel.sendBlocks('slack:C0123456789', blocks, 'fallback text');
+
+      expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith({
+        channel: 'C0123456789',
+        text: 'fallback text',
+        blocks,
       });
     });
   });

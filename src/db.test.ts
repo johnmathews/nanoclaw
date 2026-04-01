@@ -16,6 +16,7 @@ import {
   getMessagesSince,
   getNewMessages,
   getSession,
+  getThreadMessages,
   getReactionsForChat,
   getReactionsForMessage,
   getReactionsForMessages,
@@ -158,6 +159,156 @@ describe('storeMessage', () => {
     );
     expect(messages).toHaveLength(1);
     expect(messages[0].content).toBe('updated');
+  });
+});
+
+// --- thread_ts support ---
+
+describe('thread_ts support', () => {
+  beforeEach(() => {
+    storeChatMetadata('slack:C123', '2024-01-01T00:00:00.000Z');
+  });
+
+  it('stores and retrieves thread_ts', () => {
+    storeMessage({
+      id: 'ts1',
+      chat_jid: 'slack:C123',
+      sender: 'U1',
+      sender_name: 'Alice',
+      content: 'thread reply',
+      timestamp: '2024-01-01T00:00:02.000Z',
+      thread_ts: '1704067200.000000',
+    });
+
+    const messages = getMessagesSince(
+      'slack:C123',
+      '2024-01-01T00:00:00.000Z',
+      'Bot',
+    );
+    expect(messages).toHaveLength(1);
+    expect(messages[0].thread_ts).toBe('1704067200.000000');
+  });
+
+  it('stores null thread_ts for non-threaded messages', () => {
+    storeMessage({
+      id: 'ts2',
+      chat_jid: 'slack:C123',
+      sender: 'U1',
+      sender_name: 'Alice',
+      content: 'channel message',
+      timestamp: '2024-01-01T00:00:03.000Z',
+    });
+
+    const messages = getMessagesSince(
+      'slack:C123',
+      '2024-01-01T00:00:00.000Z',
+      'Bot',
+    );
+    expect(messages).toHaveLength(1);
+    expect(messages[0].thread_ts).toBeNull();
+  });
+
+  it('getThreadMessages returns all messages in a thread', () => {
+    // Thread parent (stored as a regular message, thread_ts = its own ts)
+    storeMessage({
+      id: '1704067200.000000',
+      chat_jid: 'slack:C123',
+      sender: 'U1',
+      sender_name: 'Alice',
+      content: 'Thread starter',
+      timestamp: '2024-01-01T00:00:01.000Z',
+      thread_ts: '1704067200.000000',
+    });
+    // Reply 1
+    storeMessage({
+      id: '1704067201.000000',
+      chat_jid: 'slack:C123',
+      sender: 'U2',
+      sender_name: 'Bob',
+      content: 'Reply 1',
+      timestamp: '2024-01-01T00:00:02.000Z',
+      thread_ts: '1704067200.000000',
+    });
+    // Reply 2
+    storeMessage({
+      id: '1704067202.000000',
+      chat_jid: 'slack:C123',
+      sender: 'U1',
+      sender_name: 'Alice',
+      content: 'Reply 2',
+      timestamp: '2024-01-01T00:00:03.000Z',
+      thread_ts: '1704067200.000000',
+    });
+    // Unrelated channel message (no thread_ts)
+    storeMessage({
+      id: '1704067203.000000',
+      chat_jid: 'slack:C123',
+      sender: 'U3',
+      sender_name: 'Carol',
+      content: 'Unrelated',
+      timestamp: '2024-01-01T00:00:04.000Z',
+    });
+
+    const threadMsgs = getThreadMessages(
+      'slack:C123',
+      '1704067200.000000',
+      'Bot',
+    );
+    expect(threadMsgs).toHaveLength(3);
+    expect(threadMsgs[0].content).toBe('Thread starter');
+    expect(threadMsgs[1].content).toBe('Reply 1');
+    expect(threadMsgs[2].content).toBe('Reply 2');
+  });
+
+  it('getThreadMessages returns empty for non-existent thread', () => {
+    const result = getThreadMessages('slack:C123', 'nonexistent', 'Bot');
+    expect(result).toHaveLength(0);
+  });
+
+  it('getThreadMessages filters bot messages', () => {
+    storeMessage({
+      id: 'ts-bot',
+      chat_jid: 'slack:C123',
+      sender: 'BOT',
+      sender_name: 'Bot',
+      content: 'Bot: response',
+      timestamp: '2024-01-01T00:00:01.000Z',
+      is_bot_message: true,
+      thread_ts: '1704067200.000000',
+    });
+    storeMessage({
+      id: 'ts-user',
+      chat_jid: 'slack:C123',
+      sender: 'U1',
+      sender_name: 'Alice',
+      content: 'User message',
+      timestamp: '2024-01-01T00:00:02.000Z',
+      thread_ts: '1704067200.000000',
+    });
+
+    const result = getThreadMessages('slack:C123', '1704067200.000000', 'Bot');
+    expect(result).toHaveLength(1);
+    expect(result[0].content).toBe('User message');
+  });
+
+  it('getNewMessages includes thread_ts', () => {
+    storeMessage({
+      id: 'gn1',
+      chat_jid: 'slack:C123',
+      sender: 'U1',
+      sender_name: 'Alice',
+      content: 'threaded msg',
+      timestamp: '2024-01-01T00:00:05.000Z',
+      thread_ts: '1704067200.000000',
+    });
+
+    const { messages } = getNewMessages(
+      ['slack:C123'],
+      '2024-01-01T00:00:00.000Z',
+      'Bot',
+    );
+    expect(messages).toHaveLength(1);
+    expect(messages[0].thread_ts).toBe('1704067200.000000');
   });
 });
 
@@ -1247,15 +1398,15 @@ describe('rate_limits', () => {
 describe('schema versioning', () => {
   it('fresh database has all migrations applied', () => {
     _initTestDatabase();
-    expect(getSchemaVersion()).toBe(5);
+    expect(getSchemaVersion()).toBe(6);
   });
 
   it('schema_version table tracks applied migrations', () => {
     _initTestDatabase();
     const rows = getSchemaVersionHistory();
-    expect(rows).toHaveLength(5);
+    expect(rows).toHaveLength(6);
     expect(rows[0]).toHaveProperty('version', 1);
-    expect(rows[4]).toHaveProperty('version', 5);
+    expect(rows[5]).toHaveProperty('version', 6);
     // Each row should have a valid applied_at timestamp
     for (const row of rows) {
       expect(row.applied_at).toBeTruthy();
@@ -1267,7 +1418,7 @@ describe('schema versioning', () => {
     _initTestDatabase();
     // Re-initializing should not fail (simulates the old try-catch behavior)
     _initTestDatabase();
-    expect(getSchemaVersion()).toBe(5);
+    expect(getSchemaVersion()).toBe(6);
   });
 });
 
