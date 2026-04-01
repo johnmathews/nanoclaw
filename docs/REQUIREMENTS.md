@@ -48,30 +48,22 @@ Skills we'd love contributors to build:
 
 ### Communication Channels
 Skills to add or switch to different messaging platforms:
-- `/add-telegram` - Add Telegram as an input channel
-- `/add-slack` - Add Slack as an input channel
-- `/add-discord` - Add Discord as an input channel
+- `/add-signal` - Add Signal as a channel
 - `/add-sms` - Add SMS via Twilio or similar
-- `/convert-to-telegram` - Replace WhatsApp with Telegram entirely
 
-### Container Runtime
-The project uses Docker by default (cross-platform). For macOS users who prefer Apple Container:
-- `/convert-to-apple-container` - Switch from Docker to Apple Container (macOS-only)
-
-### Platform Support
-- `/setup-linux` - Make the full setup work on Linux (depends on Docker conversion)
-- `/setup-windows` - Windows support via WSL2 + Docker
+Already implemented: `/add-telegram`, `/add-slack`, `/add-discord`, `/add-whatsapp`, `/add-gmail`,
+`/convert-to-apple-container`, `/setup` (works on macOS and Linux)
 
 ---
 
 ## Vision
 
-A personal Claude assistant accessible via WhatsApp, with minimal custom code.
+A personal Claude assistant accessible via multiple channels, with minimal custom code.
 
 **Core components:**
 - **Claude Agent SDK** as the core agent
 - **Containers** for isolated agent execution (Linux VMs)
-- **WhatsApp** as the primary I/O channel
+- **Multi-channel messaging** via WhatsApp, Telegram, Slack, Discord, and Gmail (channels are skills that self-register at startup)
 - **Persistent memory** per conversation and globally
 - **Scheduled tasks** that run Claude and can message back
 - **Web access** for search and browsing
@@ -139,7 +131,7 @@ A personal Claude assistant accessible via WhatsApp, with minimal custom code.
 ### WhatsApp
 - Using baileys library for WhatsApp Web connection
 - Messages stored in SQLite, polled by router
-- QR code authentication during setup
+- Authentication via QR code or pairing code (pairing code recommended for dedicated number setups)
 
 ### Scheduler
 - Built-in scheduler runs on the host, spawns containers for task execution
@@ -175,7 +167,7 @@ A personal Claude assistant accessible via WhatsApp, with minimal custom code.
 - `/update` - Pull upstream changes, merge with customizations, run migrations
 
 ### Deployment
-- Runs on local Mac via launchd
+- Runs on macOS via launchd or Linux via systemd
 - Single Node.js process handles everything
 
 ---

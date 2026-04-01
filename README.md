@@ -11,7 +11,7 @@
   <a href="README_zh.md">中文</a>&nbsp; • &nbsp;
   <a href="README_ja.md">日本語</a>&nbsp; • &nbsp;
   <a href="https://discord.gg/VDdww8qS42"><img src="https://img.shields.io/discord/1470188214710046894?label=Discord&logo=discord&v=2" alt="Discord" valign="middle"></a>&nbsp; • &nbsp;
-  <a href="repo-tokens"><img src="repo-tokens/badge.svg" alt="34.9k tokens, 17% of context window" valign="middle"></a>
+  <a href="repo-tokens"><img src="repo-tokens/badge.svg" alt="91.8k tokens, 46% of context window" valign="middle"></a>
 </p>
 
 ---
@@ -184,12 +184,7 @@ Skills we'd like to see:
 **Communication Channels**
 
 - `/add-signal` - Add Signal as a channel
-
-**Session Management**
-
-- `/clear` - Add a `/clear` command that compacts the conversation (summarizes context while preserving critical
-  information in the same session). Requires figuring out how to trigger compaction programmatically via the Claude Agent
-  SDK.
+- `/add-sms` - Add SMS via Twilio or similar
 
 ## Requirements
 
