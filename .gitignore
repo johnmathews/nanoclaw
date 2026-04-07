@@ -42,3 +42,4 @@ coverage/
 
 agents-sdk-docs
 .engineering-team/
+core.*
