@@ -80,6 +80,7 @@ import {
   handleSessionCommand,
   isSessionCommandAllowed,
 } from './session-commands.js';
+import { startSessionCleanup } from './session-cleanup.js';
 import { collectHealth } from './health.js';
 import { startHealthServer } from './health-server.js';
 import { executeHostCommand, registerHealthProvider } from './host-commands.js';
@@ -1282,7 +1283,7 @@ async function main(): Promise<void> {
   registerHealthProvider(getHealth);
   healthServer = startHealthServer(HEALTH_PORT, getHealth);
   watchdog = initWatchdog();
-
+  startSessionCleanup();
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();
   startMessageLoop().catch((err) => {
