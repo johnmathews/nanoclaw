@@ -56,6 +56,9 @@ export interface NewMessage {
    *  For thread replies: thread_ts === parent message's ts.
    *  Undefined for non-threaded messages and non-Slack channels. */
   thread_ts?: string;
+  reply_to_message_id?: string;
+  reply_to_message_content?: string;
+  reply_to_sender_name?: string;
 }
 
 export interface ScheduledTask {
