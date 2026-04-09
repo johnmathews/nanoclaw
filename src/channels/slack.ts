@@ -621,7 +621,12 @@ export class SlackChannel implements Channel {
             { fileId: file.id, filename, bytes: buffer.length },
             'Slack image saved to attachments',
           );
+          const downloadUrl =
+            file.url_private_download || file.url_private || '';
           content += `\n[Image attached: attachments/${filename}]`;
+          if (downloadUrl) {
+            content += `\n[Slack image URL: ${downloadUrl}]`;
+          }
         }
       } else {
         logger.info(
