@@ -360,7 +360,6 @@ async function runQuery(
       systemPrompt: globalClaudeMd
         ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
         : undefined,
-      model: sdkModel,
       allowedTools: [
         'Bash',
         'Read', 'Write', 'Edit', 'Glob', 'Grep',
