@@ -585,7 +585,7 @@ async function main(): Promise<void> {
   // No real secrets exist in the container environment.
   const sdkEnv: Record<string, string | undefined> = {
     ...process.env,
-    CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200000',
+    CLAUDE_CODE_AUTO_COMPACT_WINDOW: '165000',
   };
   const sdkModel = process.env.ANTHROPIC_MODEL || undefined;
   if (sdkModel) {
