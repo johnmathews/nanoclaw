@@ -27,6 +27,7 @@ import {
   parseImageReferences,
   isImageMessage,
   loadImageData,
+  cleanupImageFiles,
   inferMediaType,
 } from './image.js';
 
@@ -340,6 +341,46 @@ describe('image processing', () => {
 
       const result = loadImageData(attachments, '/groups/test');
       expect(result).toHaveLength(0);
+    });
+  });
+
+  describe('cleanupImageFiles', () => {
+    it('deletes files without reading them', () => {
+      vi.mocked(fs.unlinkSync).mockReturnValue(undefined);
+
+      const attachments = [
+        { relativePath: 'attachments/img-1.jpg', mediaType: 'image/jpeg' },
+        { relativePath: 'attachments/img-2.png', mediaType: 'image/png' },
+      ];
+
+      cleanupImageFiles(attachments, '/groups/test');
+
+      expect(fs.unlinkSync).toHaveBeenCalledWith(
+        '/groups/test/attachments/img-1.jpg',
+      );
+      expect(fs.unlinkSync).toHaveBeenCalledWith(
+        '/groups/test/attachments/img-2.png',
+      );
+      expect(fs.readFileSync).not.toHaveBeenCalled();
+    });
+
+    it('handles missing files gracefully', () => {
+      vi.mocked(fs.unlinkSync).mockImplementation(() => {
+        throw new Error('ENOENT');
+      });
+
+      const attachments = [
+        { relativePath: 'attachments/gone.jpg', mediaType: 'image/jpeg' },
+      ];
+
+      expect(() =>
+        cleanupImageFiles(attachments, '/groups/test'),
+      ).not.toThrow();
+    });
+
+    it('handles empty input', () => {
+      cleanupImageFiles([], '/groups/test');
+      expect(fs.unlinkSync).not.toHaveBeenCalled();
     });
   });
 });

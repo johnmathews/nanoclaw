@@ -156,13 +156,19 @@ The resolved model is passed as `ANTHROPIC_MODEL` env var to the container. The 
 used when no `config.json` exists or when it has no `model` field. To change the default, edit `DEFAULT_MODEL` in
 `src/group-config.ts`.
 
+Groups can also set `"skipImageMultimodal": true` to prevent images from being sent as multimodal content blocks
+to Claude. Images are still downloaded and their text references (`[Image attached: ...]`, `[Slack image URL: ...]`)
+remain in the prompt, but the binary data is not loaded into memory or sent to the LLM. Files are cleaned up from
+disk via `cleanupImageFiles()`. This is useful for groups where an MCP server handles all vision/OCR work internally.
+
 ## Image Attachment Pipeline
 
 Images are loaded into base64 on the **host** side before container spawn, not read from files inside the container.
 This eliminates race conditions between attachment cleanup and container file reads. The flow:
 
 1. Channel downloads image → `processImage()` resizes and saves to `groups/{folder}/attachments/`
-2. `loadImageData()` reads each file into memory and **deletes it immediately**
+2. `loadImageData()` reads each file into memory and **deletes it immediately** (unless `skipImageMultimodal` is set,
+   in which case `cleanupImageFiles()` deletes without reading)
 3. Base64 data goes to the container via `ContainerInput.imageAttachments` (JSON over stdin)
 4. Agent-runner sends data directly to Claude — no file reads needed
 

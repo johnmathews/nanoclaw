@@ -6,6 +6,7 @@ import { logger } from './logger.js';
 
 export interface GroupConfig {
   model?: string;
+  skipImageMultimodal?: boolean;
 }
 
 const MODEL_ALIASES: Record<string, string> = {
@@ -51,6 +52,16 @@ export function readGroupConfig(groupFolder: string): GroupConfig {
     config.model = resolveModelAlias(
       (parsed as Record<string, unknown>).model as string,
     );
+  }
+
+  if (
+    parsed &&
+    typeof parsed === 'object' &&
+    'skipImageMultimodal' in parsed &&
+    typeof (parsed as Record<string, unknown>).skipImageMultimodal === 'boolean'
+  ) {
+    config.skipImageMultimodal = (parsed as Record<string, unknown>)
+      .skipImageMultimodal as boolean;
   }
 
   if (!config.model) config.model = DEFAULT_MODEL;

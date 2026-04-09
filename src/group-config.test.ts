@@ -115,7 +115,36 @@ describe('readGroupConfig', () => {
     );
     const config = readGroupConfig('extra-fields');
     expect(config.model).toBe('claude-haiku-4-5-20251001');
-    expect(config).toEqual({ model: 'claude-haiku-4-5-20251001' });
+  });
+
+  it('parses skipImageMultimodal when true', () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      '{"model": "opus", "skipImageMultimodal": true}',
+    );
+    const config = readGroupConfig('skip-img');
+    expect(config.skipImageMultimodal).toBe(true);
+  });
+
+  it('parses skipImageMultimodal when false', () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      '{"model": "opus", "skipImageMultimodal": false}',
+    );
+    const config = readGroupConfig('skip-img-false');
+    expect(config.skipImageMultimodal).toBe(false);
+  });
+
+  it('ignores non-boolean skipImageMultimodal values', () => {
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      '{"model": "opus", "skipImageMultimodal": "yes"}',
+    );
+    const config = readGroupConfig('skip-img-string');
+    expect(config.skipImageMultimodal).toBeUndefined();
+  });
+
+  it('leaves skipImageMultimodal undefined when absent', () => {
+    vi.mocked(fs.readFileSync).mockReturnValue('{"model": "sonnet"}');
+    const config = readGroupConfig('no-skip');
+    expect(config.skipImageMultimodal).toBeUndefined();
   });
 
   it('warns on non-ENOENT read errors', () => {

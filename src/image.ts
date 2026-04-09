@@ -123,3 +123,22 @@ export function loadImageData(
   }
   return loaded;
 }
+
+/**
+ * Deletes image files from disk without reading them into memory.
+ * Used when a group has skipImageMultimodal enabled — images are
+ * processed by the MCP server, not sent as multimodal content blocks.
+ */
+export function cleanupImageFiles(
+  attachments: ImageAttachment[],
+  groupDir: string,
+): void {
+  for (const att of attachments) {
+    const absPath = path.join(groupDir, att.relativePath);
+    try {
+      fs.unlinkSync(absPath);
+    } catch {
+      // Best-effort cleanup; file may already be gone
+    }
+  }
+}

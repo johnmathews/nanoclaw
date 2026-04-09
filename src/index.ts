@@ -94,8 +94,10 @@ import {
 import {
   parseImageReferences,
   loadImageData,
+  cleanupImageFiles,
   type LoadedImage,
 } from './image.js';
+import { readGroupConfig } from './group-config.js';
 import { StatusTracker } from './status-tracker.js';
 import { initWatchdog } from './watchdog.js';
 import { logger } from './logger.js';
@@ -378,16 +380,26 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   // This eliminates the file-based handoff — data goes directly via stdin.
   const imageRefs = parseImageReferences(missedMessages);
   const groupDir = resolveGroupFolderPath(group.folder);
-  const imageAttachments = loadImageData(imageRefs, groupDir);
-  if (imageRefs.length > 0 && imageAttachments.length < imageRefs.length) {
-    logger.warn(
-      {
-        group: group.name,
-        expected: imageRefs.length,
-        loaded: imageAttachments.length,
-      },
-      'Some image attachments could not be loaded from disk',
-    );
+  const groupConfig = readGroupConfig(group.folder);
+
+  let imageAttachments: LoadedImage[];
+  if (groupConfig.skipImageMultimodal) {
+    // Don't load images into memory — the MCP server handles them.
+    // Still need to clean up files from disk.
+    cleanupImageFiles(imageRefs, groupDir);
+    imageAttachments = [];
+  } else {
+    imageAttachments = loadImageData(imageRefs, groupDir);
+    if (imageRefs.length > 0 && imageAttachments.length < imageRefs.length) {
+      logger.warn(
+        {
+          group: group.name,
+          expected: imageRefs.length,
+          loaded: imageAttachments.length,
+        },
+        'Some image attachments could not be loaded from disk',
+      );
+    }
   }
 
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
