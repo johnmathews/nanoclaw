@@ -360,6 +360,7 @@ async function runQuery(
       systemPrompt: globalClaudeMd
         ? { type: 'preset' as const, preset: 'claude_code' as const, append: globalClaudeMd }
         : undefined,
+      model: sdkModel,
       allowedTools: [
         'Bash',
         'Read', 'Write', 'Edit', 'Glob', 'Grep',
@@ -582,7 +583,10 @@ async function main(): Promise<void> {
 
   // Credentials are injected by the host's credential proxy via ANTHROPIC_BASE_URL.
   // No real secrets exist in the container environment.
-  const sdkEnv: Record<string, string | undefined> = { ...process.env };
+  const sdkEnv: Record<string, string | undefined> = {
+    ...process.env,
+    CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200000',
+  };
   const sdkModel = process.env.ANTHROPIC_MODEL || undefined;
   if (sdkModel) {
     log(`Model override: ${sdkModel}`);
