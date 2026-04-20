@@ -312,6 +312,7 @@ function buildContainerArgs(
     'GITHUB_TOKEN',
     'DOCS_MCP_URL',
     'JOURNAL_MCP_URL',
+    'JOURNAL_API_TOKEN',
   ]);
   if (containerSecrets.PARALLEL_API_KEY) {
     args.push('-e', `PARALLEL_API_KEY=${containerSecrets.PARALLEL_API_KEY}`);
@@ -324,6 +325,9 @@ function buildContainerArgs(
   }
   if (containerSecrets.JOURNAL_MCP_URL) {
     args.push('-e', `JOURNAL_MCP_URL=${containerSecrets.JOURNAL_MCP_URL}`);
+  }
+  if (containerSecrets.JOURNAL_API_TOKEN) {
+    args.push('-e', `JOURNAL_API_TOKEN=${containerSecrets.JOURNAL_API_TOKEN}`);
   }
 
   // Group name — available to skills like /status

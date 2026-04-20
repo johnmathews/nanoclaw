@@ -233,6 +233,7 @@ Agent containers can connect to additional MCP servers via env vars in `.env`:
 - `JOURNAL_MCP_URL` — Journal analysis MCP server (e.g. `http://192.168.2.105:8400/mcp`). Exposes
   `journal_search_entries`, `journal_get_entries_by_date`, `journal_list_entries`, `journal_get_statistics`,
   `journal_get_mood_trends`, `journal_get_topic_frequency`, `journal_ingest_entry`. Tools allowed as `mcp__journal__*`.
+  Auth: set `JOURNAL_API_TOKEN` to the `jnl_...` API key — sent as `Authorization: Bearer <token>`.
 - `PARALLEL_API_KEY` — Parallel AI search and task MCP servers. Tools allowed as `mcp__parallel-search__*` and
   `mcp__parallel-task__*`.
 

@@ -411,6 +411,11 @@ async function runQuery(
           journal: {
             type: 'http' as const,
             url: process.env.JOURNAL_MCP_URL,
+            ...(process.env.JOURNAL_API_TOKEN ? {
+              headers: {
+                'Authorization': `Bearer ${process.env.JOURNAL_API_TOKEN}`,
+              },
+            } : {}),
           },
         } : {}),
         ...(process.env.PARALLEL_API_KEY ? {
