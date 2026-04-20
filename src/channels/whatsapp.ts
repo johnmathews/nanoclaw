@@ -65,11 +65,20 @@ export class WhatsAppChannel implements Channel {
 
   async connect(): Promise<void> {
     return new Promise<void>((resolve, reject) => {
-      this.connectInternal(resolve).catch(reject);
+      let settled = false;
+      const settle = (err?: Error) => {
+        if (settled) return;
+        settled = true;
+        if (err) reject(err);
+        else resolve();
+      };
+      this.connectInternal(settle).catch((err) => settle(err));
     });
   }
 
-  private async connectInternal(onFirstOpen?: () => void): Promise<void> {
+  private async connectInternal(
+    onInitialResult?: (err?: Error) => void,
+  ): Promise<void> {
     const authDir = path.join(STORE_DIR, 'auth');
     fs.mkdirSync(authDir, { recursive: true });
 
@@ -103,10 +112,12 @@ export class WhatsAppChannel implements Channel {
         exec(
           `osascript -e 'display notification "${msg}" with title "NanoClaw" sound name "Basso"'`,
         );
-        setTimeout(() => process.exit(1), 1000);
+        this.sock.end(undefined);
+        onInitialResult?.(new Error('WhatsApp not authenticated'));
       }
 
       if (connection === 'close') {
+        const wasConnected = this.connected;
         this.connected = false;
         const reason = (
           lastDisconnect?.error as { output?: { statusCode?: number } }
@@ -124,8 +135,14 @@ export class WhatsAppChannel implements Channel {
         if (shouldReconnect) {
           this.scheduleReconnect(1);
         } else {
-          logger.info('Logged out. Run /setup to re-authenticate.');
-          process.exit(0);
+          logger.error(
+            { reason },
+            'WhatsApp session logged out — channel disabled. Run /setup to re-authenticate. Other channels continue running.',
+          );
+          if (!wasConnected) {
+            onInitialResult?.(new Error('WhatsApp session logged out'));
+          }
+          // No process.exit — let the rest of the service keep running.
         }
       } else if (connection === 'open') {
         this.connected = true;
@@ -166,10 +183,8 @@ export class WhatsAppChannel implements Channel {
         }
 
         // Signal first connection to caller
-        if (onFirstOpen) {
-          onFirstOpen();
-          onFirstOpen = undefined;
-        }
+        onInitialResult?.();
+        onInitialResult = undefined;
       }
     });
 
