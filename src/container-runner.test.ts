@@ -854,6 +854,27 @@ describe('container-runner resource limits', () => {
     expect(cpuIdx).toBeGreaterThan(-1);
     expect(args[cpuIdx + 1]).toBe('2');
   });
+
+  it('passes --security-opt no-new-privileges to docker run', async () => {
+    const { spawn: spawnMock } = await import('child_process');
+
+    const resultPromise = runContainerAgent(testGroup, testInput, () => {});
+
+    await vi.advanceTimersByTimeAsync(10);
+    fakeProc.emit('close', 0);
+    await vi.advanceTimersByTimeAsync(10);
+    await resultPromise;
+
+    const callArgs = (spawnMock as ReturnType<typeof vi.fn>).mock.calls[0];
+    const args: string[] = callArgs[1];
+
+    // Find a --security-opt flag whose value is exactly "no-new-privileges"
+    const matched = args.some(
+      (arg, i) =>
+        arg === '--security-opt' && args[i + 1] === 'no-new-privileges',
+    );
+    expect(matched).toBe(true);
+  });
 });
 
 describe('container-runner env var passthrough', () => {

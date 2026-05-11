@@ -343,6 +343,9 @@ function buildContainerArgs(
   args.push('--memory', CONTAINER_MEMORY_LIMIT);
   args.push('--cpus', CONTAINER_CPU_LIMIT);
 
+  // Security hardening — prevent setuid binaries from gaining capabilities (see docs/SECURITY.md §1)
+  args.push('--security-opt', 'no-new-privileges');
+
   // Runtime-specific args for host gateway resolution
   args.push(...hostGatewayArgs());
 
