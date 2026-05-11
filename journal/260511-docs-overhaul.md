@@ -35,7 +35,7 @@ topic) before making any edits. Outcomes by file below; bigger-picture observati
 | -------------------------- | ---------------------------------------------------------------------------------------------------- |
 | `SECURITY.md`              | Honest framing of credential proxy ("long-lived credentials never enter container" vs the previous overstated "agents cannot discover real credentials"); added Apple Container; mount allowlist JSON shape; resource limits as security boundary; `PROXY_BIND_HOST` per-runtime behavior; flagged that always-on MCP credential mounts (Gmail, Calendar) cross into non-main groups. |
 | `REQUIREMENTS.md`          | Added direct-conversation groups (`requiresTrigger=false`); flagged WhatsApp as a separate fork; added the full current skill inventory; noted Linux/systemd; added all post-April features (proxy, monitoring, image, voice, threads, per-group config, sender allowlist). |
-| `SLACK-ATTACHMENTS.md`     | Corrected host-side image lifecycle (immediate-delete after base64 load, not "at start of each container invocation"); added PDF special case (`pdf-reader extract`); thread support section; image vision + `skipImageMultimodal`; `:eyes:` reaction lifecycle; `MAX_MESSAGE_LENGTH=4000` chunking; full required OAuth scope list including `reactions:write`; cross-refs to the relevant journal entries. |
+| `slack-attachments.md`     | Corrected host-side image lifecycle (immediate-delete after base64 load, not "at start of each container invocation"); added PDF special case (`pdf-reader extract`); thread support section; image vision + `skipImageMultimodal`; `:eyes:` reaction lifecycle; `MAX_MESSAGE_LENGTH=4000` chunking; full required OAuth scope list including `reactions:write`; cross-refs to the relevant journal entries. |
 | `SDK_DEEP_DIVE.md`         | Updated version banner (0.2.92 vs the original 0.2.29-0.2.34); added a "How NanoClaw uses the SDK" call-site table at the top with concrete line numbers in `container/agent-runner/src/index.ts`; flagged the minified-identifier table as historical (almost certainly renamed in current bundles). |
 
 ### New (2 files)
@@ -78,7 +78,7 @@ project shipped git remotes instead. `skills-as-branches.md` sketched a `qwibita
 repo doesn't exist. `SDK_DEEP_DIVE.md` was a research doc against v0.2.34 that nobody updated when the SDK moved
 60 patch versions.
 
-Reference docs that described shipped features (`SECURITY.md`, `SLACK-ATTACHMENTS.md`) had aged better but still
+Reference docs that described shipped features (`SECURITY.md`, `slack-attachments.md`) had aged better but still
 needed updates because shipped features kept evolving (Slack threads, image vision, the credential proxy itself
 all post-dated their original writing).
 

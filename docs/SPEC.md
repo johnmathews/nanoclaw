@@ -81,10 +81,11 @@ interface Channel {
 - `connect()` must always settle — resolve on first successful connection, reject on auth failure. A failing channel
   must not exit the process (see [journal/260420-journal-token-and-whatsapp-isolation.md](../journal/260420-journal-token-and-whatsapp-isolation.md)).
 - `sendMessage()` may be called with a `threadTs`; non-threaded channels ignore it.
-- `hasNativeTyping=true` opts the channel out of the StatusTracker's progress-reaction sequence so we don't double up
-  on indicators. All current channels set this flag.
+- Channels declaring `hasNativeTyping=true` are skipped per-call by the StatusTracker's progress-reaction sequence so
+  indicators don't double up. Slack, WhatsApp, and Telegram declare it; Gmail does not (StatusTracker is also gated
+  to the main group, so Gmail-channel groups typically get no progress reaction either way).
 - Slack's typing indicator is implemented as a `:eyes:` reaction on the user's message (the `setTyping` hook). See
-  [SLACK-ATTACHMENTS.md](SLACK-ATTACHMENTS.md).
+  [slack-attachments.md](slack-attachments.md).
 
 ### Currently supported
 
@@ -92,7 +93,7 @@ interface Channel {
 | -------- | -------------------------- | ----------------------------- | ------------------------------------------------ |
 | Slack    | Socket Mode                | `src/channels/slack.ts`       | Thread support, image vision, PDF handoff        |
 | Gmail    | OAuth (gmail-autoauth-mcp) | `src/channels/gmail.ts`       | Both a channel and an MCP tool                   |
-| WhatsApp | Pairing code (baileys)     | **separate `whatsapp` remote** | Install via `/add-whatsapp`. Quarantined to its own remote because it's the most fragile channel. |
+| WhatsApp | Pairing code (baileys)     | `src/channels/whatsapp.ts`    | Bundled in this fork's `main`. Upstream `qwibitai/nanoclaw` v2+ moved WhatsApp to a separate `nanoclaw-whatsapp` remote — see [fork-divergence.md](fork-divergence.md). |
 | Telegram | Bot token                  | `/add-telegram` skill         | Optional agent-swarm mode via `/add-telegram-swarm` |
 | Discord  | Bot                        | `/add-discord` skill          |                                                  |
 
@@ -150,8 +151,9 @@ interface RegisteredGroup {
 - Each group has a folder under `groups/<folder>/` with its own `CLAUDE.md`.
 - Per-group `config.json` can override the model (`opus` | `sonnet` | `haiku` | full model ID) and set
   `"skipImageMultimodal": true`. Read on every container spawn — no caching, so edits take effect immediately.
-- `isMain` and `requiresTrigger` are preserved across re-registration (`register_group` cannot strip elevated
-  privileges from an existing group).
+- `isMain` is preserved across re-registration (`register_group` cannot strip a group of its main status).
+  `requiresTrigger` falls back to the previous value only when the re-register payload omits it; an explicit value
+  in the payload still wins (`src/ipc.ts:545-553`).
 - IPC tool `register_group` lets main register new groups.
 
 ## 6. Container Model
@@ -161,7 +163,7 @@ Each agent invocation spawns a Docker container with the following layout:
 | Container path               | Mount source                                    | Mode | Group scope             |
 | ---------------------------- | ----------------------------------------------- | ---- | ----------------------- |
 | `/workspace/group`           | `groups/<folder>/`                              | rw   | all                     |
-| `/workspace/group/.claude`   | `data/sessions/<group>/.claude/`                | rw   | all                     |
+| `/home/node/.claude`         | `data/sessions/<group>/.claude/`                | rw   | all                     |
 | `/workspace/project`         | project root                                    | ro   | main only               |
 | `/workspace/project/store`   | `store/`                                        | rw   | main only               |
 | `/workspace/global`          | `groups/global/`                                | rw (main) / ro (non-main) | all      |
@@ -178,8 +180,10 @@ Container env vars (set in `container-runner.ts`):
 - `ANTHROPIC_MODEL=<resolved model>` — from per-group `config.json` or default
 - `NANOCLAW_GROUP=<group folder>` — used by `/status` for context
 - `CLAUDE_CODE_AUTO_COMPACT_WINDOW=165000` — auto-compaction threshold (overridden in agent-runner)
-- Conditional: `DOCS_MCP_URL`, `JOURNAL_MCP_URL`, `JOURNAL_API_TOKEN`, `PARALLEL_API_KEY`, `GITHUB_TOKEN`,
-  `OPENAI_API_KEY` (Whisper)
+- Conditional: `DOCS_MCP_URL`, `JOURNAL_MCP_URL`, `JOURNAL_API_TOKEN`, `PARALLEL_API_KEY`, `GITHUB_TOKEN`
+
+`OPENAI_API_KEY` is read on the host (Whisper transcription via `src/transcription.ts`) and is **not** forwarded into
+containers.
 
 Resource limits: `--memory CONTAINER_MEMORY_LIMIT` (default `2g`), `--cpus CONTAINER_CPU_LIMIT` (default `2`).
 
@@ -221,8 +225,9 @@ Backslash is normalized to forward slash (Slack intercepts `/` as a native slash
 
 ## 9. Session Management
 
-Session files live at `data/sessions/<group>/.claude/projects/-workspace-group/<session-id>.jsonl`. The agent-runner
-mounts this into the container at `/workspace/group/.claude/`.
+Session files live at `data/sessions/<group>/.claude/projects/-workspace-group/<session-id>.jsonl`. The host mounts
+this directory into the container at `/home/node/.claude/` (the container user's `$HOME`), where the SDK looks for
+its session store.
 
 Cleanup safety nets:
 
@@ -300,8 +305,7 @@ SQLite at `store/messages.db`, WAL mode. All access through `src/db.ts`. Schema 
 | `task_run_logs`      | Execution history                               |
 | `reactions`          | Emoji reactions on messages                     |
 | `rate_limits`        | Anthropic API rate limit snapshots              |
-| `status_tracker_state` | Per-message StatusTracker state               |
-| `router_state`       | KV: `lastAgentTimestamp`, message cursor, etc.  |
+| `router_state`       | KV: `lastAgentTimestamp`, message cursor, status-tracker state, etc. |
 | `schema_version`     | Migration tracking                              |
 
 To add a migration: append to `migrations` in `src/db.ts` with the next version. Each migration's `up()` should be
@@ -345,7 +349,8 @@ All values read from `.env` or `process.env`. Secrets stay in `.env` and are loa
 | `JOURNAL_API_TOKEN`            | —                            | Required if journal URL is set         |
 | `PARALLEL_API_KEY`             | —                            | Optional MCP                           |
 | `GITHUB_TOKEN`                 | —                            | Passed through for GitHub tools        |
-| `OPENAI_API_KEY`               | —                            | Required for Whisper transcription     |
+| `OPENAI_API_KEY`               | —                            | Host-side Whisper transcription. Not forwarded into containers. |
+| `LOG_LEVEL`                    | `info`                       | Host log level; also passed to agent-runner |
 | `TZ`                           | system                       | For scheduled-task cron evaluation     |
 | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `WHATSAPP_*`, `TELEGRAM_BOT_TOKEN`, etc. | — | Channel-specific |
 
@@ -369,7 +374,7 @@ nanoclaw/
 │   ├── build.sh
 │   ├── agent-runner/
 │   │   └── src/index.ts      # In-container SDK driver
-│   └── skills/               # Available to all agents (e.g. agent-browser.md)
+│   └── skills/               # Available to all agents (e.g. agent-browser/SKILL.md)
 ├── store/messages.db         # SQLite (host only)
 ├── data/
 │   ├── sessions/<group>/     # Claude session JSONLs

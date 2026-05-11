@@ -10,7 +10,7 @@ tags: [feature]
 Enabled Slack channels to process file attachments: images (vision), audio/voice (transcription), and documents (Excel,
 etc.). Previously all file messages were silently dropped.
 
-See [docs/SLACK-ATTACHMENTS.md](../docs/SLACK-ATTACHMENTS.md) for full details.
+See [docs/slack-attachments.md](../docs/slack-attachments.md) for full details.
 
 ---
 

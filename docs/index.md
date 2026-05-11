@@ -14,7 +14,9 @@ philosophy, then [SPEC.md](SPEC.md) for the system. For day-to-day operations an
 | [credential-proxy.md](credential-proxy.md)        | How OAuth/API-key auth is injected; design, internals, strengths, weaknesses, how to improve. Reference for building similar tools. |
 | [SDK_DEEP_DIVE.md](SDK_DEEP_DIVE.md)              | How `@anthropic-ai/claude-agent-sdk` works internally       |
 | [skills-as-branches.md](skills-as-branches.md)    | How skills are distributed (git branches and remotes)       |
-| [SLACK-ATTACHMENTS.md](SLACK-ATTACHMENTS.md)      | Slack-specific behavior: attachments, threads, reactions    |
+| [slack-attachments.md](slack-attachments.md)      | Slack-specific behavior: attachments, threads, reactions    |
+| [slash-commands.md](slash-commands.md)            | Full reference for every slash command (host / agent-runner / SDK split, auth model) |
+| [fork-divergence.md](fork-divergence.md)          | What this fork ships on top of upstream `qwibitai/nanoclaw` |
 | [docker-sandboxes.md](docker-sandboxes.md)        | Advanced: extra hypervisor isolation via Docker Sandboxes   |
 
 ## Operations & Runbooks

@@ -56,11 +56,13 @@ If `package-lock.json` conflicts, prefer theirs and `npm install` to regenerate.
 Channel skills are their own repos because they ship a lot of files and pull dependencies (baileys for WhatsApp,
 @slack/bolt for Slack, etc.). Adding a channel means adding a remote and merging:
 
-| Remote     | Repository                              |
-| ---------- | --------------------------------------- |
-| `whatsapp` | `github.com/qwibitai/nanoclaw-whatsapp` |
-| `slack`    | `github.com/qwibitai/nanoclaw-slack`    |
-| `gmail`    | `github.com/qwibitai/nanoclaw-gmail`    |
+| Remote     | Repository                              | Notes                                              |
+| ---------- | --------------------------------------- | -------------------------------------------------- |
+| `whatsapp` | `github.com/qwibitai/nanoclaw-whatsapp` | Bundled in this fork's `main`; upstream-separated only |
+| `slack`    | `github.com/qwibitai/nanoclaw-slack`    | Bundled in this fork's `main`                      |
+| `gmail`    | `github.com/qwibitai/nanoclaw-gmail`    | Bundled in this fork's `main`                      |
+| `telegram` | `github.com/qwibitai/nanoclaw-telegram` | Bundled in this fork's `main`                      |
+| `discord`  | `github.com/qwibitai/nanoclaw-discord`  | Not bundled; install via `/add-discord` skill      |
 
 ```bash
 git remote add slack https://github.com/qwibitai/nanoclaw-slack.git
@@ -70,7 +72,8 @@ npm run build
 ```
 
 The slash-command-driven flow does the same thing: `/add-slack`, `/add-whatsapp`, etc. just orchestrate the
-git operations and the build.
+git operations and the build. See [fork-divergence.md](fork-divergence.md) for what's bundled in this fork
+vs. upstream NanoClaw.
 
 ## The Rebase-onto-Main Rule
 

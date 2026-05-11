@@ -31,7 +31,8 @@ curl -fsSL https://nanoclaw.dev/install-docker-sandboxes.sh | bash
 curl -fsSL https://nanoclaw.dev/install-docker-sandboxes-windows.sh | bash
 ```
 
-> Currently supported on macOS (Apple Silicon) and Windows (x86). Linux support coming soon.
+> Docker Sandboxes are currently supported on macOS (Apple Silicon) and Windows (x86). On Linux, the default Docker
+> runtime works directly — no Docker Sandboxes wrapper needed.
 
 <p align="center"><a href="https://nanoclaw.dev/blog/nanoclaw-docker-sandboxes">Read the announcement →</a>&nbsp; · &nbsp;<a href="docs/docker-sandboxes.md">Manual setup guide →</a></p>
 
@@ -73,6 +74,27 @@ configuration.
 > regular terminal. If you don't have Claude Code installed, get it at
 > [claude.com/product/claude-code](https://claude.com/product/claude-code).
 
+### Verify your install
+
+After `/setup` completes, a few quick checks:
+
+```bash
+# Service is running (Linux)
+systemctl --user status nanoclaw
+
+# Or on macOS
+launchctl list | grep com.nanoclaw
+
+# Health endpoint returns JSON with HTTP 200
+curl -s http://127.0.0.1:3002/health | jq .
+
+# Smoke test (no message injected)
+npx tsx scripts/smoke-test.ts
+```
+
+Then from your main channel, send `/status` — you should get a reply showing uptime, connected channels, and the
+current message-cursor age. If you don't, run `/debug` inside the `claude` CLI prompt for guided diagnosis.
+
 ## Philosophy
 
 **Small enough to understand.** One process, a few source files and no microservices. If you want to understand the full
@@ -104,8 +126,8 @@ tailor it to each user.
 
 ## What It Supports
 
-- **Multi-channel messaging** - Talk to your assistant from WhatsApp, Telegram, Discord, Slack, or Gmail. Add channels
-  with skills like `/add-whatsapp` or `/add-telegram`. Run one or many at the same time.
+- **Multi-channel messaging** - Slack, WhatsApp, Telegram, and Gmail are bundled out of the box. Discord and other
+  channels are available as skills (e.g. `/add-discord`). Run one or many at the same time.
 - **Isolated group context** - Each group has its own `CLAUDE.md` memory, isolated filesystem, and runs in its own
   container sandbox with only that filesystem mounted to it.
 - **Main channel** - Your private channel (self-chat) for admin control; every group is completely isolated
@@ -136,6 +158,9 @@ From the main channel (your self-chat), you can manage groups and tasks:
 ```
 
 ### Slash Commands
+
+Quick reference — see [docs/slash-commands.md](docs/slash-commands.md) for the canonical list with implementation
+details and the three-category split (host / agent-runner / SDK).
 
 Any user can run read-only commands from any channel:
 
@@ -204,7 +229,8 @@ Single Node.js process. Channels are added via skills and self-register at start
 ones have credentials present. Agents execute in isolated Linux containers with filesystem isolation. Only mounted
 directories are accessible. Per-group message queue with concurrency control. IPC via filesystem.
 
-For the full architecture details, see [docs/SPEC.md](docs/SPEC.md).
+For the full architecture details, see [docs/SPEC.md](docs/SPEC.md). For the documentation index and source-of-truth
+ordering when sources disagree, see [docs/index.md](docs/index.md).
 
 Key files:
 

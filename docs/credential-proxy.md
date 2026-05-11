@@ -310,7 +310,9 @@ if (authMode === 'api-key') {
 
 ### 6.4 Bind host detection
 
-The proxy binds to a runtime-specific address so non-container processes can't reach it:
+`detectProxyBindHost()` lives in `src/container-runtime.ts` (not `src/credential-proxy.ts`); the proxy consumes it
+via the `PROXY_BIND_HOST` resolved on the host before startup. It binds to a runtime-specific address so non-container
+processes can't reach it:
 
 ```typescript
 function detectProxyBindHost(): string {

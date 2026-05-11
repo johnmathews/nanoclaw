@@ -71,7 +71,7 @@ A personal Claude assistant accessible via multiple channels, with minimal custo
 - **Claude Agent SDK** as the core agent
 - **Containers** for isolated agent execution
 - **Credential proxy** so the container never sees long-lived API keys or OAuth tokens
-- **Multi-channel messaging** (WhatsApp, Slack, Telegram, Discord, Gmail) — channels are skills that self-register at startup
+- **Multi-channel messaging** (Slack, WhatsApp, Telegram, Gmail bundled; Discord via skill) — channels are skills that self-register at startup
 - **Persistent memory** per conversation and globally
 - **Scheduled tasks** that run Claude and can message back
 - **Health monitoring** — HTTP `/health` endpoint, systemd watchdog, `/status` chat command
@@ -106,7 +106,9 @@ A personal Claude assistant accessible via multiple channels, with minimal custo
 ### Session Management
 
 - Each group maintains a conversation session via the Claude Agent SDK
-- Sessions auto-compact when context gets too long (threshold `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, default 165k)
+- Sessions auto-compact when context gets too long. The agent-runner unconditionally sets
+  `CLAUDE_CODE_AUTO_COMPACT_WINDOW=165000` (`container/agent-runner/src/index.ts:592`); it is not operator-configurable
+  via env var.
 - Host-side safety net: sessions exceeding 10MB are auto-cleared on resume to prevent deadlocks
 - Users can send `/compact` or `/clear` to manage history
 
@@ -166,12 +168,13 @@ A personal Claude assistant accessible via multiple channels, with minimal custo
 | -------- | ----------------------------- | ----------------------------------- |
 | Slack    | Socket Mode (`SLACK_BOT_TOKEN`) | Core, thread support, image vision |
 | Gmail    | OAuth via `@gongrzhe/server-gmail-autoauth-mcp` | Core; both as channel and MCP |
-| WhatsApp | Pairing code (baileys)        | **Separate fork** (`whatsapp` remote); install via `/add-whatsapp` |
-| Telegram | Bot token                     | Skill (`/add-telegram`); optional agent-swarm mode |
-| Discord  | Bot                           | Skill (`/add-discord`)              |
+| WhatsApp | Pairing code (baileys)        | Bundled in this fork (`src/channels/whatsapp.ts`); upstream `qwibitai/nanoclaw` v2+ ships it on a separate `whatsapp` remote |
+| Telegram | Bot token                     | Bundled (`src/channels/telegram.ts`); optional agent-swarm mode via `/add-telegram-swarm` |
+| Discord  | Bot                           | Not bundled; available via `/add-discord` skill |
 
-WhatsApp was extracted to its own remote in 2026-04 because it was the most fragile channel and pulled outage scope
-across the rest of the service. Re-pairing is `npm run auth --pairing-code --phone <number>`.
+Upstream extracted WhatsApp to its own remote in 2026-04 because it was the most fragile channel and pulled outage
+scope across the rest of the service. This fork kept it bundled — see
+[fork-divergence.md](fork-divergence.md). Re-pairing is `npm run auth --pairing-code --phone <number>`.
 
 ### MCP Servers (always on)
 

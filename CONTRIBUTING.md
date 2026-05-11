@@ -23,4 +23,12 @@ to their fork without inheriting code for features they don't want.
 
 ### Testing
 
-Test your skill by running it on a fresh clone before submitting.
+Test your skill by running it on a fresh clone before submitting. For source-code changes (the rare ones we accept),
+run `npm test` and confirm all tests pass before opening a PR.
+
+### Skill branches and the rebase rule
+
+Skills are distributed as git branches (`skill/<name>`) or as separate remotes for channel skills. **CI rejects skill
+branches that contain merge commits from `main`** — branches must be rebased onto current `main` before merging, never
+merged directly. See [docs/skills-as-branches.md](docs/skills-as-branches.md) for the full distribution model and the
+"Maintaining a Skill Branch" section for the rebase workflow.
