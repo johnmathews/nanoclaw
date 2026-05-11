@@ -3,6 +3,9 @@
 Original requirements and design decisions from the project creator. Philosophy first; current architecture decisions
 inline at the bottom. For implementation details see [SPEC.md](SPEC.md) and the [runbooks](../runbooks/).
 
+> Authoritative code references in this doc point at the current `main` of this fork; if reality and this doc
+> diverge, the code wins — patch this doc.
+
 ---
 
 ## Why This Exists
@@ -36,6 +39,12 @@ by a local proxy so the container never holds long-lived API keys — see [SECUR
 This isn't a framework or a platform. It's working software for my specific needs. I use WhatsApp, Slack, and Gmail,
 so it supports those. The codebase will only grow integrations the operator actually wants — not every possible one.
 
+### Sturdiness
+
+Service availability is a top design priority. NanoClaw must not break on rollout — prefer additive, behind-flag
+changes over invasive refactors; favour idempotent migrations; ensure new code paths fall through safely when their
+inputs are missing. The whole system is one Node process; one breakage takes down every channel.
+
 ### Customization = Code Changes
 
 No configuration sprawl. If you want different behavior, modify the code. The codebase is small enough that this is
@@ -62,9 +71,10 @@ See [runbooks/upstream-sync.md](../runbooks/upstream-sync.md).
 
 ---
 
-## Vision
+## Current Architecture
 
-A personal Claude assistant accessible via multiple channels, with minimal custom code.
+A personal Claude assistant accessible via multiple channels, with minimal custom code. The list below describes
+what's running today, not aspirational state.
 
 **Core components:**
 
@@ -115,7 +125,8 @@ A personal Claude assistant accessible via multiple channels, with minimal custo
 ### Container Isolation
 
 - All agents run inside containers
-- Each agent invocation spawns a container with mounted directories
+- Each agent invocation either spawns a fresh container or, when a per-group container is still alive, pipes the
+  message to its stdin — both paths share the same mount layout
 - Containers see only what's mounted; bash is safe because it runs in the container
 - Browser automation via agent-browser (Chromium in-container)
 - Default Docker on Linux; Apple Container available via `/convert-to-apple-container` skill on macOS
@@ -155,8 +166,9 @@ A personal Claude assistant accessible via multiple channels, with minimal custo
 
 ### Sender Allowlist
 
-- Optional per-channel sender allowlist (`~/.config/nanoclaw/sender-allowlist.json`) — when present, messages from
-  senders outside the allowlist are dropped. Defense against compromised channel keys.
+- Optional per-chat sender allowlist (`~/.config/nanoclaw/sender-allowlist.json`) — defense against compromised
+  channel keys. See [fork-divergence.md §Sender Allowlist](fork-divergence.md) for the canonical reference (file
+  format, `{ allow, mode }` shape, `default` fallback, `trigger`-vs-`drop` modes).
 
 ---
 
@@ -222,10 +234,10 @@ current set is in [CLAUDE.md](../CLAUDE.md#skills). Notable categories:
 
 ### RFS (Request for Skills)
 
-Skills we'd love contributors to build:
+Skills we'd love contributors to build (none of these exist yet):
 
-- `/add-signal` — Add Signal as a channel
-- `/add-sms` — Add SMS via Twilio or similar
+- `/add-signal` *(not yet built)* — Add Signal as a channel
+- `/add-sms` *(not yet built)* — Add SMS via Twilio or similar
 
 ### Deployment
 

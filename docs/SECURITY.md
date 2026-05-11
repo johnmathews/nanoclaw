@@ -30,6 +30,7 @@ Common properties across runtimes:
 - **Ephemeral** — `--rm` removes the container on exit; nothing persists outside mounted volumes
 - **Resource limits** — `--memory 2g --cpus 2` by default (override via `CONTAINER_MEMORY_LIMIT` / `CONTAINER_CPU_LIMIT`). Caps DoS blast radius if an agent loops or allocates aggressively.
 - **No new privileges** — container can't acquire capabilities beyond what the daemon grants at start
+  (enforced via `--security-opt no-new-privileges`; see `src/container-runner.ts:347`)
 
 This is the primary security boundary. Permission checks at the application layer are defense in depth; the OS sandbox is what actually prevents a compromised agent from touching the host.
 
@@ -52,7 +53,10 @@ Mount permissions live in an **external allowlist** at `~/.config/nanoclaw/mount
 ```
 
 - `allowedRoots[].path` — host paths a mount can resolve to (after symlink resolution). Mounts that resolve outside any allowed root are rejected.
-- `blockedPatterns` — substrings matched against the resolved host path. These extend the always-on defaults: `.ssh, .gnupg, .aws, .azure, .gcloud, .kube, .docker, credentials, .env, .netrc, .npmrc, id_rsa, id_ed25519, private_key, .secret`.
+- `blockedPatterns` — substrings matched against the resolved host path. These extend the always-on defaults
+  (see `DEFAULT_BLOCKED_PATTERNS` in `src/mount-security.ts:23-41` for the authoritative list — at time of writing:
+  `.ssh, .gnupg, .gpg, .aws, .azure, .gcloud, .kube, .docker, credentials, .env, .netrc, .npmrc, .pypirc, id_rsa,
+  id_ed25519, private_key, .secret`).
 - `nonMainReadOnly` — when true, non-main groups get read-only mounts regardless of the group's `containerConfig.additionalMounts` settings.
 
 Implementation: `src/mount-security.ts`. Generate a template via `generateAllowlistTemplate()`.
@@ -63,7 +67,7 @@ Implementation: `src/mount-security.ts`. Generate a template via `generateAllowl
 - **Container-path injection guard** — container paths containing `:` are rejected (`mount-security.ts:213-216`) to prevent `-v` argument injection (e.g. `-v /allowed:/safe:ro,/etc:/etc:rw`).
 - **Container path validation** — rejects `..` and absolute paths from group configs.
 - **Read-only project root** — main group's project root is mounted `ro`. Writable paths the agent needs (`store/`, group folder, IPC, `.claude/`) are mounted separately. Prevents an agent from modifying host application code (`src/`, `dist/`, `package.json`).
-- **`.env` shadowed** — `.env` in the project root is shadow-mounted with `/dev/null` so even if a tool tried to read it via the mounted project root it would see an empty file (`container-runner.ts:100-107`). Apple Container can't mount `/dev/null`; the convert-to-apple-container skill uses an empty regular file as the shadow.
+- **`.env` shadowed** — `.env` in the project root is shadow-mounted with `/dev/null` so even if a tool tried to read it via the mounted project root it would see an empty file (`container-runner.ts:100-107`). Apple Container can't mount `/dev/null`; the [`/convert-to-apple-container` skill](../.claude/skills/convert-to-apple-container/SKILL.md) uses an empty regular file as the shadow.
 
 ### 3. Session Isolation
 
@@ -87,7 +91,14 @@ Messages and task operations are verified against group identity:
 | Manage other groups         | ✓          | ✗              |
 | Set `isMain` via IPC        | ✗          | ✗              |
 
-**Re-registration safety:** When `register_group` targets an already-registered group (e.g. to update mounts), `isMain` and `requiresTrigger` are preserved from the existing registration. This prevents config updates from accidentally stripping elevated privileges.
+**Re-registration safety:** When `register_group` targets an already-registered group (e.g. to update mounts), the
+two privilege flags are handled asymmetrically (`src/ipc.ts:545-553`):
+
+- `isMain` is **always preserved** from the existing registration; the payload's value is ignored. A non-main group
+  cannot elevate to main via re-registration.
+- `requiresTrigger` is **only preserved when the payload omits it** (the code uses
+  `data.requiresTrigger ?? existing?.requiresTrigger`). An explicit value in the re-register payload wins. Don't
+  rely on this as a defence-in-depth property; trigger requirement *can* be downgraded by a re-register call.
 
 **Session-modifying commands** (`/compact`, `/clear`, `/done`) require admin access: main group, `is_from_me`, or `requiresTrigger=false` groups. Read-only commands (`/usage`, `/model`, `/skills`, `/status`) are available to any sender.
 
@@ -144,7 +155,7 @@ the proxy injects; they don't have a filesystem credential mount problem.
 | Global memory       | Implicit via project              | `/workspace/global` (ro) |
 | Additional mounts   | Configurable, rw                  | Read-only unless allowlist overrides |
 | Network access      | Unrestricted                      | Unrestricted             |
-| MCP tools           | All                               | All (see §6 caveat)      |
+| MCP tools           | All                               | All — including host Gmail/Calendar (see §6) |
 
 ## Security Architecture Diagram
 

@@ -170,6 +170,9 @@ type SdkBeta = 'context-1m-2025-08-07';
 // Enables 1M token context window for Opus 4.6, Sonnet 4.5, Sonnet 4
 ```
 
+The date-coded string above can drift as the SDK ships new betas. Verify against
+`node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts` (search for `SdkBeta`) before relying on it.
+
 ### CanUseTool
 
 ```typescript

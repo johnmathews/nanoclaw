@@ -91,8 +91,9 @@ Any other single-word `/<command>` is also passed through to the SDK and treated
 
 ### `/usage`
 
-Tries the `console.anthropic.com/v1/oauth/usage` API first using the OAuth token from
-`~/.claude/.credentials.json`, refreshing the access token if it is expired or within the 5-minute pre-expiry buffer
+Tries the `api.anthropic.com/api/oauth/usage` endpoint first (`src/host-commands.ts:230`) using the OAuth token from
+`~/.claude/.credentials.json`, refreshing the access token via `console.anthropic.com/v1/oauth/token`
+(`src/host-commands.ts:92`) if it is expired or within the 5-minute pre-expiry buffer
 ([`src/host-commands.ts:172-209`](../src/host-commands.ts)). On success it renders progress bars for the 5-hour
 session, 7-day window, per-model windows, and any extra credits
 ([`src/host-commands.ts:250-272`](../src/host-commands.ts)). On failure it returns an actionable error indicating

@@ -53,7 +53,8 @@ Use: pdf-reader extract attachments/F11111-deck.pdf
 ### Reply length
 
 Slack rejects messages over 4000 characters. `sendMessage()` in `slack.ts` splits longer responses on word boundaries
-(`MAX_MESSAGE_LENGTH = 4000`, line 38). Multi-part replies post sequentially into the same channel (or thread).
+(`MAX_MESSAGE_LENGTH = 4000` in `src/channels/slack.ts:38`). Multi-part replies post sequentially into the same
+channel (or thread).
 
 ## Thread Support
 
@@ -76,25 +77,52 @@ and replies inline. Non-threaded mentions continue to reply to the channel root.
 Thread context is also delivered for the pipe path (messages piped to an already-running container), so multi-turn
 thread conversations stay coherent.
 
-## Working-Indicator Reactions
+## Channel Typing Indicators
 
-Slack channels declare `hasNativeTyping = true`. Concretely this means a `:eyes:` reaction is added to the user's
-message via `setTyping(true, messageTs)` while the agent is working, and removed via `setTyping(false)` after each
-successful output and when the container exits.
+> **Canonical cross-channel reference.** CLAUDE.md / SPEC.md / fork-divergence.md point at this section rather than
+> re-stating the gating rules.
 
-Important details:
+NanoClaw signals "the agent is working" to the user via two independent mechanisms. Exactly one of them fires per
+message, based on the channel's `Channel.hasNativeTyping` flag.
 
-- `sendMessage()` and `sendBlocks()` do **not** touch the reaction — this prevents indicator gaps in multi-turn
-  conversations where the container is still alive processing piped messages.
+### Native typing indicators (Slack, WhatsApp, Telegram)
+
+Channels that declare `hasNativeTyping = true` use their platform's own indicator API:
+
+- **Slack** — a `:eyes:` reaction is added to the user's message via `setTyping(true, messageTs)` while the agent is
+  working, and removed via `setTyping(false)` after each successful output and when the container exits.
+  (`WORKING_REACTION = 'eyes'` in `src/channels/slack.ts:73`.)
+- **WhatsApp** — `sendPresenceUpdate('composing' | 'paused')` on the chat.
+- **Telegram** — `sendChatAction('typing')`.
+
+### StatusTracker progress reactions (other channels)
+
+Channels that declare `hasNativeTyping = false` (or omit it — Gmail) get the
+[`StatusTracker`](../src/status-tracker.ts) instead: progressive emoji reactions
+(received → thinking → working → done → failed) attached to the originating message, with state persisted to
+`data/status-tracker.json` across restarts.
+
+### The gating rules
+
+StatusTracker fires only when **both** conditions hold:
+
+1. The group is the **main group** (StatusTracker is silenced for non-main groups regardless of channel).
+2. The channel does **not** declare `hasNativeTyping=true`.
+
+In practice today: Slack/WhatsApp/Telegram use native indicators; Gmail-channel groups don't get any indicator
+because Gmail-channel groups are typically not the main group (and Gmail wouldn't have a sensible "typing" surface
+even if they were).
+
+### Slack-specific implementation notes
+
+- `sendMessage()` and `sendBlocks()` do **not** touch the `:eyes:` reaction — this prevents indicator gaps in
+  multi-turn conversations where the container is still alive processing piped messages.
 - When piped messages switch the reaction to a new message, the old reaction is removed first so we don't leave
   orphaned `:eyes:` on prior messages.
 - IPC-delivered messages (`send_message` tool) also clear the typing indicator, since they bypass the streaming
   output path.
 - Reaction removal failures are logged at `warn` for production visibility (they tend to be the symptom of token
   scope or rate-limit issues).
-
-The StatusTracker's progress reactions (received → thinking → working → done) are **disabled** for channels with
-native indicators, so Slack only ever shows the `:eyes:`.
 
 ## Required Slack App Scopes
 

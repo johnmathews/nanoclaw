@@ -16,6 +16,13 @@
 
 ---
 
+> **This is a fork** of [qwibitai/nanoclaw](https://github.com/qwibitai/nanoclaw) with fork-local features: credential
+> proxy (OAuth/API-key injection at the network boundary), journal MCP wiring, sender allowlist, bundled WhatsApp +
+> Telegram (upstream v2+ ships these as separate skills). See [docs/fork-divergence.md](docs/fork-divergence.md) for the
+> full divergence index.
+
+---
+
 <h2 align="center">🐳 Now Runs in Docker Sandboxes</h2>
 <p align="center">Every agent gets its own isolated container inside a micro VM.<br>Hypervisor-level isolation. Millisecond startup. No complex setup.</p>
 
@@ -51,15 +58,20 @@ of files. Claude agents run in their own Linux containers with filesystem isolat
 ## Quick Start
 
 ```bash
-gh repo fork qwibitai/nanoclaw --clone
+gh repo fork johnmathews/nanoclaw --clone
 cd nanoclaw
 claude
 ```
 
+> **Forking this repo, not upstream.** The command above forks
+> [johnmathews/nanoclaw](https://github.com/johnmathews/nanoclaw) (this fork) so you inherit the credential proxy,
+> bundled channels, and other fork-local features. If you want pristine upstream instead, fork
+> [qwibitai/nanoclaw](https://github.com/qwibitai/nanoclaw).
+
 <details>
 <summary>Without GitHub CLI</summary>
 
-1. Fork [qwibitai/nanoclaw](https://github.com/qwibitai/nanoclaw) on GitHub (click the Fork button)
+1. Fork [johnmathews/nanoclaw](https://github.com/johnmathews/nanoclaw) on GitHub (click the Fork button)
 2. `git clone https://github.com/<your-username>/nanoclaw.git`
 3. `cd nanoclaw`
 4. `claude`
@@ -133,11 +145,11 @@ tailor it to each user.
 - **Main channel** - Your private channel (self-chat) for admin control; every group is completely isolated
 - **Scheduled tasks** - Recurring jobs that run Claude and can message you back
 - **Web access** - Search and fetch content from the Web
-- **Container isolation** - Agents are sandboxed in
-  [Docker Sandboxes](https://nanoclaw.dev/blog/nanoclaw-docker-sandboxes) (micro VM isolation), Apple Container (macOS),
-  or Docker (macOS/Linux)
+- **Container isolation** - Agents run in containers. Default: Docker (macOS/Linux). Optional:
+  [Docker Sandboxes](https://nanoclaw.dev/blog/nanoclaw-docker-sandboxes) (micro VM isolation, macOS/Windows) or
+  Apple Container (macOS).
 - **Agent Swarms** - Spin up teams of specialized agents that collaborate on complex tasks
-- **Optional integrations** - Add Gmail (`/add-gmail`) and more via skills
+- **Optional integrations** - Add more channels and tools via skills (e.g. `/add-discord`, `/add-ollama-tool`)
 
 ## Usage
 
@@ -308,10 +320,6 @@ don't want.
 ## Community
 
 Questions? Ideas? [Join the Discord](https://discord.gg/VDdww8qS42).
-
-## Changelog
-
-See [CHANGELOG.md](CHANGELOG.md) for breaking changes and migration notes.
 
 ## License
 

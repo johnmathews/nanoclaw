@@ -1,12 +1,23 @@
 # Credential Proxy
 
 **Status:** fork-local feature, not in upstream NanoClaw.
-**Implementation:** [`src/credential-proxy.ts`](../src/credential-proxy.ts) (~120 lines).
+**Implementation:** [`src/credential-proxy.ts`](../src/credential-proxy.ts).
 **Tests:** [`src/credential-proxy.test.ts`](../src/credential-proxy.test.ts).
 
 This document explains how NanoClaw injects Anthropic credentials into containerised agents without ever placing the
 real long-lived credentials inside the container. It is written as a reference for anyone (human or agent) building
 a similar credential-isolation layer for an SDK they don't control.
+
+## TL;DR
+
+- **Bind host:** `docker0` bridge IP on Linux (excludes non-container host processes); `127.0.0.1` on macOS/WSL
+  (Docker Desktop VM routing already isolates loopback). Detection: `detectProxyBindHost()` in
+  [`src/container-runtime.ts`](../src/container-runtime.ts).
+- **Port:** `CREDENTIAL_PROXY_PORT`, default `3001` (see [`src/config.ts`](../src/config.ts)).
+- **Modes:** API-key (`ANTHROPIC_API_KEY` set) or OAuth (`CLAUDE_CODE_OAUTH_TOKEN` set; uses
+  `~/.claude/.credentials.json`).
+- **Container env:** containers get `ANTHROPIC_BASE_URL=http://<bind-host>:3001` plus placeholder credentials only.
+- **Known weakness:** OAuth tokens are snapshotted at proxy startup and not refreshed — see §11.1.
 
 ---
 
@@ -244,7 +255,7 @@ const oauthToken = secrets.CLAUDE_CODE_OAUTH_TOKEN || secrets.ANTHROPIC_AUTH_TOK
 ```
 
 The proxy is a function of its env at startup. **It does not re-read `.env` later.** This is a real limitation
-in OAuth mode — see §13.1 and §15.1.
+in OAuth mode — see §11.1 (the weakness) and §13.7 (the design lesson).
 
 A separate `detectAuthMode()` export lets `container-runner.ts` decide which placeholder env var to inject into
 spawning containers without re-implementing the same logic.
@@ -530,7 +541,9 @@ incremental.
 Replace the snapshot-at-startup with a function call:
 
 ```typescript
-import { getValidAccessToken } from './host-commands.js';   // already exists
+import { getValidAccessToken } from './host-commands.js';
+// Note: getValidAccessToken is currently private in host-commands.ts;
+// wiring this in requires exporting it first.
 
 // inside the per-request handler, in OAuth mode:
 if (headers['authorization']) {

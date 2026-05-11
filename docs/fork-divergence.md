@@ -48,20 +48,43 @@ the user's home network; the upstream tree has no equivalent.
 
 ## Sender Allowlist
 
+> **Canonical reference for this feature.** REQUIREMENTS / SPEC / SECURITY summarise; this section owns the details.
+
 - **Status:** fork-local (verified — added in commit `4de981b`, PR #705 on this fork)
-- **Code:** [`src/sender-allowlist.ts`](../src/sender-allowlist.ts); consumed in `src/index.ts` at lines 72-75, 300,
-  315, 826, and 1063.
-- **Docs:** [`docs/REQUIREMENTS.md`](REQUIREMENTS.md) (the "Sender Allowlist" section, around line 154) and
-  [`docs/SPEC.md`](SPEC.md) line 52.
+- **Code:** [`src/sender-allowlist.ts`](../src/sender-allowlist.ts); consumed in `src/index.ts` via the
+  `loadSenderAllowlist` import — search the file for that identifier (currently used at the channel-message,
+  trigger-check, group-listing, and task-scheduler call sites; line numbers drift).
+- **Summarised in:** [`docs/REQUIREMENTS.md`](REQUIREMENTS.md#sender-allowlist), [`docs/SPEC.md`](SPEC.md) §2 components
+  table, and [`docs/SECURITY.md`](SECURITY.md) architecture diagram.
 - **Configuration:** `~/.config/nanoclaw/sender-allowlist.json` (path defined in `src/config.ts:30`).
 
-A per-chat sender gate. The allowlist file maps chat JIDs to `{ allow: '*' | [senderIds], mode: 'trigger' | 'drop' }`
-plus a `default` entry that applies to chats with no explicit rule. `trigger` mode means denied senders cannot
-activate the agent but their messages are still stored; `drop` mode discards the message entirely. When the file is
-absent the allowlist defaults to `{ allow: '*', mode: 'trigger' }`, so behaviour is unchanged for installations that
-have not opted in. The motivation is defence against a compromised channel key — even if an attacker gains write
-access to a Slack workspace or WhatsApp linked-device, they cannot use that access to talk to the agent unless their
-sender id is on the allowlist for that chat.
+### File format
+
+```json
+{
+  "default": { "allow": "*", "mode": "trigger" },
+  "447700123456@s.whatsapp.net": { "allow": ["447712345678@s.whatsapp.net"], "mode": "trigger" },
+  "C0123456789": { "allow": ["U0AAAAA", "U0BBBBB"], "mode": "drop" }
+}
+```
+
+### Semantics
+
+- **Keying is per-chat** (`chatJid`), not per-channel. The same sender can be allowlisted in one Slack channel and
+  denied in another.
+- `allow`: `"*"` permits any sender; an array restricts to the listed sender ids.
+- `mode`:
+  - `"trigger"` — denied senders cannot activate the agent (their messages are still stored in the DB for context).
+  - `"drop"` — denied senders' messages are discarded entirely.
+- `default` — applied to any chat that has no explicit rule. Without a `default` entry, an unlisted chat defaults
+  to `{ allow: "*", mode: "trigger" }` so behaviour is unchanged for installations that haven't opted in.
+
+### Motivation
+
+Defence against a compromised channel key. Even if an attacker gains write access to a Slack workspace or
+WhatsApp linked-device, they cannot use that access to talk to the agent unless their sender id is on the
+allowlist for that chat. The agent's outbound capabilities (Gmail, Calendar, scheduled tasks) make hijacking
+worth defending against in depth.
 
 ## Mount Security
 
@@ -111,17 +134,17 @@ otherwise assume it is missing rather than deferred.
 ## Status Tracker
 
 - **Status:** present in this fork
-- **Code:** [`src/status-tracker.ts`](../src/status-tracker.ts); instantiated in `src/index.ts:1127`.
-- **Docs:** [`CLAUDE.md`](../CLAUDE.md) "Channel Typing Indicators" section.
-- **Configuration:** none; the tracker self-disables on channels whose `hasNativeTyping` flag is `true`.
+- **Code:** [`src/status-tracker.ts`](../src/status-tracker.ts); persistence at `src/status-tracker.ts:67-72`
+  (`path.join(DATA_DIR, 'status-tracker.json')`).
+- **Docs:** [`docs/slack-attachments.md`](slack-attachments.md) §"Channel Typing Indicators" is the canonical
+  cross-channel reference; `CLAUDE.md` and `SPEC.md` carry one-line pointers.
+- **Configuration:** none; gated automatically per the rules in slack-attachments.md.
 
-The status tracker sends progressive emoji reactions (received, thinking, working, done, failed) to the originating
-message so the user can see the agent's state on channels that lack a native typing indicator. Each channel declares
-`hasNativeTyping`; if it is true (as it currently is for WhatsApp, Telegram, and Slack), the tracker short-circuits
-and emits no reactions. Reaction send/clear is retried with exponential backoff and persists state to
-`data/status-tracker.json` across restarts so progress reactions don't get orphaned on a service reload. This may
-exist upstream in some form, but the persistence layer and the `hasNativeTyping` gate are at least fork-specific to
-how this tree handles Slack and WhatsApp.
+The status tracker sends progressive emoji reactions (received → thinking → working → done → failed) to the
+originating message so the user can see the agent's state on channels that lack a native typing indicator. State
+persists to `data/status-tracker.json` across restarts so progress reactions don't get orphaned on a service
+reload. The gating rules (main-group + `hasNativeTyping` flag) are owned by
+[slack-attachments.md](slack-attachments.md).
 
 ## Contributing to Upstream
 

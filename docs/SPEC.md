@@ -30,6 +30,26 @@ Channel inbound ──► SQLite messages table ──► message loop
                                             └─────────────┘
 ```
 
+### Host vs. Container
+
+At a glance, where each major piece of NanoClaw runs:
+
+| Component                       | Host | Container | Notes                                                            |
+| ------------------------------- | ---- | --------- | ---------------------------------------------------------------- |
+| Orchestrator (`src/index.ts`)   | ✓    |           | Single Node process                                              |
+| Channels (Slack/WA/Tg/Gmail)    | ✓    |           | Live WebSocket / poll connections to platforms                   |
+| Credential proxy                | ✓    |           | HTTP server on docker0 (Linux) or 127.0.0.1 (macOS/WSL)          |
+| Status tracker                  | ✓    |           | Reaction calls go out via host's channel client                  |
+| Health server, watchdog         | ✓    |           | systemd sd_notify; HTTP on `:3002`                               |
+| DB (`store/messages.db`)        | ✓    |           | SQLite, accessed only by host                                    |
+| Agent-runner                    |      | ✓         | `/app/dist/index.js` — drives the SDK inside each container      |
+| Claude Agent SDK                |      | ✓         | Invoked by agent-runner                                          |
+| Bash, tool calls, file ops      |      | ✓         | Anything an agent does runs in the container                     |
+| Gmail / Calendar MCP servers    |      | ✓         | spawned per-container by agent-runner                            |
+| `nanoclaw` MCP server (in-proc) |      | ✓         | bundled into agent-runner                                        |
+| Whisper transcription           | ✓    |           | Host-side; uses `OPENAI_API_KEY` (not forwarded to containers)   |
+| Scheduled task evaluation       | ✓    |           | Host runs the scheduler; tasks themselves run in spawned containers |
+
 ## 2. Components
 
 | Component         | File                       | Purpose                                              |
@@ -49,11 +69,13 @@ Channel inbound ──► SQLite messages table ──► message loop
 | Host Commands     | `src/host-commands.ts`     | `/usage`, `/status` — answered without a container   |
 | Session Commands  | `src/session-commands.ts`  | Slash-command extraction and dispatch                |
 | Mount Security    | `src/mount-security.ts`    | External allowlist validation                        |
-| Sender Allowlist  | `src/sender-allowlist.ts`  | Optional per-channel sender gating                   |
+| Sender Allowlist  | `src/sender-allowlist.ts`  | Optional per-chat sender gating — see [fork-divergence.md](fork-divergence.md#sender-allowlist) for canonical reference |
+| Status Tracker    | `src/status-tracker.ts`    | Progress reactions; state at `data/status-tracker.json` |
+| Remote Control    | `src/remote-control.ts`    | Captures a `claude.ai/code` URL session for ad-hoc remote claude access; state at `data/remote-control.json` |
 | Health            | `src/health.ts`            | Pure-function health snapshot                        |
 | Health Server     | `src/health-server.ts`     | HTTP `GET /health` on port 3002                      |
 | Watchdog          | `src/watchdog.ts`          | systemd `WATCHDOG=1` every 2s                        |
-| Session Cleanup   | `src/session-cleanup.ts`   | Daily prune of stale session artifacts               |
+| Session Cleanup   | `src/session-cleanup.ts`   | Daily prune via `scripts/cleanup-sessions.sh` (24h interval) |
 | DB                | `src/db.ts`                | SQLite schema, migrations, all data access           |
 
 ## 3. Channels
@@ -81,11 +103,10 @@ interface Channel {
 - `connect()` must always settle — resolve on first successful connection, reject on auth failure. A failing channel
   must not exit the process (see [journal/260420-journal-token-and-whatsapp-isolation.md](../journal/260420-journal-token-and-whatsapp-isolation.md)).
 - `sendMessage()` may be called with a `threadTs`; non-threaded channels ignore it.
-- Channels declaring `hasNativeTyping=true` are skipped per-call by the StatusTracker's progress-reaction sequence so
-  indicators don't double up. Slack, WhatsApp, and Telegram declare it; Gmail does not (StatusTracker is also gated
-  to the main group, so Gmail-channel groups typically get no progress reaction either way).
-- Slack's typing indicator is implemented as a `:eyes:` reaction on the user's message (the `setTyping` hook). See
-  [slack-attachments.md](slack-attachments.md).
+- The interaction between `hasNativeTyping`, the StatusTracker, and the main-group gate is documented canonically
+  in [slack-attachments.md §Channel Typing Indicators](slack-attachments.md#channel-typing-indicators). Quick
+  summary: Slack/WhatsApp/Telegram use native indicators; other channels (when on the main group) get StatusTracker
+  reactions.
 
 ### Currently supported
 
@@ -94,8 +115,8 @@ interface Channel {
 | Slack    | Socket Mode                | `src/channels/slack.ts`       | Thread support, image vision, PDF handoff        |
 | Gmail    | OAuth (gmail-autoauth-mcp) | `src/channels/gmail.ts`       | Both a channel and an MCP tool                   |
 | WhatsApp | Pairing code (baileys)     | `src/channels/whatsapp.ts`    | Bundled in this fork's `main`. Upstream `qwibitai/nanoclaw` v2+ moved WhatsApp to a separate `nanoclaw-whatsapp` remote — see [fork-divergence.md](fork-divergence.md). |
-| Telegram | Bot token                  | `/add-telegram` skill         | Optional agent-swarm mode via `/add-telegram-swarm` |
-| Discord  | Bot                        | `/add-discord` skill          |                                                  |
+| Telegram | Bot token                  | `src/channels/telegram.ts`    | Bundled in this fork. Optional agent-swarm mode via `/add-telegram-swarm`. |
+| Discord  | Bot                        | `/add-discord` skill          | Not bundled — opt in via skill.                  |
 
 ## 4. Message Lifecycle
 
@@ -168,19 +189,27 @@ Each agent invocation spawns a Docker container with the following layout:
 | `/workspace/project/store`   | `store/`                                        | rw   | main only               |
 | `/workspace/global`          | `groups/global/`                                | rw (main) / ro (non-main) | all      |
 | `/workspace/extra/<name>`    | `containerConfig.additionalMounts`              | configurable, allowlist-validated | configurable |
-| `/app/src` (agent-runner)    | `data/sessions/<group>/agent-runner-src/`       | ro   | all (synced each spawn) |
+| `/app/src` (agent-runner)    | `data/sessions/<group>/agent-runner-src/`       | rw   | all (synced each spawn) |
 | `/home/node/.gmail-mcp`      | `~/.gmail-mcp/`                                 | rw   | all                     |
 | `/home/node/.config/google-calendar-mcp` | same on host                        | rw   | all                     |
 | `/workspace/project/.env`    | `/dev/null` (shadow)                            | ro   | main only               |
 
-Container env vars (set in `container-runner.ts`):
+Mount-source paths in the table above are relative to the project root on the host (the directory where `npm start`
+or the systemd unit runs).
+
+Container env vars set on the host side in `container-runner.ts`:
 
 - `ANTHROPIC_BASE_URL=http://<host-gateway>:CREDENTIAL_PROXY_PORT` — point SDK at the proxy
 - `ANTHROPIC_API_KEY=placeholder` **or** `CLAUDE_CODE_OAUTH_TOKEN=placeholder` — depending on detected auth mode
 - `ANTHROPIC_MODEL=<resolved model>` — from per-group `config.json` or default
 - `NANOCLAW_GROUP=<group folder>` — used by `/status` for context
-- `CLAUDE_CODE_AUTO_COMPACT_WINDOW=165000` — auto-compaction threshold (overridden in agent-runner)
 - Conditional: `DOCS_MCP_URL`, `JOURNAL_MCP_URL`, `JOURNAL_API_TOKEN`, `PARALLEL_API_KEY`, `GITHUB_TOKEN`
+
+Container env vars set inside the container by the agent-runner (not host-side):
+
+- `CLAUDE_CODE_AUTO_COMPACT_WINDOW=165000` — auto-compaction threshold, set unconditionally by
+  `container/agent-runner/src/index.ts:592`. Not operator-configurable via host env var; the agent-runner overwrites
+  any host value.
 
 `OPENAI_API_KEY` is read on the host (Whisper transcription via `src/transcription.ts`) and is **not** forwarded into
 containers.
@@ -188,11 +217,33 @@ containers.
 Resource limits: `--memory CONTAINER_MEMORY_LIMIT` (default `2g`), `--cpus CONTAINER_CPU_LIMIT` (default `2`).
 
 Idle vs hard timeouts: `IDLE_TIMEOUT` (30 min default) starts the graceful shutdown; the hard timeout is
-`max(CONTAINER_TIMEOUT, IDLE_TIMEOUT + 30s)`, guaranteeing a grace window for the container to flush before SIGKILL.
+`max(CONTAINER_TIMEOUT, IDLE_TIMEOUT + 30_000)` — all in milliseconds — guaranteeing a grace window for the
+container to flush before SIGKILL.
+
+### Container Build Cache
+
+The container buildkit caches the build context aggressively. `--no-cache` alone does NOT invalidate COPY steps —
+the builder's volume retains stale files. To force a truly clean rebuild, prune the builder then re-run
+`./container/build.sh`.
+
+### Image Attachment Pipeline (host-side)
+
+Images are loaded into base64 on the host before container spawn, not read from files inside the container.
+This eliminates race conditions between attachment cleanup and container file reads:
+
+1. Channel downloads image → `processImage()` resizes and saves to `groups/<folder>/attachments/`.
+2. `loadImageData()` in `src/image.ts` reads each file into memory and deletes it immediately (unless
+   `skipImageMultimodal` is set in the group's `config.json`, in which case `cleanupImageFiles()` deletes without
+   reading).
+3. Base64 bytes go to the container via `ContainerInput.imageAttachments` (JSON over stdin).
+4. The agent-runner sends bytes directly to Claude as multimodal content blocks; no file reads in-container.
+
+Both Slack (`[Image attached: ...]`) and WhatsApp (`[Image: ...]`) formats are parsed by `parseImageReferences()`.
+Media types inferred from file extension, not hardcoded. WhatsApp downloads retry twice with linear backoff.
 
 ## 7. Credential Proxy
 
-Implementation: [`src/credential-proxy.ts`](../src/credential-proxy.ts). Started in `src/index.ts:983` before any
+Implementation: [`src/credential-proxy.ts`](../src/credential-proxy.ts). Started in `src/index.ts:984` before any
 channel connects.
 
 | Mode      | Selected when (.env)                                  | Container placeholder              |
@@ -231,11 +282,17 @@ its session store.
 
 Cleanup safety nets:
 
-- **Auto-compaction** at `CLAUDE_CODE_AUTO_COMPACT_WINDOW=165000` tokens — handled by the SDK; the `compact_boundary`
-  message is intercepted in agent-runner (`index.ts:472`) and the transcript archived via the `PreCompact` hook.
+- **Auto-compaction** at `CLAUDE_CODE_AUTO_COMPACT_WINDOW=165000` tokens — handled by the SDK.
+  - The `compact_boundary` SDK message is intercepted in the agent-runner at
+    `container/agent-runner/src/index.ts:472`, where the handler logs the trigger and pre-compaction token count.
+  - Transcript archiving is done by a separate `PreCompact` hook at
+    `container/agent-runner/src/index.ts:165-205`, which fires *before* the SDK rewrites session state. The two
+    code paths are independent — the line-472 handler doesn't archive.
 - **10MB host-side limit** — before resuming, if the session file exceeds 10MB, the host clears it. This avoids
   prompt-too-long deadlocks where even `/compact` can't fit a single request.
-- **Daily prune** — `src/session-cleanup.ts` removes stale session artifacts.
+- **Daily prune** — `src/session-cleanup.ts` shell-execs `scripts/cleanup-sessions.sh` at 24-hour intervals.
+  The script removes session artifacts under `data/sessions/<group>/` that exceed the staleness threshold defined
+  in that script.
 
 `resumeSessionAt: <lastAssistantUuid>` is set on every resume to pin the branch (`agent-runner/src/index.ts:359`),
 defending against the stale-branch picks investigated in [runbooks/troubleshooting.md](../runbooks/troubleshooting.md#session-transcript-branching).
@@ -246,7 +303,10 @@ defending against the stale-branch picks investigated in [runbooks/troubleshooti
 
 - **Gmail** — `@gongrzhe/server-gmail-autoauth-mcp`. Tools `mcp__gmail__*`. Credentials at `~/.gmail-mcp/` mounted rw.
 - **Google Calendar** — `@cocal/google-calendar-mcp`. Tools `mcp__google-calendar__*`. Shares Gmail OAuth credentials; token storage at `~/.config/google-calendar-mcp/` mounted rw.
-- **nanoclaw** — in-container MCP server with scheduling and IPC tools: `schedule_task`, `list_tasks`, `pause_task`, `resume_task`, `cancel_task`, `send_message`, `send_blocks`, `register_group`.
+- **nanoclaw** — in-container MCP server. Implemented in `container/agent-runner/src/ipc-mcp-stdio.ts` with 10
+  `server.tool(...)` registrations: `schedule_task`, `list_tasks`, `pause_task`, `resume_task`, `cancel_task`,
+  `send_message`, `send_blocks`, `register_group`, `react_to_message`, `query_reactions`. Tools allowed as
+  `mcp__nanoclaw__*`.
 
 ### Conditional (HTTP, configured via env var)
 
@@ -305,8 +365,11 @@ SQLite at `store/messages.db`, WAL mode. All access through `src/db.ts`. Schema 
 | `task_run_logs`      | Execution history                               |
 | `reactions`          | Emoji reactions on messages                     |
 | `rate_limits`        | Anthropic API rate limit snapshots              |
-| `router_state`       | KV: `lastAgentTimestamp`, message cursor, status-tracker state, etc. |
+| `router_state`       | KV: `lastAgentTimestamp`, message cursor, etc.  |
 | `schema_version`     | Migration tracking                              |
+
+StatusTracker state is **not** in this DB — it persists to a separate JSON file at `data/status-tracker.json`
+(`src/status-tracker.ts:67-72`). Remote-control session state is similarly file-based, at `data/remote-control.json`.
 
 To add a migration: append to `migrations` in `src/db.ts` with the next version. Each migration's `up()` should be
 idempotent.
@@ -318,6 +381,9 @@ Three independent layers:
 1. **HTTP** — `GET http://127.0.0.1:3002/health` returns JSON. HTTP 200 healthy, 503 degraded. Port via `HEALTH_PORT`.
 2. **Systemd watchdog** — `WATCHDOG=1` every 2s; 15 missed beats → restart (`src/watchdog.ts`). Requires
    `Type=notify`, `NotifyAccess=all`, `WatchdogSec=30s` in the unit file.
+   > **Known installer gap:** `/setup` currently writes `Type=simple` (no `NotifyAccess`, no `WatchdogSec`), so
+   > `initWatchdog()` returns `null` and this layer is silently disabled on fresh installs until the unit file is
+   > edited manually. See `journal/260511-docs-sweep-and-deferred-items.md` deferred item #1.
 3. **`/status` chat command** — same data as the HTTP endpoint, surfaced into any channel.
 
 Plus `npx tsx scripts/smoke-test.ts` for CI-style checks (`--full` injects a test message and waits for response).
@@ -337,13 +403,13 @@ All values read from `.env` or `process.env`. Secrets stay in `.env` and are loa
 | `CREDENTIAL_PROXY_HOST`        | auto-detect                  | macOS/WSL: `127.0.0.1`; Linux: docker0 |
 | `HEALTH_PORT`                  | `3002`                       |                                        |
 | `CONTAINER_IMAGE`              | `nanoclaw-agent:latest`      |                                        |
-| `CONTAINER_TIMEOUT`            | `1800000` (30 min)           | Hard timeout (ms)                      |
-| `CONTAINER_MAX_OUTPUT_SIZE`    | `10485760` (10 MB)           |                                        |
-| `CONTAINER_MEMORY_LIMIT`       | `2g`                         |                                        |
-| `CONTAINER_CPU_LIMIT`          | `2`                          |                                        |
-| `IDLE_TIMEOUT`                 | `1800000` (30 min)           | Idle shutdown                          |
-| `MAX_CONCURRENT_CONTAINERS`    | `5`                          |                                        |
-| `MAX_MESSAGES_PER_PROMPT`      | `10`                         |                                        |
+| `CONTAINER_TIMEOUT`            | `1800000` (30 min, ms)       | Hard timeout (ms)                      |
+| `CONTAINER_MAX_OUTPUT_SIZE`    | `10485760` (10 MB, bytes)    |                                        |
+| `CONTAINER_MEMORY_LIMIT`       | `2g`                         | Docker `--memory` syntax               |
+| `CONTAINER_CPU_LIMIT`          | `2` (cores)                  | Docker `--cpus` syntax                 |
+| `IDLE_TIMEOUT`                 | `1800000` (30 min, ms)       | Idle shutdown threshold                |
+| `MAX_CONCURRENT_CONTAINERS`    | `5` (containers)             |                                        |
+| `MAX_MESSAGES_PER_PROMPT`      | `10` (messages)              |                                        |
 | `DOCS_MCP_URL`                 | —                            | Optional MCP                           |
 | `JOURNAL_MCP_URL`              | —                            | Optional MCP                           |
 | `JOURNAL_API_TOKEN`            | —                            | Required if journal URL is set         |
@@ -351,7 +417,7 @@ All values read from `.env` or `process.env`. Secrets stay in `.env` and are loa
 | `GITHUB_TOKEN`                 | —                            | Passed through for GitHub tools        |
 | `OPENAI_API_KEY`               | —                            | Host-side Whisper transcription. Not forwarded into containers. |
 | `LOG_LEVEL`                    | `info`                       | Host log level; also passed to agent-runner |
-| `TZ`                           | system                       | For scheduled-task cron evaluation     |
+| `TZ`                           | system                       | Host process timezone for cron evaluation; containers have an independent TZ. |
 | `SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `WHATSAPP_*`, `TELEGRAM_BOT_TOKEN`, etc. | — | Channel-specific |
 
 Channel-specific keys vary by skill — see each `/add-*` skill's SKILL.md for the full list.
@@ -361,7 +427,7 @@ Channel-specific keys vary by skill — see each `/add-*` skill's SKILL.md for t
 ```
 nanoclaw/
 ├── src/                      # Host TypeScript
-│   ├── channels/             # Slack, Gmail (and skill-installed channels)
+│   ├── channels/             # Slack, Gmail, WhatsApp, Telegram (and skill-installed channels)
 │   ├── credential-proxy.ts
 │   ├── container-runner.ts
 │   ├── container-runtime.ts
