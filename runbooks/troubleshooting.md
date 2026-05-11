@@ -197,14 +197,61 @@ SQLite uses WAL mode. If you get "database is locked":
 ### Database Corrupt
 
 ```bash
-# Check integrity
-sqlite3 store/messages.db "PRAGMA integrity_check;"
+# Check integrity (no sqlite3 CLI on this host — use better-sqlite3 via node)
+node -e "
+const Database = require('better-sqlite3');
+const db = new Database('./store/messages.db', {readonly:true});
+console.log(db.pragma('integrity_check'));
+"
 
 # If corrupt, restore from backup or re-initialize
 # (messages will be lost, but channels will re-populate)
 cp store/messages.db store/messages.db.corrupt
 rm store/messages.db
 systemctl --user restart nanoclaw
+```
+
+## Session Transcript Branching
+
+Subagent CLI processes write to the same session JSONL as the parent. On `query()` resume, the SDK can pick a stale
+branch tip and the agent's response lands on a branch the host never receives a `result` for. The runner mitigates
+this by passing `resumeSessionAt` with the last assistant message UUID, but if you suspect branching is still
+happening, inspect the transcript directly:
+
+```bash
+# List CLI debug logs (one .txt file per CLI subprocess; multiple = concurrent queries)
+ls -la data/sessions/<group>/.claude/debug/
+
+# Walk the transcript and print parentUuid links per user message
+python3 -c "
+import json
+path = 'data/sessions/<group>/.claude/projects/-workspace-group/<session>.jsonl'
+for i, line in enumerate(open(path).read().strip().split('\n')):
+  try:
+    d = json.loads(line)
+    if d.get('type') == 'user' and d.get('message'):
+      parent = (d.get('parentUuid') or 'ROOT')[:8]
+      content = str(d['message'].get('content', ''))[:60]
+      print(f'L{i+1} parent={parent} {content}')
+  except Exception: pass
+"
+```
+
+If you see two user messages with the same `parentUuid`, the transcript has branched.
+
+## Container Logs
+
+Per-container log files live under each group:
+
+```bash
+# Most recent container logs across all groups
+ls -lt groups/*/logs/container-*.log | head -10
+
+# Tail a specific container log
+less groups/<group>/logs/container-<timestamp>.log
+
+# Follow active container logs
+tail -f $(ls -t groups/*/logs/container-*.log | head -1)
 ```
 
 ## MCP Server Unreachable

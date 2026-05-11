@@ -1,6 +1,32 @@
 # Claude Agent SDK Deep Dive
 
-Findings from reverse-engineering `@anthropic-ai/claude-agent-sdk` v0.2.29–0.2.34 to understand how `query()` works, why agent teams subagents were being killed, and how to fix it. Supplemented with official SDK reference docs.
+Findings from reverse-engineering `@anthropic-ai/claude-agent-sdk` to understand how `query()` works, why agent
+teams subagents were being killed, and how to fix it. Supplemented with official SDK reference docs.
+
+> **Version note.** The original investigation was against v0.2.29–0.2.34. The agent-runner currently pins
+> `^0.2.92` (`container/agent-runner/package.json`, ~60 patch versions newer). The high-level architecture (CLI
+> subprocess, JSON-lines transport, recursive agentic loop) is unchanged, but **minified identifiers** later in this
+> doc and exact call sequences should be treated as historical — verify against the current minified bundle before
+> relying on them. The conceptual sections above the "Internals Reference" heading have aged well.
+
+## How NanoClaw uses the SDK
+
+Concrete call sites in `container/agent-runner/src/index.ts`:
+
+| Need                                  | Where                                        |
+| ------------------------------------- | -------------------------------------------- |
+| SDK import                            | line 20 — `import { query, HookCallback, PreCompactHookInput }` |
+| Streaming-input AsyncIterable         | `class MessageStream` (lines 84-124); used in `runQuery` (line 287) so `isSingleUserTurn=false` |
+| Resume specific branch                | `resumeSessionAt: resumeAt` (line 359) — pins the resume to the last assistant message UUID to dodge stale-branch picks |
+| Permission model                      | `permissionMode: 'bypassPermissions'` (lines 380, 697) — trusted in-container execution |
+| Settings discovery                    | `settingSources: ['project', 'user']` (lines 382, 699) — loads `.claude/` from project + user dirs inside the container |
+| Auto-compaction threshold             | env `CLAUDE_CODE_AUTO_COMPACT_WINDOW=165000` (line 592) — overrides the SDK default before the context-1m boundary |
+| `compact_boundary` handling           | line 472 — archives transcripts via the `PreCompact` hook before the SDK rewrites session state |
+| `rate_limit_event` capture            | lines 485, 730 — persisted to the host DB to power `/usage` fallback when the OAuth usage API is unreachable |
+| Subagent CLI invocation               | scheduled task path uses a second `query()` call with its own `permissionMode`/`settingSources` (line 697) |
+| `additionalDirectories` discovery     | walks `/workspace/extra/*` (lines 336-350) and adds each as a read-only working directory |
+
+If a behavior described later in this doc seems inconsistent with the code, **the code wins** — bump this list.
 
 ## Architecture
 
@@ -608,6 +634,11 @@ function createSdkMcpServer(options: {
 ```
 
 ## Internals Reference
+
+> ⚠️ **Identifiers below are from v0.2.34's minified bundle and have almost certainly been renamed in v0.2.92+.**
+> They are kept here as a historical map of where the interesting logic sits, not as an index you can grep against
+> a current `sdk.mjs`. If you need to re-locate any of these in a current build, the entry point is still
+> `query()` → `ProcessTransport.spawn()` → the recursive agentic loop in the CLI bundle.
 
 ### Key minified identifiers (sdk.mjs)
 
