@@ -183,6 +183,11 @@ subscription instead of per-token API billing?"* **Yes**, but the mechanism is a
 token, the endpoint, and a header — not the proxy alone. Knowing which piece does what matters when this design
 is later modified, debugged, or extended.
 
+> If you're building a **different** tool and want to know how to set up subscription billing in it (rather than
+> understanding NanoClaw's mechanism), see [claude-subscription-auth.md](claude-subscription-auth.md). That doc
+> covers the setup steps, the SDK packages (right one vs. wrong one), the setup-token flow, and the policy
+> boundary between personal use (allowed) and third-party product offerings (prohibited).
+
 1. **Token format.** The `sk-ant-oat01-...` prefix tells Anthropic "this credential is bound to a Claude.ai
    subscription account." The short-lived temp key the exchange returns has prefix `sk-ant-api03-...` (same shape
    as Console-minted API keys) but is subscription-bound at issuance — that binding is what propagates to inference

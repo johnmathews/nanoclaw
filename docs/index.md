@@ -13,6 +13,7 @@ project, the suggested reading order is [REQUIREMENTS.md](REQUIREMENTS.md) (phil
 | [SPEC.md](SPEC.md)                                | Technical reference: components, data flows, env vars, DB schema |
 | [SECURITY.md](SECURITY.md)                        | Trust model, container isolation                            |
 | [credential-proxy.md](credential-proxy.md)        | OAuth/API-key injection at the network boundary; subscription-vs-API-key billing routing; canonical reference |
+| [claude-subscription-auth.md](claude-subscription-auth.md) | How to set up Claude Pro/Max subscription billing in a different tool: SDK packages, setup token, headers, policy boundary |
 | [SDK_DEEP_DIVE.md](SDK_DEEP_DIVE.md)              | How `@anthropic-ai/claude-agent-sdk` works internally       |
 | [skills-as-branches.md](skills-as-branches.md)    | How skills are distributed (git branches and remotes)       |
 | [slack-attachments.md](slack-attachments.md)      | Slack attachments + threads + reactions; canonical for channel typing indicators |
