@@ -134,6 +134,14 @@ unconditionally for all `/v1/messages` and similar endpoints, and the proxy unco
 **Selected when:** no `ANTHROPIC_API_KEY`, but `CLAUDE_CODE_OAUTH_TOKEN` (or the alias `ANTHROPIC_AUTH_TOKEN`) is
 present in the host's `.env`.
 
+**How the operator obtains the token:** run `claude setup-token` in a terminal where Claude Code is already
+authenticated. The command emits a long-lived OAuth credential pair (access token + refresh token) bound to the
+Claude.ai account holding the Pro/Max/Team/Enterprise plan. The access token has prefix `sk-ant-oat01-` (OAuth
+Access Token); paste it into `.env` as `CLAUDE_CODE_OAUTH_TOKEN=<token>`. The `/setup` skill at
+`.claude/skills/setup/SKILL.md` step 4 walks this through. Claude Code also stores the credential pair locally at
+`~/.claude/.credentials.json` (mode `0600`) so the host CLI and the refresh logic in `src/host-commands.ts` share
+state; see §7 for the file format and refresh flow.
+
 **Container env:** `CLAUDE_CODE_OAUTH_TOKEN=placeholder`.
 
 **Per-request handling:**
@@ -167,6 +175,61 @@ This is the entire OAuth integration. Three things make it work:
 
 Result: the long-lived OAuth token crosses the wire **once per container session** (during the first exchange
 request) and never enters the container's environment, filesystem, or stdin.
+
+### 4.3 Subscription billing — how it routes
+
+This section answers the operator-facing question: *"does OAuth mode actually charge against my Claude Pro/Max
+subscription instead of per-token API billing?"* **Yes**, but the mechanism is a three-part contract between the
+token, the endpoint, and a header — not the proxy alone. Knowing which piece does what matters when this design
+is later modified, debugged, or extended.
+
+1. **Token format.** The `sk-ant-oat01-...` prefix tells Anthropic "this credential is bound to a Claude.ai
+   subscription account." The short-lived temp key the exchange returns has prefix `sk-ant-api03-...` (same shape
+   as Console-minted API keys) but is subscription-bound at issuance — that binding is what propagates to inference
+   calls. Console-minted `sk-ant-api03-...` keys look identical but are billed per-token against the org that
+   minted them; you cannot tell which is which by inspection, only by provenance.
+2. **Exchange endpoint.** `/api/oauth/claude_cli/create_api_key` is the subscription-aware route. Anthropic accepts
+   OAuth tokens at this endpoint specifically and emits a temp key inheriting the subscription binding. Calling
+   `/v1/messages` directly with an `sk-ant-oat01-...` Bearer would not work.
+3. **Beta header.** The SDK sends `anthropic-beta: oauth-2025-04-20` on the exchange request. This is Anthropic's
+   "OAuth-bound, route to subscription" flag. **The proxy does not add this header** — it flows through verbatim
+   from the SDK. (Verify: `grep anthropic-beta src/credential-proxy.ts` returns zero matches. The string only
+   appears in `src/host-commands.ts:233`, where the host calls `api.anthropic.com/api/oauth/usage` directly for
+   the `/usage` command — same auth pair, used for reporting instead of inference.)
+
+Anthropic verifies all three before binding the temp key to the subscription. Calls bill against the plan's
+rate-limit windows (5h, 7d, 7d-opus, 7d-sonnet); there is no per-token line item. The `extra_usage` bucket visible
+in `/usage` is a counter against the subscription's overage allowance, not a separate charge stream.
+
+**Authentication precedence (gotcha).** If `ANTHROPIC_API_KEY` appears anywhere the proxy's `.env` reader can see
+it, it silently wins over `CLAUDE_CODE_OAUTH_TOKEN`:
+
+```typescript
+const authMode: AuthMode = secrets.ANTHROPIC_API_KEY ? 'api-key' : 'oauth';
+```
+
+A stray `ANTHROPIC_API_KEY=...` line in `.env` switches the host to per-token API billing without warning.
+Anthropic's own docs ([Authentication](https://code.claude.com/docs/en/authentication), "Authentication
+precedence") describe the same precedence for Claude Code itself. The proxy reads `.env` directly (via
+`readEnvFile`, not `process.env`), so leaked process-env vars don't directly affect it — but a deliberate
+operator check is `grep -E '^(ANTHROPIC_API_KEY|CLAUDE_CODE_OAUTH_TOKEN)=' .env` before service restarts.
+
+**Why this design survives Anthropic's third-party-tool restrictions.** Starting in 2026 Anthropic began rejecting
+OAuth tokens used by third-party harnesses that re-implement the OAuth flow themselves; affected requests return
+HTTP 400 / `invalid_request_error` against the `oauth-2025-04-20` beta header
+([anthropics/claude-code#13770](https://github.com/anthropics/claude-code/issues/13770)). NanoClaw is currently
+unaffected because:
+
+- It embeds the unmodified `@anthropic-ai/claude-agent-sdk`.
+- The proxy is a transparent Bearer-value swap; it does not synthesize OAuth requests of its own.
+- The client fingerprint reaching Anthropic (User-Agent, beta-header set, request shape, body schema) is
+  whatever the SDK emits — i.e. official Claude Code traffic.
+
+This is contingent on Anthropic's policy. If they tighten further (client attestation, signed requests, etc.),
+this design may need to change. The pragmatic rule for anyone editing this proxy is: **keep the proxy strictly to
+its current scope — one Bearer swap on requests that already carry `Authorization`. Do not synthesize requests,
+do not rewrite paths, do not add or modify any `anthropic-*` headers.** Crossing that line is what gets harnesses
+classified as "re-implementing the OAuth flow" and blocked.
 
 ## 5. Wire-Level Request Flow
 

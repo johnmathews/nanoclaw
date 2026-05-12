@@ -253,9 +253,15 @@ channel connects.
 
 Containers are spawned with `ANTHROPIC_BASE_URL=http://<host-gateway>:CREDENTIAL_PROXY_PORT` (default 3001).
 
-For request flow, OAuth exchange dance, bind-host detection, configuration, testing, strengths/weaknesses, and
-improvement ideas, see **[credential-proxy.md](credential-proxy.md)**. For trust-model implications see
-[SECURITY.md §5](SECURITY.md#5-credential-isolation-credential-proxy). For decision rationale see
+OAuth mode routes inference against the operator's Claude Pro/Max subscription (no per-token API charges, no
+Anthropic API key required). The mechanism is a three-part contract — token format (`sk-ant-oat01-`), exchange
+endpoint (`/api/oauth/claude_cli/create_api_key`), and the SDK's `anthropic-beta: oauth-2025-04-20` header — and is
+described in [credential-proxy.md §4.3](credential-proxy.md#43-subscription-billing--how-it-routes). Setting
+`ANTHROPIC_API_KEY` silently overrides OAuth and switches to per-token billing.
+
+For request flow, OAuth exchange dance, billing-routing mechanism, bind-host detection, configuration, testing,
+strengths/weaknesses, and improvement ideas, see **[credential-proxy.md](credential-proxy.md)**. For trust-model
+implications see [SECURITY.md §5](SECURITY.md#5-credential-isolation-credential-proxy). For decision rationale see
 [journal/260511-add-credential-proxy-oauth.md](../journal/260511-add-credential-proxy-oauth.md).
 
 ## 8. Slash Commands
