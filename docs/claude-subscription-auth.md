@@ -1,7 +1,19 @@
 # Using a Claude Pro/Max Subscription in a Custom Tool
 
 **Audience:** developers building a custom tool, harness, or script that calls Anthropic models and want it to
-bill against an existing Claude.ai Pro/Max/Team/Enterprise subscription rather than per-token API charges.
+bill **exclusively** against an existing Claude.ai Pro/Max/Team/Enterprise subscription:
+
+- **No Anthropic API key** required (and none should be set — see §2).
+- **No per-token API charges** — calls don't appear on the Anthropic Console's API usage page at all.
+- **No "extra usage" credits consumed** while you stay within the subscription's rate-limit windows.
+
+A note on "extra usage": this is the row visible in `claude /usage` with fields `is_enabled`,
+`monthly_limit`, `used_credits` (see `src/host-commands.ts:76-82` for the response shape). It's an opt-in
+feature on Max plans that lets calls overflow into per-token API billing when a subscription rate-limit window
+is exhausted. The setup in this doc routes calls against the subscription — it does not by itself prevent
+extra-usage charges if (a) you exceed a rate-limit window *and* (b) you've enabled extra-usage spillover on your
+Anthropic account. To guarantee zero extra-usage charges, either keep extra-usage spillover disabled on your
+account (you'll get 429s instead of charges past the limit) or stay within the subscription's windows.
 
 **Status:** topical reference. Cross-references [credential-proxy.md](credential-proxy.md) for the isolation
 pattern NanoClaw layers on top of this.

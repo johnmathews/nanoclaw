@@ -203,8 +203,12 @@ is later modified, debugged, or extended.
    the `/usage` command — same auth pair, used for reporting instead of inference.)
 
 Anthropic verifies all three before binding the temp key to the subscription. Calls bill against the plan's
-rate-limit windows (5h, 7d, 7d-opus, 7d-sonnet); there is no per-token line item. The `extra_usage` bucket visible
-in `/usage` is a counter against the subscription's overage allowance, not a separate charge stream.
+rate-limit windows (5h, 7d, 7d-opus, 7d-sonnet); there is no per-token line item *for in-window calls*. The
+`extra_usage` bucket visible in `/usage` (see `src/host-commands.ts:76-82` for the response shape) is a separate,
+opt-in feature: when enabled on the Anthropic account (`is_enabled: true`), calls that exhaust a rate-limit
+window spill over into per-token API billing; when disabled, exhausting a window returns 429 errors instead. The
+proxy/OAuth design here controls *which billing pipeline* requests target (subscription, not Console API key),
+not whether a given subscription owner has opted into extra-usage spillover.
 
 **Authentication precedence (gotcha).** If `ANTHROPIC_API_KEY` appears anywhere the proxy's `.env` reader can see
 it, it silently wins over `CLAUDE_CODE_OAUTH_TOKEN`:
