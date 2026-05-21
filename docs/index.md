@@ -31,6 +31,15 @@ project, the suggested reading order is [REQUIREMENTS.md](REQUIREMENTS.md) (phil
 
 This is intentional convention, not pending migration. New topical docs should follow the lowercase pattern.
 
+## Active Migrations
+
+In-flight cross-cutting work that spans many sessions. Read these before doing anything related to the migration's scope.
+
+| Document                                                                              | Status                                                                                       |
+| ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| [v2-migration/motivation-and-context.md](v2-migration/motivation-and-context.md)      | active (planning, 2026-05-21) — why we're migrating from v1 to v2, decisions, alternatives rejected |
+| [v2-migration/implementation-plan.md](v2-migration/implementation-plan.md)            | active (planning, 2026-05-21) — phased step-by-step plan (P0–P8) with rollback per work unit |
+
 ## Operations & Runbooks
 
 For everything operational, see [../runbooks/](../runbooks/):
