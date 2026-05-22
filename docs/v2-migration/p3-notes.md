@@ -1159,3 +1159,189 @@ delete flow. Confirm at next 02:03 fire if this is acceptable
 short-term.
 
 
+## §18 W4.x-slack-interactivity — `send_blocks` MCP + `ncv2:` action namespace (2026-05-22)
+
+Picked option B from §17.9. Pre-empts the Mon 04:03 CEST (= 02:03
+UTC + DST offset) git-maintenance cron breakage by porting v1's
+`send_blocks` + `app.action(/^nanoclaw_…/)` pattern into v2 with a
+v2-prefixed action namespace.
+
+### 18.1 What was built
+
+**1. `send_blocks` MCP tool** (`container/agent-runner/src/mcp-tools/interactive.ts`)
+— sibling of `send_card`. Accepts:
+
+- `blocks` — Slack Block Kit, either an array OR a JSON string
+  (Claude sometimes stringifies tool-arg objects unprompted).
+- `fallbackText` — required plain-text fallback. Non-Slack adapters
+  and any postBlocks failure deliver this instead.
+
+Writes a `messages_out` row with content
+`{ type: 'blocks', blocks, fallbackText }`. Validates: blocks must
+decode to an array; fallbackText must be non-empty.
+
+**2. Bridge content branch** (`src/channels/chat-sdk-bridge.ts`
+`deliver()`). Recognises `content.type === 'blocks'` before the
+existing `send_card` branch. Flow:
+
+- If `config.postBlocks` is set → call it; on throw, log + fall
+  back to posting `fallbackText` via `adapter.postMessage`.
+- If no `postBlocks` and `fallbackText` non-empty → post
+  fallbackText via `adapter.postMessage` (non-Slack channels see
+  plain text).
+- If no `postBlocks` and empty `fallbackText` → skip with a warn
+  log; nothing posted (matches `send_card` empty-payload semantics).
+
+**3. `postBlocks` capability on `ChatSdkBridgeConfig`** — exposed
+as `PostBlocksFn = (threadId, blocks, fallbackText) => Promise<{id?}>`.
+Slack channel supplies one; others omit it.
+
+**4. Slack-channel postBlocks impl** (`src/channels/slack.ts`).
+Reaches into the Chat SDK Slack adapter's private `client`
+(WebClient) field via a typed structural cast — necessary because
+the SDK's `postMessage` only accepts `AdapterPostableMessage`
+(string | PostableRaw | PostableMarkdown | PostableAst |
+PostableCard | CardElement) — none of which carry raw Block Kit,
+and the abstract Card primitive can't render checkboxes /
+multi-select / datepickers. Decodes the Slack threadId encoding
+(`slack:CHANNEL:THREAD_TS`) and calls `client.chat.postMessage({ channel, thread_ts, text, blocks, unfurl_links: false, unfurl_media: false })` directly.
+Defensive: returns null when the adapter's `.client.chat.postMessage`
+shape isn't there (future SDK version bumps), so the bridge falls
+back to text instead of crashing.
+
+**5. ncv2 action routing** (bridge `chat.onAction`). Recognises
+`event.actionId.startsWith('ncv2:')` BEFORE the existing `ncq:`
+branch. Strips the prefix, synthesises a chat-sdk inbound via the
+new pure helper `buildNcv2Inbound()`, and forwards it through
+`setupConfig.onInbound(channelId, threadId, inbound)` — same path
+as a normal message, so all router/wiring logic (agent_group
+lookup, session selection, mention-mode handling) "just works"
+without bridge-side knowledge of the group config.
+
+The synthetic inbound shape:
+
+```ts
+{
+  id: `act-${Date.now()}-${rand}`,
+  kind: 'chat-sdk',
+  content: {
+    text: '(button clicked) action_id="confirm_delete" value="..." by John',
+    sender: 'John', senderId: 'U01HJOHN',
+    action: { actionId, value, userId, messageId },
+  },
+  timestamp: ISO,
+  isMention: true,  // mention-mode wirings still engage on the click
+  isGroup: true,
+}
+```
+
+The agent sees the click as a human-readable `<message>` line in
+its prompt, and can read the JSON-serialised `action` object from
+the same row content blob if it needs the structured value.
+
+**6. Group config update** (`groups/slack_git-maintenance/CLAUDE.local.md`).
+Action ids repointed `nanoclaw_checkbox_branches` → `ncv2:checkbox_branches`,
+`nanoclaw_confirm_delete` → `ncv2:confirm_delete`. Confirmation
+Handling section rewritten to describe the new synthetic-inbound
+shape — and to flag a load-bearing Slack quirk: checkbox state
+isn't re-delivered with the button click, so the agent now has to
+persist pending-deletion branch lists in group memory keyed off
+the post timestamp. Without that step, a click-driven delete would
+have no list of branches to operate on. The CLAUDE.local.md update
+embeds this requirement.
+
+The actual cron task prompt (in `messages_in[id=task-1775472071448-rpvh6c]`)
+needed no change — it points at "send_blocks MCP tool" and "the
+exact report format in CLAUDE.md", both of which now resolve.
+
+### 18.2 Tests
+
+**Host (vitest):**
+- `buildNcv2Inbound` — 4 tests pin the synthetic-inbound shape
+  (kind/isMention/isGroup, no-value text line, value-included text
+  line, structured action under content.action).
+- `deliver — raw Slack Block Kit (send_blocks)` — 5 tests:
+  - routes content.type=blocks through config.postBlocks;
+  - falls back to fallbackText via adapter.postMessage when no
+    postBlocks;
+  - falls back to fallbackText when postBlocks throws;
+  - skips delivery when blocks payload has empty fallbackText and
+    no postBlocks (warn-log path);
+  - falls through to text branch when blocks is not an array
+    (defensive — guards against malformed future writers).
+
+37 vitest files / 433 tests pass (was 424 — +9 new; the bridge had
+existing `splitForLimit` + `deliver — send_card` tests adjacent).
+
+**Agent-runner (bun:test, deferred):** `interactive.test.ts` adds
+5 tests for `send_blocks` (array payload writes correct outbound
+row; JSON-string payload decodes; empty fallbackText rejected;
+malformed JSON rejected; non-array non-string rejected). Can't run
+on the host (no `bun` installed locally — bun lives in the
+container). The file follows the existing `core.test.ts` pattern;
+it will run on the next container build that exercises the suite.
+
+### 18.3 Operational gotchas surfaced
+
+**(a) Slack checkbox state isn't re-delivered with the button
+click.** Slack's interactivity model fires one `block_actions`
+payload per discrete user action. A user ticking 5 checkboxes
+generates 5 separate `checkboxes` events (which the bridge happily
+routes through `ncv2:`), but the eventual `ncv2:confirm_delete`
+click does NOT carry the current checkbox state — only the button's
+own `action_id` + (empty) value. The agent must persist the
+pre-checked set on the original post and look it up at click time.
+This is documented in the rewritten Confirmation Handling section.
+
+**(b) The Slack adapter's `client` is private.** Reaching into
+`(adapter as any).client` is brittle across SDK version bumps. We
+defensively check the shape at construction time and degrade to
+fallback-text mode if it doesn't match. Pin this for re-review at
+the next `@chat-adapter/slack` bump.
+
+**(c) `chat.onAction` filter order matters.** The bridge's `ncv2:`
+branch is checked BEFORE the existing `ncq:` branch. Both prefixes
+get explicit guards; any actionId that matches neither is silently
+dropped (unchanged behaviour). Confirmed: an actionId of
+`ncq:foo:0` still routes to the question-response path.
+
+### 18.4 Status
+
+- All 8 tasks complete; working tree clean before commit.
+- v2 service restarted; `/health` 200; Slack/WhatsApp/CLI all
+  connected; no warning logged for `Slack adapter has no .client.chat.postMessage`
+  → postBlocks is bound.
+- Build: `pnpm build` green, `pnpm typecheck` green, `pnpm test`
+  433/433 green, `pnpm format:check` green.
+- Container rebuild NOT required: v2's agent-runner is bind-mounted
+  RO (`container/agent-runner/src` → `/app/src`) and run via
+  `bun /app/src/index.ts` directly; the new `interactive.ts`
+  takes effect on the next container spawn.
+
+### 18.5 What §18 did NOT do
+
+- Did not fire a manual test of the git-maintenance cron. Risk:
+  the cron does substantial git/network work (fetch, GitHub API
+  calls, possibly cherry-picks). The real Mon 2026-05-25 04:03
+  CEST fire is the first live test.
+- Did not back-port the `ncv2:` namespace to any other group. Only
+  `slack_git-maintenance/CLAUDE.local.md` was updated. If/when
+  another group needs Block Kit interactivity, repeat the
+  three-step pattern: (1) post via `send_blocks` with
+  `action_id` starting `ncv2:`, (2) describe the new actionId in
+  the group's CLAUDE.local.md, (3) handle the synthetic inbound
+  with a `(button clicked) action_id="..."` text shape.
+- Did not extend to `chat.onModalSubmit` or `chat.onSlashCommand`.
+  Out of scope per §17.5.
+
+### 18.6 Plan revisions
+
+- **`implementation-plan.md` §5 P4** — mark `W4.x-slack-interactivity`
+  DONE pointing at §18. The remaining P4 work is `W4.x-multimodal`
+  (image/voice/PDF inbound) and `W4.x-reactions-inbound`.
+- **`project_v2_migration.md` memory** — append "W4.x-slack-interactivity
+  done 2026-05-22" + carry forward gotchas 18.3(a), 18.3(b).
+- **`fork-local-inventory.md`** — no row changes (the inventory
+  tracks fork-local files retired/kept; §18 added new code, none
+  retired).
+
