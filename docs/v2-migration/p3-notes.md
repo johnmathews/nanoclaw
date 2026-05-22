@@ -667,3 +667,108 @@ Commit `d8c04b8`. Pushed alongside W4.5.1 at end of session.
 
 - **§5 P4 W4.5.1** — mark DONE. Pointer to this §14.
 - **§5 P4** — next still W4.1 (sender-allowlist) per §13.7.
+
+## §15 W4.1 — sender-allowlist retire (2026-05-22)
+
+The cleanest retire of the migration. v1's `src/sender-allowlist.ts` was
+listed as `decide-at-port-time` in `fork-local-inventory.md`; the audit
+found that v1 was running with the file absent in production, so the
+allowlist was a no-op, and that v2's `src/modules/permissions/` is a
+functional superset that is actually wired and enforced. No code change
+on v2 — doc-only retire.
+
+### 15.1 Audit method
+
+Read v1's `src/sender-allowlist.ts` end-to-end and grep'd v1's `src/`
+for all callers. Audited v2's `src/modules/permissions/` for functional
+equivalents.
+
+### 15.2 What v1's allowlist did
+
+`src/sender-allowlist.ts` (128 LOC) exposed:
+
+- `loadSenderAllowlist()` — reads `~/.config/nanoclaw/sender-allowlist.json`;
+  returns `DEFAULT_CONFIG = { default: { allow: '*', mode: 'trigger' }, chats: {}, logDenied: true }`
+  if the file is missing (`ENOENT` → DEFAULT_CONFIG silently, no warning).
+- `isSenderAllowed(chatJid, sender, cfg)` — `entry.allow === '*' || entry.allow.includes(sender)`.
+- `shouldDropMessage(chatJid, cfg)` — true if `entry.mode === 'drop'`.
+- `isTriggerAllowed(chatJid, sender, cfg)` — `isSenderAllowed`, with optional
+  debug log.
+
+Callers in v1's `src/index.ts`:
+
+| Line | Site | Role |
+| --- | --- | --- |
+| 311 + 315 | trigger-pattern check at chat fan-out | block trigger for denied sender |
+| 821 + 826 | similar trigger check | block trigger for denied sender |
+| 1059–1069 | drop-mode pre-storage filter | discard message before storing |
+
+### 15.3 Why this was a no-op in production
+
+```bash
+$ ls ~/.config/nanoclaw/sender-allowlist.json
+No such file or directory
+$ ls ~/.config/nanoclaw/
+mount-allowlist.json
+```
+
+File is absent. v1's `loadSenderAllowlist()` returned `DEFAULT_CONFIG` on
+every call: `allow='*'` (everyone allowed), `mode='trigger'` (no drop).
+Both `isSenderAllowed` and `isTriggerAllowed` short-circuited true on the
+`*` wildcard. `shouldDropMessage` always returned false. None of the three
+v1 call sites ever blocked a sender in production. This matches the
+"Pre-P3 mistakes worth recording" note in project memory.
+
+### 15.4 v2's functional equivalents (and why they're a superset)
+
+v2 split the concern into a real module: `src/modules/permissions/`. The
+relevant pieces:
+
+| Concern | v1 (sender-allowlist) | v2 (permissions module) |
+| --- | --- | --- |
+| Unknown-sender handling | `allow='*'` wildcard, file-driven, file absent in prod (no-op) | `unknown_sender_policy` per messaging group: `strict` (drop), `request_approval` (DM-flow), `public` (allow). Stored in `messaging_groups` table; enforced by `setAccessGate` in `src/modules/permissions/index.ts`. |
+| Per-chat overrides | `chats[jid]` map in the JSON file | per-`messaging_group` (which is per chat) — the same granularity, with the policy column. |
+| Drop mode | `mode: 'drop'` per chat | `unknown_sender_policy=strict` + `recordDroppedMessage()` to the `dropped_messages` table. Persisted audit trail (v1 only emitted a debug log). |
+| Approval workflow | none | `pending_sender_approvals` table + `requestSenderApproval()` + DM-based approve/reject flow (`sender-approval.ts`, `channel-approval.ts`, `user-dm.ts`). |
+| Admin gating for commands | none (the trigger check was the only sender gate) | `command-gate.ts` `isAdmin()` checks `hasAdminPrivilege` via `user_roles` (`global_admin` / `agent_group_admin` / `owner`). |
+| CLI surface gating | none | `cli_scope` table (migration 015) — controls which users can talk to which agent groups from the `ncl` CLI. |
+| Wired in production? | no (file absent) | yes (`unknown_sender_policy='public'` on all 10 groups; owner = `whatsapp:31683775990@s.whatsapp.net`) |
+
+v2's model is a strict superset: it covers everything v1 intended to do
+(per-chat allow/drop) plus what v1 lacked (approval workflows, admin
+roles, CLI scoping), and unlike v1's it actually fires.
+
+### 15.5 Decision
+
+- **Retired.** v1's `src/sender-allowlist.ts` remains on the `v1-archive`
+  branch as a tombstone. No code change needed on v2 — `grep -rn
+  "sender-allowlist\\|senderAllowlist" /srv/apps/nanoclaw-v2/src/` returned
+  zero hits before this work unit.
+- `fork-local-inventory.md` row for `src/sender-allowlist.ts` flipped from
+  `decide-at-port-time` → `retired` with a one-line link back to this
+  section.
+- No tests to port — v1's `src/sender-allowlist.test.ts` is irrelevant
+  given the retire. v2's permissions tests
+  (`src/modules/permissions/{permissions,sender-approval,channel-approval}.test.ts`)
+  already cover the superset.
+
+### 15.6 Carry-forward
+
+Nothing. If a future need for per-chat IP-style allow/deny rules emerges
+(e.g. block a specific user from a specific group even when they're a
+member), it should be added to `src/modules/permissions/` rather than
+revived as a separate sender-allowlist module.
+
+### 15.7 Status
+
+- v2 main HEAD: unchanged by this work unit (doc-only commit forthcoming).
+- Test count: 37 files / 421 tests (no change — no code touched).
+
+### 15.8 Plan revisions
+
+- **`fork-local-inventory.md` `src/sender-allowlist.ts` row** — flipped
+  to `retired`, link to §15.
+- **`project_v2_migration.md` memory item "W4.1 sender allowlist"** —
+  mark DONE.
+- **§5 P4 next** — installer-template watchdog patch (see §16) or
+  W4.7 (Journal MCP verify).
