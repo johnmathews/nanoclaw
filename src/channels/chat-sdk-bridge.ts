@@ -45,6 +45,29 @@ export interface ReplyContext {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export type ReplyContextExtractor = (raw: Record<string, any>) => ReplyContext | null;
 
+/**
+ * Result of a platform-native block post — used so the bridge can record the
+ * platform message id alongside the existing path. Mirrors the relevant
+ * fields of Chat SDK's `RawMessage`.
+ */
+export interface PostBlocksResult {
+  /** Platform message id (Slack thread_ts equivalent). */
+  id?: string;
+}
+
+/**
+ * Optional Slack-Block-Kit passthrough. Channels that can render raw Block Kit
+ * (currently only Slack) supply this; the bridge calls it when the agent emits
+ * a `content.type === 'blocks'` outbound. Channels without this fall back to
+ * posting `fallbackText` via `adapter.postMessage`.
+ *
+ * The bridge does not attempt to translate Block Kit JSON into the Chat SDK's
+ * abstract Card primitives — the v1 `send_blocks` contract is verbatim raw
+ * blocks, and translating loses load-bearing features (checkboxes, multi-select,
+ * datepickers, accessory layouts) that Card cannot express.
+ */
+export type PostBlocksFn = (threadId: string, blocks: unknown[], fallbackText: string) => Promise<PostBlocksResult>;
+
 export interface ChatSdkBridgeConfig {
   adapter: Adapter;
   concurrency?: ConcurrencyStrategy;
@@ -52,6 +75,11 @@ export interface ChatSdkBridgeConfig {
   botToken?: string;
   /** Platform-specific reply context extraction. */
   extractReplyContext?: ReplyContextExtractor;
+  /**
+   * Optional platform-native raw-Block-Kit poster. Supplied by the Slack channel;
+   * absent on others. Used to deliver `content.type === 'blocks'` outbound rows.
+   */
+  postBlocks?: PostBlocksFn;
   /**
    * Whether this platform uses threads as the primary conversation unit.
    * See `ChannelAdapter.supportsThreads`. Declared by the calling channel
@@ -101,6 +129,52 @@ function resolveSelectedOption(
     if (render.options[idx]) return render.options[idx].value;
   }
   return candidate;
+}
+
+/**
+ * Build a synthetic chat-sdk inbound message from an `ncv2:`-prefixed action
+ * event. Factored out of the bridge so the inbound shape stays testable
+ * without spinning up a full Chat SDK instance.
+ *
+ * The agent receives a human-readable `text` line *and* structured `action`
+ * metadata under the same content. Existing formatters render the text into
+ * the prompt; the agent can read the JSON-encoded action via its own message
+ * content when it inspects the full row (the `messages_in.content` blob is
+ * stored verbatim and surfaced to the agent on subsequent inbound batches if
+ * it needs the structured form).
+ */
+export interface Ncv2InboundInput {
+  actionId: string; // already stripped of the "ncv2:" prefix
+  value: string;
+  userId: string;
+  userName: string;
+  messageId: string;
+  now: () => Date;
+  idGen: () => string;
+}
+
+export function buildNcv2Inbound(input: Ncv2InboundInput): InboundMessage {
+  const text = input.value
+    ? `(button clicked) action_id="${input.actionId}" value="${input.value}" by ${input.userName}`
+    : `(button clicked) action_id="${input.actionId}" by ${input.userName}`;
+  return {
+    id: input.idGen(),
+    kind: 'chat-sdk',
+    content: {
+      text,
+      sender: input.userName,
+      senderId: input.userId,
+      action: {
+        actionId: input.actionId,
+        value: input.value,
+        userId: input.userId,
+        messageId: input.messageId,
+      },
+    },
+    timestamp: input.now().toISOString(),
+    isMention: true,
+    isGroup: true,
+  };
 }
 
 export function splitForLimit(text: string, limit: number): string[] {
@@ -265,8 +339,41 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
         await setupConfig.onInbound(channelId, thread.id, await messageToInbound(message, false, true));
       });
 
-      // Handle button clicks (ask_user_question)
+      // Route ncv2:<actionId> button clicks back to the agent as an inbound
+      // message. v1's pattern was `app.action(/^nanoclaw_(checkbox|confirm)_/)`
+      // with arbitrary action_id strings; v2 namespaces them under `ncv2:` so
+      // the bridge can distinguish "interaction targeted at this agent" from
+      // "any other actionId on the platform" without an installation-wide list.
+      //
+      // The inbound is synthesised as a chat-sdk message with structured
+      // `action` metadata alongside a human-readable `text` so the existing
+      // formatter renders it cleanly into the agent prompt.
       chat.onAction(async (event) => {
+        if (event.actionId.startsWith('ncv2:')) {
+          const actionId = event.actionId.slice('ncv2:'.length);
+          const value = event.value ?? '';
+          const userId = event.user?.userId || '';
+          const userName =
+            (event.user as { fullName?: string; userName?: string } | undefined)?.fullName ??
+            (event.user as { userName?: string } | undefined)?.userName ??
+            (userId || 'unknown');
+          const channelId = adapter.channelIdFromThreadId(event.threadId);
+          const inbound = buildNcv2Inbound({
+            actionId,
+            value,
+            userId,
+            userName,
+            messageId: event.messageId,
+            now: () => new Date(),
+            idGen: () => `act-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          });
+          try {
+            await setupConfig.onInbound(channelId, event.threadId, inbound);
+          } catch (err) {
+            log.error('Failed to route ncv2 action', { actionId, err });
+          }
+          return;
+        }
         if (!event.actionId.startsWith('ncq:')) return;
         const parts = event.actionId.split(':');
         if (parts.length < 3) return;
@@ -413,6 +520,31 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
           card,
           fallbackText: `${title}\n\n${question}\nOptions: ${options.map((o) => o.label).join(', ')}`,
         });
+        return result?.id;
+      }
+
+      // Raw Slack Block Kit (send_blocks MCP tool). Slack-only: the channel
+      // provides `config.postBlocks` which reaches the underlying WebClient
+      // directly. Other channels fall back to posting fallbackText so the
+      // message isn't silently lost.
+      if (content.type === 'blocks' && Array.isArray(content.blocks)) {
+        const blocks = content.blocks as unknown[];
+        const fallbackText = ((content.fallbackText as string) || '').trim();
+        if (config.postBlocks) {
+          try {
+            const r = await config.postBlocks(tid, blocks, fallbackText);
+            return r?.id;
+          } catch (err) {
+            log.error('postBlocks failed; falling back to fallbackText', { err });
+          }
+        }
+        // Non-Slack adapter or postBlocks failure — deliver the fallback text
+        // so the agent's intent surfaces somehow rather than being dropped.
+        if (!fallbackText) {
+          log.warn('send_blocks payload has empty fallbackText and no postBlocks path; skipping');
+          return;
+        }
+        const result = await adapter.postMessage(tid, { markdown: transformText(fallbackText) });
         return result?.id;
       }
 

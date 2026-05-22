@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { Adapter, AdapterPostableMessage, RawMessage } from 'chat';
 
-import { createChatSdkBridge, splitForLimit } from './chat-sdk-bridge.js';
+import { buildNcv2Inbound, createChatSdkBridge, splitForLimit } from './chat-sdk-bridge.js';
 
 function stubAdapter(partial: Partial<Adapter>): Adapter {
   return { name: 'stub', ...partial } as unknown as Adapter;
@@ -203,5 +203,177 @@ describe('createChatSdkBridge.deliver — display cards (send_card)', () => {
     expect(calls).toHaveLength(1);
     const msg = calls[0].message as { markdown?: string };
     expect(msg.markdown).toBe('plain hello');
+  });
+});
+
+describe('buildNcv2Inbound', () => {
+  // The bridge's chat.onAction handler synthesises an inbound row from
+  // ncv2:-prefixed action events. The shape must satisfy: (a) text the
+  // formatter can render verbatim into the agent prompt, (b) structured
+  // metadata under content.action so the agent can extract the actionId and
+  // value programmatically, and (c) isMention=true so a mention-mode wiring
+  // still treats the click as agent-addressed.
+
+  const baseInput = {
+    actionId: 'confirm_delete',
+    value: '',
+    userId: 'U01HJOHN',
+    userName: 'John',
+    messageId: '1700000000.000300',
+    now: () => new Date('2026-05-22T12:34:56Z'),
+    idGen: () => 'act-test-1',
+  } as const;
+
+  it('produces a chat-sdk message with isMention=true and isGroup=true', () => {
+    const inbound = buildNcv2Inbound({ ...baseInput });
+    expect(inbound.kind).toBe('chat-sdk');
+    expect(inbound.isMention).toBe(true);
+    expect(inbound.isGroup).toBe(true);
+    expect(inbound.id).toBe('act-test-1');
+    expect(inbound.timestamp).toBe('2026-05-22T12:34:56.000Z');
+  });
+
+  it('builds a no-value text line for button clicks', () => {
+    const inbound = buildNcv2Inbound({ ...baseInput, value: '' });
+    const content = inbound.content as { text: string };
+    expect(content.text).toBe('(button clicked) action_id="confirm_delete" by John');
+  });
+
+  it('includes value in the text line for select/checkbox clicks', () => {
+    const inbound = buildNcv2Inbound({ ...baseInput, value: 'branch-a,branch-b' });
+    const content = inbound.content as { text: string };
+    expect(content.text).toBe('(button clicked) action_id="confirm_delete" value="branch-a,branch-b" by John');
+  });
+
+  it('embeds the structured action under content.action', () => {
+    const inbound = buildNcv2Inbound({ ...baseInput, value: 'x' });
+    const content = inbound.content as {
+      action: { actionId: string; value: string; userId: string; messageId: string };
+      senderId: string;
+      sender: string;
+    };
+    expect(content.action.actionId).toBe('confirm_delete');
+    expect(content.action.value).toBe('x');
+    expect(content.action.userId).toBe('U01HJOHN');
+    expect(content.action.messageId).toBe('1700000000.000300');
+    expect(content.sender).toBe('John');
+    expect(content.senderId).toBe('U01HJOHN');
+  });
+});
+
+describe('createChatSdkBridge.deliver — raw Slack Block Kit (send_blocks)', () => {
+  // send_blocks writes outbound rows shaped `{ type: 'blocks', blocks, fallbackText }`.
+  // Slack supplies a `postBlocks` to the bridge config — other channels don't,
+  // and the bridge falls back to posting the fallbackText so the message isn't lost.
+
+  it('routes content.type=blocks through config.postBlocks when present', async () => {
+    const { calls, postMessage } = makePostCapture();
+    const blockCalls: Array<{ threadId: string; blocks: unknown[]; fallbackText: string }> = [];
+    const bridge = createChatSdkBridge({
+      adapter: stubAdapter({ postMessage }),
+      supportsThreads: true,
+      postBlocks: async (threadId, blocks, fallbackText) => {
+        blockCalls.push({ threadId, blocks, fallbackText });
+        return { id: 'slack-ts-99' };
+      },
+    });
+
+    const blocks = [
+      { type: 'header', text: { type: 'plain_text', text: 'hi' } },
+      {
+        type: 'actions',
+        elements: [{ type: 'button', text: { type: 'plain_text', text: 'go' }, action_id: 'ncv2:confirm_delete' }],
+      },
+    ];
+    const id = await bridge.deliver('slack:C12345', 'slack:C12345:1700.0001', {
+      kind: 'chat-sdk',
+      content: { type: 'blocks', blocks, fallbackText: 'hi (fallback)' },
+    });
+
+    expect(id).toBe('slack-ts-99');
+    expect(blockCalls).toHaveLength(1);
+    expect(blockCalls[0].threadId).toBe('slack:C12345:1700.0001');
+    expect(blockCalls[0].blocks).toEqual(blocks);
+    expect(blockCalls[0].fallbackText).toBe('hi (fallback)');
+    // Adapter.postMessage must NOT have been called — the blocks took the direct path.
+    expect(calls).toHaveLength(0);
+  });
+
+  it('falls back to posting fallbackText via the adapter when postBlocks is absent', async () => {
+    const { calls, postMessage } = makePostCapture();
+    const bridge = createChatSdkBridge({
+      adapter: stubAdapter({ postMessage }),
+      supportsThreads: true,
+      // postBlocks omitted — simulates a non-Slack channel
+    });
+
+    const id = await bridge.deliver('telegram:42', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'blocks',
+        blocks: [{ type: 'section', text: { type: 'mrkdwn', text: 'x' } }],
+        fallbackText: 'plain summary',
+      },
+    });
+
+    expect(id).toBe('msg-stub');
+    expect(calls).toHaveLength(1);
+    const msg = calls[0].message as { markdown?: string };
+    expect(msg.markdown).toBe('plain summary');
+  });
+
+  it('falls back to fallbackText when postBlocks throws (preserves agent intent)', async () => {
+    const { calls, postMessage } = makePostCapture();
+    const bridge = createChatSdkBridge({
+      adapter: stubAdapter({ postMessage }),
+      supportsThreads: true,
+      postBlocks: async () => {
+        throw new Error('WebClient: invalid_blocks');
+      },
+    });
+
+    await bridge.deliver('slack:C12345', 'slack:C12345:1700.0001', {
+      kind: 'chat-sdk',
+      content: {
+        type: 'blocks',
+        blocks: [{ type: 'section', text: { type: 'mrkdwn', text: 'x' } }],
+        fallbackText: 'plain summary',
+      },
+    });
+    expect(calls).toHaveLength(1);
+    const msg = calls[0].message as { markdown?: string };
+    expect(msg.markdown).toBe('plain summary');
+  });
+
+  it('skips delivery (no crash) when blocks payload has empty fallbackText and no postBlocks', async () => {
+    const { calls, postMessage } = makePostCapture();
+    const bridge = createChatSdkBridge({
+      adapter: stubAdapter({ postMessage }),
+      supportsThreads: true,
+    });
+    const id = await bridge.deliver('telegram:42', null, {
+      kind: 'chat-sdk',
+      content: { type: 'blocks', blocks: [{ type: 'section' }], fallbackText: '' },
+    });
+    expect(id).toBeUndefined();
+    expect(calls).toHaveLength(0);
+  });
+
+  it('falls through to the text branch when blocks is not an array (defensive)', async () => {
+    const { calls, postMessage } = makePostCapture();
+    const bridge = createChatSdkBridge({
+      adapter: stubAdapter({ postMessage }),
+      supportsThreads: true,
+    });
+    // `blocks: 'not an array'` is not what send_blocks would write, but if a future
+    // tool emits a malformed row, the bridge should treat it as a normal text msg
+    // (falls through to the bottom text branch) rather than entering the blocks path.
+    await bridge.deliver('telegram:42', null, {
+      kind: 'chat-sdk',
+      content: { type: 'blocks', blocks: 'not an array', text: 'fallthrough text' },
+    });
+    expect(calls).toHaveLength(1);
+    const msg = calls[0].message as { markdown?: string };
+    expect(msg.markdown).toBe('fallthrough text');
   });
 });
