@@ -1,5 +1,10 @@
 {
   "sandbox": {
     "enabled": false
+  },
+  "permissions": {
+    "allow": [
+      "Bash(gh run watch *)"
+    ]
   }
 }
