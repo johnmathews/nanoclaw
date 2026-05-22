@@ -886,4 +886,212 @@ disposable VM).
   template now generates `Type=notify` units; manual hand-edits on
   pre-fix installs remain in place but are no longer the only path.
 
+## §17 chat-sdk-bridge audit (2026-05-22)
+
+Carry-forward from W4.0 §9.3 ("chat-sdk-bridge audit — verify files
+/ reactions / typing / streaming are end-to-end wired"). Read
+`src/channels/chat-sdk-bridge.ts` + `src/channels/adapter.ts` +
+`container/agent-runner/src/{formatter,poll-loop,mcp-tools/*}.ts`
+end-to-end. Doc-only — no code changed in this audit pass.
+
+### 17.1 Method
+
+Mapped the universe in three layers:
+
+1. **Adapter contract** (`src/channels/adapter.ts`) — what every
+   channel adapter must / may expose.
+2. **Bridge** (`src/channels/chat-sdk-bridge.ts`, 681 LOC) — what
+   each subscribed Chat SDK event becomes when serialised into
+   `messages_in.content`, and what `OutboundMessage.content` shapes
+   the bridge knows how to deliver.
+3. **Agent-runner formatter + MCP tools** — what the agent actually
+   sees from the prompt, and what tools it can call to emit
+   anything back.
+
+Then walked Chat SDK's own type surface
+(`node_modules/.pnpm/chat@4.26.0/node_modules/chat/dist/index.d.ts`)
+to enumerate every `chat.on*` handler the bridge could be wiring
+but isn't.
+
+### 17.2 Inventory snapshot
+
+**Bridge subscribes to (Chat SDK):**
+- `onSubscribedMessage` — every message in a thread the bot has
+  subscribed to. Carries `message.isMention` through.
+- `onNewMention` — @-mentions in an unsubscribed thread (SDK-
+  confirmed; sets `isMention=true`).
+- `onDirectMessage` — DMs (always treated as mention).
+- `onNewMessage(/[\s\S]*/, …)` — plain messages in unsubscribed
+  threads (catch-all pattern).
+- `onAction` — button clicks. **Filtered to `actionId.startsWith('ncq:')`
+  only — all non-`ncq:` actions silently dropped at line 270.**
+
+**Bridge does NOT subscribe to (available in Chat SDK):**
+- `onReaction` — emoji reactions added/removed on any message.
+- `onModalSubmit`, `onModalClose` — Slack/Teams modal form
+  submissions.
+- `onSlashCommand` — platform-level slash commands.
+- `onAssistantThreadStarted`, `onAssistantContextChanged`,
+  `onAppHomeOpened`, `onMemberJoinedChannel` — Slack-specific.
+
+**Inbound attachment handling** (bridge `messageToInbound`, lines
+139-162): every `att.fetchData()` downloaded → base64 string in
+`serialized.attachments[i].data`. Other metadata fields preserved
+(`type`, `name`, `mimeType`, `size`, `width`, `height`).
+
+**Container MCP tools registered** (15 across 5 files):
+
+| File | Tools |
+| --- | --- |
+| `core.ts` | `send_message`, `send_file`, `edit_message`, `add_reaction` |
+| `interactive.ts` | `ask_user_question`, `send_card` |
+| `agents.ts` | `create_agent` |
+| `self-mod.ts` | `install_packages`, `add_mcp_server` |
+| `scheduling.ts` | `schedule_task`, `list_tasks`, `cancel_task`, `pause_task`, `resume_task`, `update_task` |
+
+**Outbound delivery** (`src/channels/chat-sdk-bridge.ts` `deliver`,
+lines 368-507) recognises content shapes:
+- `operation: 'edit'` → `adapter.editMessage`.
+- `operation: 'reaction'` → `adapter.addReaction`.
+- `type: 'ask_question'` → Card with Action buttons.
+- `type: 'card'` → display Card (send_card; URL actions only — non-URL
+  actions deliberately dropped because send_card is fire-and-forget).
+- Otherwise: `adapter.postMessage` with `{ markdown, files }`, with
+  `splitForLimit()` chunking when `maxTextLength` is set.
+
+**Host attachment delivery** (`src/delivery.ts:353-368`): when
+`content.files` is a string array, `readOutboxFiles()` reads
+`/workspace/outbox/<id>/<filename>` for each entry and passes them
+to the adapter as `OutboundFile[]`.
+
+### 17.3 Feature × stage matrix
+
+For each user-visible channel feature, the column is "where the
+chain breaks":
+
+| Feature | Adapter | Bridge in | Agent sees | Agent emits | Bridge out | Adapter out | Status |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Plain text in | ✅ | ✅ | ✅ | n/a | n/a | n/a | working |
+| Plain text out | n/a | n/a | n/a | ✅ `send_message` | ✅ `postMessage(markdown)` | ✅ | working |
+| Image inbound | ✅ Chat SDK attachment | ✅ base64 in `attachments[i].data` | ❌ **formatter renders `[image: name]` only — base64 never used** | n/a | n/a | n/a | **gap: missing port (image-vision)** |
+| Voice inbound | ✅ same path | ✅ same path | ❌ same — no transcription | n/a | n/a | n/a | **gap: missing port (voice-transcription)** |
+| PDF inbound | ✅ same path | ✅ same path | ❌ same — no text extraction | n/a | n/a | n/a | **gap: missing port (pdf-reader)** |
+| File outbound | n/a | n/a | n/a | ✅ `send_file` writes to `/workspace/outbox/<id>/` | ✅ `delivery.ts` populates `OutboundFile[]` | ✅ | working |
+| Reaction inbound | ✅ `chat.onReaction()` | ❌ **bridge does not subscribe** | ❌ | n/a | n/a | n/a | **gap: missing port (`onReaction` wiring + storage + MCP query)** |
+| Reaction outbound | n/a | n/a | n/a | ✅ `add_reaction` | ✅ `operation: 'reaction'` | ✅ | working |
+| Typing indicator | ✅ `adapter.startTyping` | n/a | n/a | n/a (host calls via `bridge.setTyping`) | ✅ | ✅ | working |
+| Text streaming | n/a | n/a | n/a | ✅ `edit_message` (agent-driven) | ✅ `operation: 'edit'` | ✅ | working — but agent-driven, not auto-streamed |
+| Ask-user-question | n/a | n/a | n/a | ✅ `ask_user_question` | ✅ Card with `ncq:` actions | ✅ | working |
+| Display card | n/a | n/a | n/a | ✅ `send_card` | ✅ `type: 'card'` | ✅ | working — URL actions only |
+| Slack Block Kit raw blocks (`send_blocks`) | ✅ via adapter.postMessage | n/a | n/a | ❌ no MCP tool | n/a | n/a | **gap-by-design** — superseded by `send_card` (cross-platform). Slack-only features (datepickers, multi-select, accessory layouts) inaccessible. |
+| Slack interactivity (`block_actions`, non-`ncq:` ids) | ✅ via `chat.onAction` | ❌ **bridge filters `ncq:` only — non-`ncq:` actions reach the bridge then are dropped (line 270)** | ❌ | n/a | n/a | n/a | **gap: missing port** — affects v1's `nanoclaw_(checkbox\|confirm)_*` flow used by git-maintenance Mon/Thu 02:03 cron |
+| Threads | ✅ | ✅ `thread.id` flows through | ✅ stored on `messages_in.thread_id` | n/a | ✅ `tid = threadId ?? platformId` | ✅ | working |
+| `openDM` (cold DM) | ✅ on adapters that implement it | n/a | n/a | n/a (host-side only) | ✅ `bridge.openDM` passthrough | ✅ | working |
+| Subscribe-to-thread | n/a | ✅ `bridge.subscribe` → `state.subscribe(threadId)` | n/a | n/a | n/a | n/a | working — idempotent |
+| Slack `onSlashCommand` (platform `/foo`) | ✅ | ❌ bridge does not subscribe | ❌ | n/a | n/a | n/a | gap-by-design — v2 handles `/foo` from message text via `command-gate.ts` |
+| `onModalSubmit`, `onAppHomeOpened`, etc. | ✅ | ❌ bridge does not subscribe | ❌ | n/a | n/a | n/a | gap-by-design — not used by v1 |
+
+### 17.4 Findings
+
+**Three production-affecting gaps** (each warrants its own work unit):
+
+**Finding 1 — multimodal attachments are dead-letter** (image / voice / PDF inbound). The bridge correctly downloads and base64-encodes
+attachment binary data (`messageToInbound` lines 139-162), and it
+lands in `messages_in.content.attachments[i].data`. But the
+formatter (`container/agent-runner/src/formatter.ts:244-257`)
+only renders `[<type>: <name>]` as plain text, dropping the data
+entirely. The agent prompt that reaches `provider.query({ prompt })`
+is a string — not a multimodal content-block array — so even if
+the data reached `formatMessages()`, the provider interface can't
+carry it. Estimated port cost: 4-6 h (widen provider interface +
+per-type handler: vision multimodal block / Whisper transcription /
+pdftotext extraction).
+
+**Finding 2 — inbound reactions never reach the agent.** The bridge
+does not register a `chat.onReaction()` handler. The Chat SDK supports
+it (Slack/Discord/Teams adapters all fire `ReactionEvent`). Wiring it
+is the easy half; the harder half is what to do with the reaction —
+v1 stored every reaction in a `reactions` table and exposed
+`query_reactions` MCP so agents could implement "approve with thumbs
+up" workflows. v2 would need an equivalent storage shape + MCP tool.
+Estimated port cost: 2-3 h (subscribe + DB migration + 1 MCP tool).
+
+**Finding 3 — Slack non-`ncq:` interactivity is silently dropped.**
+The bridge's `chat.onAction` handler ignores any actionId that doesn't
+start with `ncq:` (`chat-sdk-bridge.ts:270`). v1's git-maintenance
+Mon/Thu 02:03 cron posted a checkbox card via v1's `send_blocks` and
+caught the click via `app.action(/^nanoclaw_(checkbox|confirm)_/)`.
+On v2 the cron still fires, but if it uses the old `send_blocks`
+pattern the click would never reach the agent. **Likely already
+self-resolved** if the cron prompt uses v2's `mcp__nanoclaw__ask_user_question`
+(which DOES round-trip via `ncq:` action ids) — but unverified. Two
+sub-options:
+- (3a) Confirm/migrate the git-maintenance cron prompt to use
+  `ask_user_question` — zero-code fix if the prompt is the only
+  thing needing to change.
+- (3b) Port v1's `app.action` pattern: extend bridge to recognise a
+  v2-prefixed actionId namespace (e.g. `ncv2:<sessionId>:<actionId>`)
+  and emit a `messages_in` row of kind `chat-sdk` with a structured
+  `action` field. Estimated 60-90 min.
+
+**Gap-by-design** items (no work needed):
+
+- `send_blocks` (Slack raw Block Kit JSON) — replaced by cross-
+  platform `send_card`. The cost is Slack-only features
+  (datepickers, multi-select with native arrows) that aren't worth
+  the API divergence.
+- `chat.onSlashCommand` (platform-level Slack `/foo`) — v2 handles
+  slash commands from message text via `command-gate.ts`.
+- `chat.onModalSubmit`, `onAppHomeOpened`, etc. — not used by v1.
+
+### 17.5 Decisions
+
+- **No code change this session.** Audit-only.
+- **Carry forward as three discrete units** in
+  `project_v2_migration.md` + this notes file:
+  - W4.x-multimodal — port `/add-image-vision`,
+    `/add-voice-transcription`, `/add-pdf-reader` skill behaviour to
+    v2; widen provider interface to accept multimodal content. The
+    widening is the load-bearing change.
+  - W4.x-reactions-inbound — subscribe `chat.onReaction`; persist;
+    expose via MCP. Lower priority unless an explicit workflow needs
+    it.
+  - W4.x-slack-interactivity — first verify whether
+    git-maintenance cron is already self-resolved via
+    `ask_user_question`; only do the `app.action`-pattern port if
+    that doesn't suffice.
+
+### 17.6 What §17 did NOT do
+
+- Did not check the git-maintenance cron's actual prompt to confirm
+  whether it uses `send_blocks` (legacy) or `ask_user_question`
+  (v2-canonical). That's a one-line lookup in the next session.
+- Did not test attachment delivery on a live message (the matrix
+  cells under "Adapter / Bridge in / Agent sees" are derived from
+  code reads, not live wire traffic).
+- Did not check whether `@chat-adapter/slack` v4.26.0 actually fires
+  `onReaction` for Slack — assumed it does based on the Chat SDK type
+  surface declaring the handler. Verify before W4.x-reactions-inbound.
+
+### 17.7 Status
+
+- Test count: unchanged (37 files / 424 tests pass — no code touched
+  in §17).
+- v2 service: untouched, healthy.
+- v2 main HEAD after the forthcoming audit-doc commit: TBD.
+
+### 17.8 Plan revisions
+
+- **`fork-local-inventory.md`** — no row changes. The audit didn't
+  retire any file; the three carry-forward units affect different
+  layers (formatter, bridge, MCP) than the v1 fork-local files.
+- **`project_v2_migration.md` memory** — append W4.x-multimodal,
+  W4.x-reactions-inbound, W4.x-slack-interactivity as three discrete
+  backlog items. The existing single line "chat-sdk-bridge audit"
+  can be marked DONE pointing at §17. The original `W4.x Slack
+  interactivity port` becomes `W4.x-slack-interactivity` and gains
+  the "verify git-maintenance cron first" precursor step.
+- **`implementation-plan.md` §5 P4** — no structural change; the
+  three new units fit under the existing W4.x carry-forward bucket.
+
 
