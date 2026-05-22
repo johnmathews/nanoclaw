@@ -1,6 +1,6 @@
 # NanoClaw v1 → v2 Migration: Implementation Plan
 
-**Status:** active, **mid-migration**. **Last updated:** 2026-05-22 (post-W4.5). **Supersedes:** pre-P1 §2 line 3, §5 P1 (rewritten as historical record), §5 W2.4 (deleted), §5 P4's credential-proxy work (deleted). **Post-P3** further supersedes: §5 W3.5 (must SKIP), §5 W3.6 (skill crosses the cutover), §5 P7 (collapsed), §6 kill criterion #1 (retired). **Post-W4.0** supersedes: §5 W4.0 (DONE — see [p3-notes.md](p3-notes.md) §9 + [slack-inbound-decision.md](slack-inbound-decision.md)). **Post-W4.3** supersedes: §5 W4.3 (DONE — see [p3-notes.md](p3-notes.md) §10). **Post-W4.5** supersedes: §5 W4.5 (DONE — see [p3-notes.md](p3-notes.md) §11), new W4.5.1 added. See [spike-notes.md](spike-notes.md) §5 (P1) and [p3-notes.md](p3-notes.md) §5 + §9 + §10 + §11 for the source of these revisions.
+**Status:** active, **mid-migration**. **Last updated:** 2026-05-22 (post-W4.x-slack-interactivity). **Supersedes:** pre-P1 §2 line 3, §5 P1 (rewritten as historical record), §5 W2.4 (deleted), §5 P4's credential-proxy work (deleted). **Post-P3** further supersedes: §5 W3.5 (must SKIP), §5 W3.6 (skill crosses the cutover), §5 P7 (collapsed), §6 kill criterion #1 (retired). **Post-W4.0** supersedes: §5 W4.0 (DONE — see [p3-notes.md](p3-notes.md) §9 + [slack-inbound-decision.md](slack-inbound-decision.md)). **Post-W4.3** supersedes: §5 W4.3 (DONE — see [p3-notes.md](p3-notes.md) §10). **Post-W4.5** supersedes: §5 W4.5 (DONE — see [p3-notes.md](p3-notes.md) §11), new W4.5.1 added. See [spike-notes.md](spike-notes.md) §5 (P1) and [p3-notes.md](p3-notes.md) §5 + §9 + §10 + §11 for the source of these revisions.
 
 > ⚠️ **Where we are right now:** P0 → P3 are complete; **W4.0 (Slack inbound), W4.3 (health/watchdog), and W4.5 (`/usage`) are DONE** as of 2026-05-22. v2 is **live in production** at `/srv/apps/nanoclaw-v2/` (`nanoclaw-v2-787facac.service`, active+enabled, `Type=notify`+`WatchdogSec=30s`). v1 is stopped+disabled. The P7 one-way-door cutover effectively happened during P3 W3.6 via `/migrate-from-v1`'s smoke-test phase — see [p3-notes.md](p3-notes.md) §3.1. `/usage` available as both `ncl usage` (CLI) and `/usage` (chat) — see [p3-notes.md](p3-notes.md) §11. **Next: W4.4 mount-security audit**, then W4.5.1 `/status` chat fold-in, then audit-style work units. WhatsApp + Slack + scheduled tasks + Gmail/GCal MCPs all working. Subscription billing structurally verified. Follow-ups surfaced: Slack interactivity port; chat-sdk-bridge audit; v2 installer-template watchdog patch.
 
@@ -668,7 +668,19 @@ Authoritative records:
 
 ---
 
-#### W4.8: Slack interactivity / block_actions handler port (NEW, surfaced by W4.0)
+#### W4.8: Slack interactivity / block_actions handler port — DONE 2026-05-22
+
+**Status:** complete. Implemented as `W4.x-slack-interactivity` — see [p3-notes.md](p3-notes.md) §18. Three commits on
+`origin/main`: `1142d0f` (feat: `send_blocks` MCP + `ncv2:` namespace + bridge `chat.onAction` extension),
+`559d0c7` (§18 resolution log), `a1853ab` (next-session prompt refresh). First live verification = the
+git-maintenance cron's next fire at `2026-05-25T00:03:00Z` (Mon 04:03 CEST).
+
+The remaining context block below is preserved as a historical record.
+
+---
+
+#### W4.8 (historical context)
+
 
 **Context:** v1's `src/channels/slack.ts` registers two `app.action()` regex handlers for the git-maintenance branch-delete flow:
 - `app.action(/^nanoclaw_checkbox_/, …)` — ack checkbox toggles
