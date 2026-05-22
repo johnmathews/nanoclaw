@@ -376,8 +376,11 @@ export function openOutboundDbRw(agentGroupId: string, sessionId: string): Datab
 
 /**
  * Write a message directly to a session's outbound DB so the host delivery
- * loop picks it up. Used by the command gate to send denial responses
- * without waking a container.
+ * loop picks it up. Used by the command gate to send denial / host-responder
+ * responses without waking a container. Opens RW because the read-only handle
+ * (`openOutboundDb`) is for the delivery loop; the gate is allowed to write
+ * since no container can be processing this inbound row (the gate runs before
+ * `writeSessionMessage`, so the agent was never woken).
  */
 export function writeOutboundDirect(
   agentGroupId: string,
@@ -391,7 +394,7 @@ export function writeOutboundDirect(
     content: string;
   },
 ): void {
-  const db = openOutboundDb(agentGroupId, sessionId);
+  const db = openOutboundDbRw(agentGroupId, sessionId);
   try {
     db.prepare(
       `INSERT OR IGNORE INTO messages_out (id, seq, timestamp, kind, platform_id, channel_type, thread_id, content)
