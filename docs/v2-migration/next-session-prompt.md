@@ -5,7 +5,7 @@ continue the migration. The prompt is self-contained — the new session won't s
 
 ---
 
-I'm continuing the NanoClaw v1→v2 migration. **State as of 2026-05-22 post-§20:**
+I'm continuing the NanoClaw v1→v2 migration. **State as of 2026-05-22 post-§20 + audit fixes:**
 P0 + P1 + P2 + P3 + W4.0 + W4.3 + W4.4 + W4.5 + W4.5.1 + W4.1 + Task A + writeOutboundDirect rw fix + v2 installer-template
 watchdog patch + chat-sdk-bridge audit (§17) + skill-output commit batch + W4.x-slack-interactivity port (§18) + W4.8
 journal-mirror + **W4.7 Journal MCP (§19)** + **W4.x-multimodal + W4.x-reactions-inbound (§20)** all complete. v2 is live
@@ -20,7 +20,7 @@ everything is pushed to `origin/main`.**
 
 ```
 johnmathews/nanoclaw          ← all fork work, all current commits pushed
-├── main                       ← HEAD = a12a111   (tracking origin/main)
+├── main                       ← HEAD = 49af3cc   (tracking origin/main)
 ├── v1-archive                 ← v1 frozen at 0bd42bb
 └── v1-final-2026-05-22 (tag)  ← annotated tag on 0bd42bb
 
@@ -34,8 +34,13 @@ On /srv/apps/nanoclaw (v1 tombstone — DO NOT `git pull` here):
   Leave intact while journal mount uses /srv/apps/nanoclaw/journal/.
 ```
 
-**Read first**, in this order (all paths inside `/srv/apps/nanoclaw-v2`):
+**Required reading**, in this order (all paths inside `/srv/apps/nanoclaw-v2`):
 
+    docs/v2-migration/operational-gotchas.md   Durable runtime knowledge — service paths, build steps,
+                                               git topology, provider/multimodal/reactions wiring,
+                                               Slack interactivity, scheduled tasks. Append new
+                                               gotchas here as they surface; reference numbers are
+                                               stable.
     docs/v2-migration/p3-notes.md              §19 W4.7 (journal MCP via per-group container.json,
                                                not env-var path); §20 W4.x-multimodal + reactions;
                                                §21 Monday 2026-05-25 02:03 CEST (= 00:03 UTC)
@@ -44,8 +49,9 @@ On /srv/apps/nanoclaw (v1 tombstone — DO NOT `git pull` here):
     docs/v2-migration/fork-local-inventory.md  src/transcription.ts row flipped to re-ported.
 
 Project memory at `~/.claude/projects/-srv-apps-nanoclaw/memory/project_v2_migration.md` is current as of 2026-05-22
-post-§20. **Read items #40-#46** in operational gotchas (per-group MCP config; multimodal slices; reactions inbound;
-OPENAI_API_KEY path; pdftotext dependency; messages_in reaction-shape compatibility for compaction/agent-to-agent).
+post-§20. Items #40-#46 in its operational-gotchas section duplicate some of the entries in
+`operational-gotchas.md` — that's fine; memory is for assistant continuity, the file is the operator-facing canonical
+copy.
 
 **Pick one of these next units** (in priority order)
 
@@ -114,63 +120,16 @@ load-bearing. Defer unless John wants ad-hoc remote claude access from his phone
 - Anything in P5/P7/P8.
 - Touching the systemd unit on the running install (`NRestarts=0` since restart; keep it green).
 
-## Operational gotchas (carry into this session)
+## Operational gotchas
 
-1. Canonical working tree is `/srv/apps/nanoclaw-v2`. Start the next session there.
-2. Never restart v1's service (`nanoclaw.service`). Stopped+disabled.
-3. `pnpm` at `~/.npm-global/bin/pnpm`, `onecli` same dir, `ncl` at `/srv/apps/nanoclaw-v2/bin/ncl` — prefix
-   `PATH=…:$PATH` or use absolute paths.
-4. v2's logs at `/srv/apps/nanoclaw-v2/logs/nanoclaw.{log,error.log}`, not journald.
-5. v2 runs from `dist/`, not `src/`. `cd /srv/apps/nanoclaw-v2 && pnpm run build` (= tsc) is mandatory between any
-   host-source edit and `systemctl --user restart`.
-6. OneCLI gateway runs on `127.0.0.1:10255`. 10254 is the web UI.
-7. `/health` reachable at `127.0.0.1:3002`. After `systemctl --user restart`, sleep ≥6s before curling.
-8. `HOST_RESPONDER_COMMANDS` renderers run fire-and-forget off the hot path (W4.5 pattern). Render failures fall back
-   to inline error messages — original inbound row already marked processed (no retry).
-9. Mount allowlist after P3+W4.5: 3 allowedRoots + `~/.calendar-mcp`. 17 blockedPatterns.
-10. v2 `additionalMounts` `containerPath` must be RELATIVE. v2 prefixes with `/workspace/extra/`.
-11. DO NOT `git pull` on `/srv/apps/nanoclaw`. It's the v1 working tree.
-12. Migration docs now live on v2's main at `docs/v2-migration/`. Edit there.
-13. `writeOutboundDirect` now writes (fixed in `d8c04b8`).
-14. v2 installer-template now writes `Type=notify` (fixed in `7cde667`).
-15. Git author identity workaround: no `user.name`/`user.email` set anywhere visible. Use
-    `git -c user.name="John Mathews" -c user.email="mthwsjc@gmail.com" commit ...` per-command override.
-16. `v1-archive` branch is load-bearing for retire audits.
-17. v2's provider interface is now multimodal-capable. `QueryInput.prompt` is still string-only;
-    `AgentQuery.pushBlocks(ContentBlock[])` carries multimodal turns. `AgentProvider.supportsMultimodalContent` gates
-    block construction in the poll-loop.
-18. Bridge's `chat.onAction` filter order: `ncv2:` (W4.x-slack-interactivity) → `ncq:` (ask_user_question) → drop.
-19. Image attachments delivered as base64 content blocks. Voice → Whisper-transcribed text in
-    `attachment.transcription`. PDF → pdftotext output in `attachment.extractedText`. All inline-rendered by the
-    formatter. Per-attachment `att.skipMultimodal=true` opts out of the image block path (text-only fallback).
-20. Chat SDK `postMessage` can't carry raw Block Kit on Slack. v2's Slack channel casts into the private `WebClient`
-    via a typed structural check (`src/channels/slack.ts` `makeSlackPostBlocks`). Brittle across `@chat-adapter/slack`
-    version bumps — re-review on every bump.
-21. Slack checkbox state isn't re-delivered with button clicks. Agents using checkbox+button pairs MUST persist the
-    pre-selected option list in group memory keyed off the post timestamp and look it up at click time. Documented in
-    `groups/slack_git-maintenance/CLAUDE.local.md`.
-22. `ncv2:` is the v2-canonical Slack interactivity action_id prefix. Bridge's `chat.onAction` routes `ncv2:*` to the
-    agent as a synthetic chat-sdk inbound (text + structured action payload). Anything not prefixed `ncv2:` or `ncq:`
-    is silently dropped.
-23. Git-maintenance cron task id = `task-1775472071448-rpvh6c`, in
-    `data/v2-sessions/ag-1779373702794-62oxsv/sess-1779373704595-mqteww/inbound.db`. Recurrence `3 2 * * 1,4`. Next
-    fire `2026-05-25T02:03:00Z`. First live test of §18 — plan in `p3-notes.md` §21.
-24. `main` tracks `origin/main`. Bare `git push` goes to the fork; `git fetch upstream` still works.
-25. `groups/*/CLAUDE.md` files are NOT tracked. `.gitignore` excludes `groups/*`. Never `git add` anything under
-    `groups/`. Includes the §18 edits to `groups/slack_git-maintenance/CLAUDE.local.md`.
-26. **Whisper transcription requires `OPENAI_API_KEY`.** Read from `process.env` first, then from `.env` via
-    `readEnvFile`. The systemd unit doesn't `EnvironmentFile=.env`, so the file path is what serves in production.
-    Test mocks must `vi.mock('./env.js', ...)` to avoid leaking the real key. Cached on first use; clear with
-    `resetTranscriptionCacheForTests()`.
-27. **PDF extraction requires `pdftotext` (poppler) on host `$PATH`.** Currently `/usr/bin/pdftotext` (poppler 25.03).
-    Missing binary surfaces as `PdfExtractionError(kind=binary-missing)` and renders `PDF extraction failed: pdftotext
-not installed` — the message still routes. 15s timeout, 50 MB input cap, 250 KB output cap (truncated silently).
-28. **`messages_in` content shape includes reactions.** Code scanning inbound history (compaction, agent-to-agent
-    return path) must tolerate `kind='chat-sdk'` rows where `content.reaction` is present and `content.text` is the
-    synthetic `[X reacted Y on message Z]` line.
+Carry-over from past sessions. **Read `docs/v2-migration/operational-gotchas.md`** — durable runtime notes
+(service paths, build steps, git topology, provider/multimodal/reactions wiring, Slack interactivity, scheduled
+tasks). Append new gotchas to that file instead of letting them accumulate here; reference numbers are stable.
 
 ## Rollback recipes
 
+- For post-§20 audit fixes: `git revert 49af3cc` (doc/test-only — no service impact). Drops back to the pre-audit
+  state where §21 time was wrong and `maybeTranscribe`/`maybePdfExtract` had no dedicated tests.
 - For §20 (multimodal + reactions): `git revert 0888c7f a12a111` + `pnpm run build` + `systemctl --user restart
 nanoclaw-v2-787facac.service`. Container source is bind-mounted; no `./container/build.sh` needed. Net: drops back
   to pre-§20 behavior (image/voice/PDF dead-letter; reactions invisible to agent).
@@ -187,9 +146,10 @@ nanoclaw-v2-787facac.service`. Keep `NRestarts=0`.
 ## What to deliver this session
 
 1. Whichever option(s) from §"Pick one of these next units" you tackled, with their per-section deliverables.
-2. Tests pass (`cd /srv/apps/nanoclaw-v2 && pnpm test` — baseline is 39 files / 459 tests;
+2. Tests pass (`cd /srv/apps/nanoclaw-v2 && pnpm test` — baseline is 39 files / 465 tests;
    `cd container/agent-runner && bun test` — baseline 10 files / 118 tests).
 3. v2 healthy after any service-touching change (`curl http://127.0.0.1:3002/health` returns 200).
-4. `project_v2_migration.md` memory updated with completed items + new operational gotchas.
-5. `git push origin main` at end of session (tracking is sane — bare `git push` works).
-6. End-of-session: produce a new next-session-prompt at `docs/v2-migration/next-session-prompt.md`.
+4. `project_v2_migration.md` memory updated with completed items.
+5. Any new runtime gotchas appended to `docs/v2-migration/operational-gotchas.md` (never renumber existing entries).
+6. `git push origin main` at end of session (tracking is sane — bare `git push` works).
+7. End-of-session: produce a new next-session-prompt at `docs/v2-migration/next-session-prompt.md`.
