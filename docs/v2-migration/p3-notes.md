@@ -1827,3 +1827,146 @@ W4.x-slack-interactivity verified-live.
 These can be done ad-hoc by John and don't need a scheduled
 window — folded into normal use of the bot.
 
+## §22 Migration declared complete (2026-05-22)
+
+John's call, end of session 2026-05-22 ~22:00 CEST:
+
+> "i think we're done. im happy to use v2 now and report
+> regressions as they arise. lets leave the project in a tidy
+> and well documented state"
+
+The migration project transitions from **active porting** to
+**regression-watch** mode. v2 is the canonical install at
+`/srv/apps/nanoclaw-v2/` running `nanoclaw-v2-787facac.service`;
+v1 stays stopped+disabled at `/srv/apps/nanoclaw/` as a
+read-only tombstone (journal mount still references its path).
+
+### 22.1 What's done
+
+| Phase | Status |
+|---|---|
+| P0 preflight | done |
+| P1 spike (credential proxy → OneCLI native) | done |
+| P2 parallel install | done |
+| P3 data migration (`migrate-v2.sh`) | done |
+| W4.0 Slack inbound (Tailscale Funnel + Events API) | done |
+| W4.1 sender-allowlist retire | done (v2's `src/modules/permissions/` is functional superset) |
+| W4.3 health.ts + health-server.ts + watchdog.ts | done; `Type=notify` + `WatchdogSec=30s` baked into installer template |
+| W4.4 mount-security audit | done (v2 module is near-verbatim port; `nonMainReadOnly` retired by design) |
+| W4.5 `/usage` chat + `ncl usage` CLI | done (sources `~/.claude/.credentials.json`, not OneCLI vault — OneCLI can't serve `/api/oauth/usage`) |
+| W4.5.1 `/status` chat command | done; surfaced + fixed latent `writeOutboundDirect` read-only bug |
+| W4.7 Journal MCP | done structurally via per-group `container.json` `mcpServers` map (v1 env-var pathway obsolete) |
+| W4.8 / W4.x-slack-interactivity (`send_blocks` + `ncv2:` namespace) | done; live verification pending Mon cron |
+| W4.x-multimodal (image blocks + Whisper voice + pdftotext PDF) | done |
+| W4.x-reactions-inbound (chat-sdk reaction surface + `mcp__nanoclaw__query_reactions`) | done |
+| §17 chat-sdk-bridge audit | done |
+| §16 installer-template watchdog patch | done |
+| §13 mount-security retire decision | done |
+| P5 channels — Slack + WhatsApp | done (re-installed via skills, customizations re-applied where needed) |
+| P5 CLI | done (cli channel registered + working) |
+| P6 smoke testing | passed (39 host files / 465 tests, 10 container files / 118 tests, /health 200, all 11 messaging groups active) |
+| P7 cutover | effectively executed during P3 (`/migrate-from-v1` smoke-test crossed the door); v1 service stopped+disabled |
+| P8 hardening | rolled into the regression-watch mode below; no remaining structured work |
+
+### 22.2 Deferred items (will not block migration closure)
+
+These are noted here so a future operator (or future-John)
+finds them in one place rather than re-discovering them via
+the inventory diff.
+
+1. **W4.6 remote-control** (`v1-archive`'s `src/remote-control.ts`,
+   224 LOC). Captures a `claude.ai/code` URL for ad-hoc remote
+   access. Nice-to-have; not load-bearing. Defer indefinitely
+   unless an actual need arises. Recover from v1-archive if
+   wanted.
+
+2. **W4.2 status-tracker** (`v1-archive`'s `src/status-tracker.ts`,
+   366 LOC). v1's progress-emoji reactions (received → thinking
+   → working → done → failed) on the user's message for
+   non-native-typing channels. v2's `src/modules/typing/` covers
+   only **native** typing-indicator refresh, not emoji-based
+   progress. Slack + WhatsApp both have native typing, CLI
+   doesn't need progress feedback, so the gap is invisible
+   today. Reopen if a future non-native-typing channel (Discord,
+   Matrix, etc.) gets wired and operators miss the visual cue.
+
+3. **W5.1 Slack fork customizations not re-applied:**
+   - `thread_ts` capture on the agent's outbound message
+     metadata (v1 used it to construct `thread_ts` in reply
+     payloads). v2 handles threading via the `slack:CHANNEL:THREAD_TS`
+     threadId encoding inside `@chat-adapter/slack`; the
+     end-to-end behaviour matches v1 in production.
+   - Migration v6 (`thread_ts` column on a v1 messages table).
+     Schema diverged at cutover — column not needed by any v2
+     code path.
+   - `getThreadMessages()` helper. No v2 caller; agents fetch
+     thread context via the SDK's natural conversation memory
+     instead.
+   None of these surfaced as missing functionality in production
+   use; mark **retired-in-favour-of-v2-bridge** unless a future
+   regression points back here.
+
+4. **W5.3 Gmail channel** (`v1-archive`'s `src/channels/gmail.ts`,
+   381 LOC, plus credentials). Originally "used in production"
+   per the inventory; **not installed on v2** as of the close-out.
+   v2's `messaging_groups` has zero Gmail rows. If/when John
+   wants Gmail back, run `/add-gmail` skill from a v2 session;
+   v1's credentials were not auto-migrated. Decision deferred
+   to the moment of need rather than pre-installing without a
+   live use case.
+
+5. **§20's `skipImageMultimodal` group-config wiring.** The
+   per-attachment `att.skipMultimodal=true` contract exists
+   inside `container/agent-runner/src/multimodal.ts` and is
+   covered by `multimodal.test.ts`, but nothing on the host
+   actually sets the flag. A 30-min wire-up if a future group
+   wants text-only image fallback. Not needed today.
+
+6. **§18 live verification** (`task-1775472071448-rpvh6c`, fires
+   Mon 2026-05-25 02:03 CEST = 00:03 UTC, channel
+   `#git-maintenance`). First Block Kit cron post hasn't yet
+   landed in production. Plan + failure modes in §21. Outcome
+   to be logged as §22.3 after Monday morning.
+
+### 22.3 §18 live-verify outcome
+
+To be filled in Mon 2026-05-25 after the cron fires. Template:
+
+- **Card rendered?** yes / no
+- **Action ids correct (`ncv2:*`)?** yes / no
+- **Click→delete path worked end-to-end?** yes / no
+- **Failure modes hit (A/B/C/D from §21.2):**
+- **Patches applied:**
+
+### 22.4 Regression-watch mode — what to do when something breaks
+
+If v2 starts misbehaving in normal use:
+
+1. Tail `logs/nanoclaw.log` + `logs/nanoclaw.error.log` first
+   (durable, structured).
+2. `curl http://127.0.0.1:3002/health` for the channel +
+   queue + scheduled-task snapshot.
+3. If a specific session went silent, check
+   `data/v2-sessions/<agent-group>/<session>/inbound.db` (host
+   wrote?) → `outbound.db` (container replied?) to bisect
+   between host and container.
+4. Recover-from-v1 recipe: every fork-local file is preserved
+   on the `v1-archive` branch. `git show v1-archive:src/<file>.ts`
+   to read; cherry-pick if porting back becomes worthwhile.
+5. Log the incident in this file as a new top-level `## §N`
+   so the migration record remains the single source of truth
+   for v1→v2 history.
+
+### 22.5 Doc maintenance
+
+The migration docs (`docs/v2-migration/*`) freeze in their
+current shape. New work — bug fixes, regressions, future
+features — should NOT extend `implementation-plan.md` or
+`p3-notes.md`; it lives in PR descriptions, `journal/`, or
+new top-level docs. Exception: §22.3 outcome and any §N
+regression entries land here.
+
+`operational-gotchas.md` remains a living document — append
+new gotchas there as they surface; reference numbers are
+stable.
+
