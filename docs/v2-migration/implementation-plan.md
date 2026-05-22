@@ -1,6 +1,8 @@
 # NanoClaw v1 → v2 Migration: Implementation Plan
 
-**Status:** active. **Last updated:** 2026-05-21 (post-P1 revision). **Supersedes:** pre-P1 §2 line 3, §5 P1 (rewritten as historical record), §5 W2.4 (deleted), and §5 P4's credential-proxy work (deleted). See [spike-notes.md](spike-notes.md) §5 for the source of these revisions.
+**Status:** active, **mid-migration**. **Last updated:** 2026-05-22 (post-W4.5). **Supersedes:** pre-P1 §2 line 3, §5 P1 (rewritten as historical record), §5 W2.4 (deleted), §5 P4's credential-proxy work (deleted). **Post-P3** further supersedes: §5 W3.5 (must SKIP), §5 W3.6 (skill crosses the cutover), §5 P7 (collapsed), §6 kill criterion #1 (retired). **Post-W4.0** supersedes: §5 W4.0 (DONE — see [p3-notes.md](p3-notes.md) §9 + [slack-inbound-decision.md](slack-inbound-decision.md)). **Post-W4.3** supersedes: §5 W4.3 (DONE — see [p3-notes.md](p3-notes.md) §10). **Post-W4.5** supersedes: §5 W4.5 (DONE — see [p3-notes.md](p3-notes.md) §11), new W4.5.1 added. See [spike-notes.md](spike-notes.md) §5 (P1) and [p3-notes.md](p3-notes.md) §5 + §9 + §10 + §11 for the source of these revisions.
+
+> ⚠️ **Where we are right now:** P0 → P3 are complete; **W4.0 (Slack inbound), W4.3 (health/watchdog), and W4.5 (`/usage`) are DONE** as of 2026-05-22. v2 is **live in production** at `/srv/apps/nanoclaw-v2/` (`nanoclaw-v2-787facac.service`, active+enabled, `Type=notify`+`WatchdogSec=30s`). v1 is stopped+disabled. The P7 one-way-door cutover effectively happened during P3 W3.6 via `/migrate-from-v1`'s smoke-test phase — see [p3-notes.md](p3-notes.md) §3.1. `/usage` available as both `ncl usage` (CLI) and `/usage` (chat) — see [p3-notes.md](p3-notes.md) §11. **Next: W4.4 mount-security audit**, then W4.5.1 `/status` chat fold-in, then audit-style work units. WhatsApp + Slack + scheduled tasks + Gmail/GCal MCPs all working. Subscription billing structurally verified. Follow-ups surfaced: Slack interactivity port; chat-sdk-bridge audit; v2 installer-template watchdog patch.
 
 **See also:** [motivation-and-context.md](motivation-and-context.md) for why, what decisions were made, and what alternatives were rejected. Read that first if this is your first time touching this plan. [spike-notes.md](spike-notes.md) captures the P1 spike that inverted the credential-proxy approach.
 
@@ -461,6 +463,10 @@ If tests fail at this stage, that's a v2-upstream issue (not a porting issue) �
 
 ### P3: Data migration via `migrate-v2.sh`
 
+**Status: COMPLETE (2026-05-21).** See [p3-notes.md](p3-notes.md) for the immutable record. The work units below are kept as written for historical reference; the **only changes to apply on a re-run** are: (a) W3.5 must be SKIPPED if W3.6 has run (v2 already holds the WA Baileys keystore), and (b) W3.6 effectively performs the cutover — see [p3-notes.md](p3-notes.md) §3.1.
+
+> ⚠️ **Warning — `/migrate-from-v1` crosses the P7 one-way door.** The skill's smoke-test phase (W3.6) starts the v2 systemd unit, exercises a real WhatsApp roundtrip, and restarts the service. By the time the skill reports `STATUS: success`, v2 is live in production for the migrated channels. This was not anticipated in the pre-P3 plan. See [p3-notes.md](p3-notes.md) §3.1.
+
 This is where v1 data flows into v2. **Run from a real terminal, not the Claude Code Bash tool** — the script needs interactive prompts and a real TTY.
 
 #### W3.1: Stop v1 service for consistent migration
@@ -574,7 +580,9 @@ If a step is recoverable, fix it and rerun `migrate-v2.sh` (the script should be
 
 #### W3.5: Restart v1 service so the user has a working bot during porting
 
-**Action:**
+> 🛑 **SKIP THIS WORK UNIT if W3.6 (`/migrate-from-v1`) has run.** v2 holds the WhatsApp Baileys keystore after W3.6's smoke test. Restarting v1 from this point creates a concurrent Baileys session and breaks WA on both. See [p3-notes.md](p3-notes.md) §3.1. v1 stays stopped + disabled; operator uses v2 (which is now live) for the duration of P4.
+
+**Action (if W3.6 has not yet run — uncommon):**
 
 ```bash
 systemctl --user start nanoclaw.service
@@ -597,11 +605,13 @@ systemctl --user stop nanoclaw.service
 ```
 
 **Notes:**
-v1 is now serving production again, alongside the v2 install at `/srv/apps/nanoclaw-v2` (which is not running as a service yet). Port collision is avoided by W2.5.
+In the original plan v1 was supposed to serve production during P4 porting (against a stopped v2). In practice, W3.6 starts v2 and crosses the cutover; v1 stays down from W3.1 onward.
 
 ---
 
 #### W3.6: Run upstream's `/migrate-from-v1` skill
+
+> ⚠️ **This skill effectively performs the P7 cutover.** Its smoke-test phase starts the v2 systemd unit, exercises a real channel roundtrip, and restarts the service. By the time it reports `STATUS: success`, v2 is live and v1 cannot be restarted on the same channels. See [p3-notes.md](p3-notes.md) §3.1.
 
 **Action:**
 
@@ -611,28 +621,102 @@ In `claude` opened against `/srv/apps/nanoclaw-v2`:
 /migrate-from-v1
 ```
 
-Follow its phases. It handles:
+Follow its 6 phases. It handles:
 
-- Owner seeding
-- `CLAUDE.local.md` cleanup
-- Container config reconciliation
-- Fork-customization porting prompts (these prompts feed into our P4 work — capture them rather than acting blindly)
+- Owner seeding (creates a `users` row + grants the global `owner` role to the operator's primary channel identity)
+- `CLAUDE.local.md` cleanup across all migrated groups (strips v1 boilerplate, repoints v1-specific paths)
+- Container config reconciliation — `additional_mounts` in `container_configs` are walked, v1-specific paths repointed where applicable, the mount allowlist extended to cover `/srv/apps/nanoclaw-v2`
+- Channel adapter installation files (`src/channels/{whatsapp,slack,resend}.ts`) appear in the v2 working tree as untracked — they're upstream skill output, not changes to commit locally unless desired
+- **Smoke test phase: starts the v2 systemd unit, attempts a real inbound roundtrip on each migrated channel.** If the smoke test passes, the skill restarts the service to apply final changes. v2 is now production.
 
 **Verification:**
 
-Skill reports completion without errors. Inspect any reconciled files (likely `groups/main/CLAUDE.local.md`, `container/config.json`) and confirm they look sane.
+```bash
+systemctl --user is-active nanoclaw-v2-787facac.service   # active
+systemctl --user is-enabled nanoclaw-v2-787facac.service  # enabled
+PATH="/srv/apps/nanoclaw-v2/bin:$PATH" ncl groups list --json | jq '.data | length'  # matches v1 registered_groups count
+PATH="/home/john/.npm-global/bin:$PATH" onecli secrets list | grep -i Anthropic   # subscription token in vault
+```
+
+Send a real message in each migrated channel and confirm a reply arrives. **Slack inbound will likely fail** — that's not a `/migrate-from-v1` bug; see [p3-notes.md](p3-notes.md) §3.2 (v2's Slack adapter is webhook-only, v1's was Socket Mode).
 
 **Rollback:**
 
-If the skill modified files in ways we don't want, `git diff` will show them — `git checkout -- <file>` to revert individual files. The skill should be non-destructive by design.
+This is now a P7-equivalent step. Rollback after a successful W3.6 means reversing the cutover — see §7 master rollback "After P7" branch. In practice: stop+disable v2's unit, restart v1's unit, re-pair WhatsApp on v1 (the Baileys keystore now lives in v2's data dir).
 
 ---
 
 ### P4: Port fork-local features onto v2
 
-Most labor-intensive phase. The fork's custom credential proxy is **retired**, not ported (P1 outcome — see [spike-notes.md](spike-notes.md) §3); subscription auth was wired in at W2.4 via OneCLI's Anthropic-typed secret. Order matters: start with security-adjacent features (sender allowlist, mount security) and work outward through health/watchdog and the rest.
+Most labor-intensive phase. The fork's custom credential proxy is **retired**, not ported (P1 outcome — see [spike-notes.md](spike-notes.md) §3); subscription auth was wired in at W2.4 via OneCLI's Anthropic-typed secret.
+
+> **Post-W4.5 ordering** (see [p3-notes.md](p3-notes.md) §9 + §10 + §11): P4 runs against a LIVE v2 in production. **W4.0 (Slack inbound), W4.3 (health/watchdog), and W4.5 (`/usage`) are DONE** — see below. **W4.1 (sender allowlist) is optional / likely retire** — v1 never enforced it in production (see [p3-notes.md](p3-notes.md) §3.6). Remaining order: **W4.4 → W4.5.1 → W4.7 → W4.6**, plus follow-ups: **W4.8 (Slack interactivity port)**, **W4.9 (chat-sdk-bridge consumer audit)**, and **v2 installer-template watchdog patch** (from W4.3).
 
 All work in `/srv/apps/nanoclaw-v2`. Read v1 implementation in `/srv/apps/nanoclaw/src/<file>.ts` before porting.
+
+#### W4.0: Restore Slack inbound — DONE 2026-05-22
+
+**Outcome:** ✅ Slack inbound restored end-to-end via Path A (Tailscale Funnel + Events API reconfig on the existing Slack app). Bot identity `U0AMHR1U9L0` + all 9 channel memberships preserved. Public URL: `https://agent.flicker-enigmatic.ts.net/webhook/slack`.
+
+Authoritative records:
+- [slack-inbound-decision.md](slack-inbound-decision.md) — path choice (A vs B vs C), parity audit showing A and C are feature-identical, click-by-click Slack-app reconfig steps.
+- [p3-notes.md](p3-notes.md) §9 — resolution log, ops gotchas, and follow-ups discovered.
+
+**Key surprise to carry forward:** Tailscale Funnel needs an explicit `sudo tailscale cert <domain>` step even after HTTPS Certificates is enabled at the tailnet level and `tailscale funnel --bg 3000` succeeds. Without it, the public DNS auth NS (DNSimple) returns NXDOMAIN. Diagnosis cost: ~15 minutes. Future Funnel setup: treat `tailscale cert` as a required step, not auto-magical. Also note: `tailscale cert` writes cert + key files to CWD as a side effect; clean them up after.
+
+**Rollback** (if needed): re-enable Socket Mode in the Slack app dashboard; disable Event Subscriptions. `tailscale funnel reset` to remove public ingress. v2 code unchanged this work unit, so no code rollback.
+
+---
+
+#### W4.8: Slack interactivity / block_actions handler port (NEW, surfaced by W4.0)
+
+**Context:** v1's `src/channels/slack.ts` registers two `app.action()` regex handlers for the git-maintenance branch-delete flow:
+- `app.action(/^nanoclaw_checkbox_/, …)` — ack checkbox toggles
+- `app.action(/^nanoclaw_confirm_/, …)` — extract selected branches and deliver a synthetic inbound message to the agent
+
+v2's `@chat-adapter/slack` does parse interactivity payloads at `/webhook/slack` (the form-encoded `payload` field), but it's unverified whether v2's `chat-sdk-bridge.ts` surfaces those events to channel consumers. The next Mon/Thu 02:03 CEST git-maintenance cron will post a checkbox message that cannot be confirmed via Slack until this is ported.
+
+**Action:**
+
+1. Read `/srv/apps/nanoclaw/src/channels/slack.ts` lines 140–220 (action handlers).
+2. Read v2's `/srv/apps/nanoclaw-v2/src/channels/chat-sdk-bridge.ts` and `chat-sdk-bridge.test.ts` — look for any `onAction` / `onBlockAction` / `payload_type` / `block_actions` surface.
+3. If v2 exposes an action-handler hook on the channel-registry contract → wire v1's regex handlers onto it.
+4. If v2 does NOT expose one → file an upstream issue OR write a thin wrapper that intercepts the raw webhook payload before passing to `@chat-adapter/slack` for action types.
+5. Tests: write a test that POSTs a signed `block_actions` payload to `/webhook/slack` and verifies the synthetic inbound message lands.
+
+**Verification:**
+
+Trigger the git-maintenance cron manually (or wait for Mon/Thu) — operator clicks the confirm checkbox — confirm the agent receives the synthetic inbound and deletes the selected branches.
+
+**Rollback:** `git checkout --` the bridge changes (if any) on v2's working tree.
+
+---
+
+#### W4.9: chat-sdk-bridge consumer audit (NEW, surfaced by W4.0)
+
+**Context:** v2's `@chat-adapter/slack` exposes (per its `.d.ts`):
+- File metadata inbound (`SlackEvent.files[]` with mimetype, url_private, dimensions, size)
+- Reaction inbound (`SlackReactionEvent` for `reaction_added`/`reaction_removed`)
+- Native typing indicator (`startTyping(threadId, status?)`, needs `assistant:write` scope)
+- Streaming output (`stream(threadId, textStream, options)`)
+- File upload outbound (`AdapterPostableMessage` + private `uploadFiles`)
+
+v2's consumer-side bridge (`src/channels/chat-sdk-bridge.ts`, 28k file) is the layer that decides what's actually piped through to the agent. v1 had: image inbound (multimodal), voice inbound (Whisper), PDF inbound (text reference), `:eyes:` emoji reactions for status-tracker, no streaming, no inbound reaction handling. **Unverified whether v2's bridge wires any/all of these to the agent's prompt.**
+
+**Action:**
+
+1. For each capability above, grep `chat-sdk-bridge.ts` for whether it reads/writes the surface.
+2. Write a comparison matrix: v1 behavior | v2-adapter capability | v2-bridge wired? | gap to close.
+3. Decide which gaps to close in this work unit vs. defer (e.g., streaming is a bonus, not a v1 parity item).
+4. Implement closures; write tests.
+
+**Verification:** Send each input type (image, voice note, PDF, reaction) in Slack and confirm the agent sees it the way v1 saw it.
+
+**Rollback:** Per-feature `git checkout --` on bridge changes.
+
+---
+
+
 
 #### W4.1: Sender allowlist
 
@@ -748,23 +832,34 @@ This is a security boundary. Do not skip the test pass. If in doubt, keep our `m
 
 ---
 
-#### W4.5: Host commands (`/usage`, `/status`)
+#### W4.5: Host commands — `/usage` (DONE 2026-05-22)
+
+**Outcome:** ✅ `/usage` works on both surfaces — `ncl usage` (CLI top-level command) and chat `/usage` (admin-gated, handled inline by command-gate's new `respond` action). Token sourced from `~/.claude/.credentials.json` (NOT OneCLI vault — see [p3-notes.md](p3-notes.md) §11 for why OneCLI option was rejected). Test suite green: 36 files / 389 tests (+32). Files added: `src/usage.ts` + `src/usage.test.ts` + `src/cli/commands/usage.ts` + `src/command-gate.test.ts`. Files modified: `src/cli/commands/index.ts` (import), `src/command-gate.ts` (new `respond` action + `HOST_RESPONDER_COMMANDS` map), `src/router.ts` (handle `respond` action).
+
+Authoritative record: [p3-notes.md](p3-notes.md) §11.
+
+**Key surprise:** OneCLI cannot serve `/api/oauth/usage`. The `@onecli-sh/sdk` exposes no `getSecret(name) -> value` method, and the OneCLI gateway on `127.0.0.1:10255` injects `x-api-key`-style auth (the `/v1/messages` SDK contract), not the `Authorization: Bearer sk-ant-oat01-...` + `anthropic-beta: oauth-2025-04-20` pair the OAuth usage endpoint needs. Fallback to v1's `~/.claude/.credentials.json` reader is the only viable path. See [p3-notes.md](p3-notes.md) §11 for the full chain of evidence.
+
+**Rollback** (if needed): `git checkout --` the seven files listed above; `pnpm run build`; `systemctl --user restart nanoclaw-v2-787facac.service`. v2 reverts to the curl-from-host baseline of [p3-notes.md](p3-notes.md) §3.3.
+
+---
+
+#### W4.5.1: `/status` chat command (NEW, fold-in from W4.5)
 
 **Action:**
 
-1. Read `/srv/apps/nanoclaw/src/host-commands.ts`.
-2. `/status` likely overlaps with v2's `ncl groups status` (or similar `ncl` subcommand) — investigate before porting. If v2 covers `/status`, retire ours.
-3. `/usage` is fork-local (subscription billing visibility). Port onto v2's command-dispatch path (likely a different module than v1's `src/session-commands.ts` — check v2's slash-command source-of-truth).
-4. Re-implement the `api.anthropic.com/api/oauth/usage` call and token-refresh logic from v1's `host-commands.ts:230` and `:92`.
+`/status` overlaps with the v2 `/health` endpoint W4.3 added; v1's chat `/status` rendered the same snapshot. Cheap port now that the `respond` GateResult shape exists:
 
-**Verification:**
+1. Export a `formatHealthText(snapshot)` helper from `src/health.ts` if not already exposed.
+2. Add a `snapshotHealth` getter that the `respond` renderer can call (the wired-up snapshot composer already lives in `src/index.ts` for W4.3's `/health` server — refactor or expose it for direct host use).
+3. Add `'/status': () => formatHealthText(snapshotHealth())` to `HOST_RESPONDER_COMMANDS` in `src/command-gate.ts`.
+4. One test in `src/command-gate.test.ts` for the new entry.
 
-In a v2 dev session, send `/usage` and `/status` in chat. Expected:
+**Verification:** send `/status` in Slack as an admin user; receive a formatted health snapshot identical to `curl http://127.0.0.1:3002/health` shape, but human-readable.
 
-- `/usage`: rate-limit progress bars + reset times rendered.
-- `/status`: service health snapshot rendered.
+**Rollback:** `git checkout --` the touched files.
 
-**Rollback:** `git checkout --` modified files.
+**Estimate:** <30 min once W4.4 settles, or fold into W4.4's commit if convenient.
 
 ---
 
@@ -1039,6 +1134,16 @@ The five_hour / seven_day counter advanced by ≥1 between a pre-test and post-t
 ### P7: Cutover
 
 **ONE-WAY DOOR.** After W7.6 starts, messages received on v2 do not replay to v1. Confirm P6 is green before starting.
+
+> **Post-P3 update:** the cutover effectively happened during P3 W3.6 via `/migrate-from-v1`'s smoke-test phase (see [p3-notes.md](p3-notes.md) §3.1). The work units below describe the *intended* cutover sequence; **what actually applies now** is:
+> - **W7.1 (final v1 backup):** still relevant — take if not already done.
+> - **W7.2, W7.3 (stop + disable v1):** already happened in W3.1 + the post-W3.6 state.
+> - **W7.4 (restore v2 ports to production defaults):** still relevant — v2's `HEALTH_PORT=4002` from W2.5 should move back to `3002` once v1 is permanently retired. **Defer to when W4.3 (health endpoint port) lands** — there's no health endpoint on v2 today.
+> - **W7.5 (determine slug + install unit):** already happened. Slug is `787facac`. Unit at `~/.config/systemd/user/nanoclaw-v2-787facac.service`.
+> - **W7.6 (enable + start v2 service):** already happened. `active+enabled`.
+> - **W7.7 (tail logs to confirm clean boot):** already verified — no errors, `NRestarts=0` since the last restart.
+> - **W7.8 (send "hello" in each channel):** WhatsApp ✅ verified. Slack ❌ broken pending W4.0. Gmail (as channel) not migrated. Re-run W7.8 once W4.0 lands.
+> - **W7.9 (trigger a production scheduled task):** **partial credit** — scheduled tasks are migrated and the scheduler should fire them; first fire is the 07:28 CEST morning-report cron after P3. Treat as observation, not test, unless willing to manipulate the schedule.
 
 #### W7.1: Final v1 backup
 
@@ -1391,10 +1496,10 @@ Reminder fires at the scheduled date.
 
 Abort the migration and revert to v1 if any of these conditions arise:
 
-1. **W6.7 (subscription-billing wire verification) fails:** OneCLI's MITM substitution doesn't preserve subscription routing — `/api/oauth/usage` shows the test request landing in `extra_usage` instead of `five_hour` / `seven_day`, OR an outbound capture shows the `anthropic-beta` header or `Authorization: Bearer sk-ant-oat01-…` was rewritten. P1's static-analysis conclusion would be wrong; at that point options are (a) re-implement the fork's credential proxy on v2's host shape (the ingredients are documented in [spike-notes.md](spike-notes.md) §4) or (b) revert to v1.
+1. ~~**W6.7 (subscription-billing wire verification) fails.**~~ **RETIRED post-P3.** The `/api/oauth/usage` query returned `extra_usage.is_enabled=false` at the org level with `disabled_reason="org_level_disabled_until"` — spillover to a non-subscription bucket is structurally impossible, irrespective of how OneCLI's MITM behaves. five_hour / seven_day / seven_day_sonnet counters confirmed advancing under v2 traffic. See [p3-notes.md](p3-notes.md) §3.3.
 2. **Upstream introduces another breaking change** during the migration we can't absorb. Check `CHANGELOG.md` in `upstream/main` weekly during the migration window.
 3. **Critical fork-local feature has no port path on v2 AND no workaround.** Remote-control (W4.6) is the canonical example — if it turns out incompatible with v2's session model and we depend on it, we stop.
-4. **More than 2 days of cumulative downtime during cutover (P7).** At that point revert to v1 and reassess.
+4. **More than 2 days of cumulative downtime during cutover (P7).** **Post-P3 update:** cutover effectively happened during P3 W3.6; total downtime was ~90 minutes (W3.1 stop until W3.6 smoke test completes). Threshold not exceeded. See [p3-notes.md](p3-notes.md) §3.1.
 
 ---
 
@@ -1418,7 +1523,7 @@ Rollback granularity depends on where in the plan we are:
 1. **`migrate-v2.sh` and v2's `setup.sh` / `nanoclaw.sh` must run from a real terminal**, not the Claude Code Bash tool. These scripts collapse non-TTY stdin/stdout — interactive prompts won't render and they will hang or fail in odd ways. (P1 spike confirmed this for the installer; same applies to the migrator.)
 2. **During parallel run (P2–P6), v1 owns host port 3002 (health).** v2 uses 4002 until W7.4 swaps it back. The fork's custom credential proxy (v1's 3001) is retired on v2 — only v1 still listens on 3001 during parallel run, and the port is freed at cutover when v1 stops.
 3. **Docker socket access is shared between v1 and v2 during parallel run.** Docker handles concurrent clients fine, but watch for image-build cache contention if both are rebuilding the agent container simultaneously.
-4. **v2 install slug** (sha1 of project root path, first 8 chars) determines the systemd unit name. For `/srv/apps/nanoclaw-v2/` the slug is `9c12bd9b` (resolved during P1 spike). Resolve manually if changed via `. setup/lib/install-slug.sh && systemd_unit` from inside the v2 dir before W7.5. The slug changes if you rename the project directory (see W8.5).
+4. **v2 install slug.** Pre-P2 the plan predicted `9c12bd9b` for `/srv/apps/nanoclaw-v2/` based on the spike-era `sha1(path)[:8]` algorithm. **Actual v2.0.64 slug is `787facac`** — the slug algorithm changed between the spike (v2.0.0-era) and P2 install (v2.0.64). Real unit name: `nanoclaw-v2-787facac.service`. Real image tag: `nanoclaw-agent-v2-787facac:latest`. Resolve manually for any new install via `. setup/lib/install-slug.sh && systemd_unit` from inside the v2 dir. The slug changes if you rename the project directory (see W8.5).
 5. **Subscription auth refresh:** if the `sk-ant-oat01-…` OAuth token expires during the migration window, run `claude setup-token` to capture a fresh one. Update **v1's** `.env` (v1 reads the token from `.env`) AND **v2's** OneCLI vault entry (`onecli secrets update Anthropic --value $token` or recreate). Until cutover, both must be in sync. Do not paste the token into chat or commit it to git.
 6. **WhatsApp Baileys keystore does not support concurrent sessions.** Only one of v1 and v2 can hold the WA session at a time. During parallel testing (W5.2), either use a throwaway WA number or briefly stop v1 for the test.
 7. **Test in production-adjacent test channels, not production channels**, until W7.8. Use dedicated `#test` Slack channels, throwaway WA contacts, and a test Gmail label.

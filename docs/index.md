@@ -37,8 +37,11 @@ In-flight cross-cutting work that spans many sessions. Read these before doing a
 
 | Document                                                                              | Status                                                                                       |
 | ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| [v2-migration/motivation-and-context.md](v2-migration/motivation-and-context.md)      | active (planning, 2026-05-21) — why we're migrating from v1 to v2, decisions, alternatives rejected |
-| [v2-migration/implementation-plan.md](v2-migration/implementation-plan.md)            | active (planning, 2026-05-21) — phased step-by-step plan (P0–P8) with rollback per work unit |
+| [v2-migration/motivation-and-context.md](v2-migration/motivation-and-context.md)      | active — why we're migrating from v1 to v2, decisions, alternatives rejected |
+| [v2-migration/implementation-plan.md](v2-migration/implementation-plan.md)            | active — phased step-by-step plan (P0–P8); see [p3-notes.md](v2-migration/p3-notes.md) §5 + §9 for post-P3 + post-W4.0 revisions |
+| [v2-migration/spike-notes.md](v2-migration/spike-notes.md)                            | immutable record of the P1 spike (2026-05-21) that inverted Decision 3 |
+| [v2-migration/p3-notes.md](v2-migration/p3-notes.md)                                  | immutable record of P3 (2026-05-21) + W4.0 (2026-05-22) — `/migrate-from-v1` crossed the one-way door; v2 is live; Slack inbound restored via Tailscale Funnel + Events API |
+| [v2-migration/slack-inbound-decision.md](v2-migration/slack-inbound-decision.md)      | W4.0 path decision (Path A picked) — Tailscale Funnel + Events API on existing Slack app; parity audit; click-by-click reconfig |
 
 ## Operations & Runbooks
 
