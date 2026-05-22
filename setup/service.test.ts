@@ -60,7 +60,9 @@ Description=NanoClaw Personal Assistant
 After=network.target
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=all
+WatchdogSec=30s
 ExecStart=${nodePath} ${projectRoot}/dist/index.js
 WorkingDirectory=${projectRoot}
 Restart=always
@@ -164,6 +166,37 @@ describe('systemd unit generation', () => {
     expect(unit).toContain(
       'ExecStart=/usr/bin/node /srv/nanoclaw/dist/index.js',
     );
+  });
+
+  it('declares Type=notify so sd_notify wiring activates', () => {
+    const unit = generateSystemdUnit(
+      '/usr/bin/node',
+      '/home/user/nanoclaw',
+      '/home/user',
+      false,
+    );
+    expect(unit).toContain('Type=notify');
+    expect(unit).not.toContain('Type=simple');
+  });
+
+  it('allows sd_notify from any process (NotifyAccess=all)', () => {
+    const unit = generateSystemdUnit(
+      '/usr/bin/node',
+      '/home/user/nanoclaw',
+      '/home/user',
+      false,
+    );
+    expect(unit).toContain('NotifyAccess=all');
+  });
+
+  it('configures a 30s watchdog window', () => {
+    const unit = generateSystemdUnit(
+      '/usr/bin/node',
+      '/home/user/nanoclaw',
+      '/home/user',
+      false,
+    );
+    expect(unit).toContain('WatchdogSec=30s');
   });
 });
 

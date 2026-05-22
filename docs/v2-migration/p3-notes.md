@@ -772,3 +772,118 @@ revived as a separate sender-allowlist module.
   mark DONE.
 - **§5 P4 next** — installer-template watchdog patch (see §16) or
   W4.7 (Journal MCP verify).
+
+## §16 v2 installer-template watchdog patch (2026-05-22)
+
+The W4.3 §10.3 carry-forward — bake the watchdog directives into v2's
+installer template so fresh installs come up with `Type=notify` rather
+than every operator needing to hand-edit the unit file after `pnpm
+run setup`.
+
+### 16.1 The gap
+
+After W4.3, `src/watchdog.ts` ports v1's `sd_notify` integration: it
+sends `READY=1` on start, `WATCHDOG=1` every 2s, and `STOPPING=1` on
+shutdown. The watchdog wiring is a no-op when `NOTIFY_SOCKET` is unset
+(systemd only sets it for `Type=notify` units). v2's installer wrote
+`Type=simple`, so on a fresh install:
+
+- watchdog.ts `initWatchdog()` returned `null` (silent disable).
+- systemd had no `WatchdogSec` to enforce, so a deadlocked process
+  was never restarted.
+- The only signal that anything was wrong was the absence of
+  `WATCHDOG=1` log lines.
+
+The live `nanoclaw-v2-787facac.service` unit was hand-edited during W4.3
+to add `Type=notify` + `NotifyAccess=all` + `WatchdogSec=30s`. Every
+fresh install elsewhere would have to repeat that edit.
+
+### 16.2 What was changed
+
+One source file + one test file. No runtime code path was touched.
+
+**`setup/service.ts`** — `setupSystemd()` writes the unit template. The
+`[Service]` block prepends three directives above `ExecStart`:
+
+```diff
+ [Service]
+-Type=simple
++Type=notify
++NotifyAccess=all
++WatchdogSec=30s
+ ExecStart=${nodePath} ${projectRoot}/dist/index.js
+```
+
+A short comment above the template literal documents the contract
+(why `Type=notify`; consequence of dropping it).
+
+**`setup/service.test.ts`** — the test file shadows `service.ts`'s
+template via a local `generateSystemdUnit()` helper (the production
+function isn't exported). Updated the helper to mirror the new
+directives, then added three assertions:
+
+- `Type=notify` is present, `Type=simple` is absent.
+- `NotifyAccess=all` is present.
+- `WatchdogSec=30s` is present.
+
+This was the same pattern the existing tests used for `Restart=always`
+/ `KillMode=process` / `WantedBy=...`. The helper-mirroring approach
+means a future drift between `service.ts` and `service.test.ts` is
+caught by the existing label/ExecStart/restart-policy assertions, not
+just the new ones.
+
+### 16.3 What was NOT changed
+
+- **macOS / launchd path** (`setupLaunchd()`) — untouched. Launchd has
+  no `Type=notify` equivalent; the existing plist remains canonical.
+- **Nohup fallback** (`setupNohupFallback()`) — untouched. No service
+  manager, no watchdog. This is the WSL-without-systemd path.
+- **The live `nanoclaw-v2-787facac.service`** — already has the
+  directives (manually edited in W4.3). No restart needed. This change
+  is fresh-install-only and takes effect the next time `pnpm run
+  setup` rewrites the unit file.
+- **`scripts/`** — no parallel bash installer exists on v2 (the next-
+  session prompt mentioned `setup.sh`; that's a v1 artefact). Only
+  `setup/service.ts` writes the unit.
+
+### 16.4 Verification
+
+- `pnpm test` — 37 files / **424 tests** pass (+3 from W4.5.1 baseline
+  of 421).
+- `pnpm run build` — clean (TypeScript compiles).
+- `curl http://127.0.0.1:3002/health` — HTTP 200 (the running v2
+  service was not touched).
+- Spot-check of the live unit file
+  (`~/.config/systemd/user/nanoclaw-v2-787facac.service`) — already
+  has the three directives, so the next setup rewrite produces a
+  bit-identical [Service] block. No surprise diff on re-run.
+
+### 16.5 Re-test of the fresh-install path on the running install
+
+Deliberately deferred. Re-running `pnpm run setup` on
+`/srv/apps/nanoclaw-v2` would rewrite the live unit file and likely
+trigger a `systemctl --user daemon-reload + restart` mid-session.
+The template change is small, syntactic, and was eyeballed against the
+already-correct live unit. A real fresh-install verification will
+happen the next time NanoClaw is set up on a new host (or in a
+disposable VM).
+
+### 16.6 Status
+
+- v2 main HEAD: forthcoming commit `chore(setup): bake watchdog flags
+  into systemd template (W4.x)`.
+- Test count: 37 files / 424 tests (+3).
+- v2 service: unchanged, healthy.
+
+### 16.7 Plan revisions
+
+- **`fork-local-inventory.md`** — `src/watchdog.ts` row already
+  mentions "fix the installer gap" in its disposition; no edit needed.
+- **`implementation-plan.md` §5 P4** — the carry-forward item
+  "W4.x v2 installer-template watchdog patch (NEW, surfaced by W4.3)"
+  can be marked DONE pointing at §16.
+- **`project_v2_migration.md` memory** — append a gotcha noting the
+  template now generates `Type=notify` units; manual hand-edits on
+  pre-fix installs remain in place but are no longer the only path.
+
+
