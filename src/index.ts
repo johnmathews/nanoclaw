@@ -4,19 +4,33 @@
  * Thin orchestrator: init DB, run migrations, start channel adapters,
  * start delivery polls, start sweep, handle shutdown.
  */
+import http from 'http';
 import path from 'path';
 
 import { backfillContainerConfigs } from './backfill-container-configs.js';
-import { DATA_DIR } from './config.js';
+import { DATA_DIR, MAX_CONCURRENT_CONTAINERS } from './config.js';
 import { enforceStartupBackoff, resetCircuitBreaker } from './circuit-breaker.js';
 import { migrateGroupsToClaudeLocal } from './claude-md-compose.js';
-import { initDb } from './db/connection.js';
+import { initDb, getDb } from './db/connection.js';
 import { runMigrations } from './db/migrations/index.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
-import { startActiveDeliveryPoll, startSweepDeliveryPoll, setDeliveryAdapter, stopDeliveryPolls } from './delivery.js';
-import { startHostSweep, stopHostSweep } from './host-sweep.js';
+import {
+  startActiveDeliveryPoll,
+  startSweepDeliveryPoll,
+  setDeliveryAdapter,
+  stopDeliveryPolls,
+  getDeliveryPollsRunning,
+} from './delivery.js';
+import { startHostSweep, stopHostSweep, isHostSweepRunning } from './host-sweep.js';
 import { routeInbound } from './router.js';
 import { log } from './log.js';
+import { collectHealth, type HealthData } from './health.js';
+import { startHealthServer } from './health-server.js';
+import { initWatchdog, type Watchdog } from './watchdog.js';
+import { getActiveContainerCount } from './container-runner.js';
+import { getAllAgentGroups } from './db/agent-groups.js';
+import { getActiveSessions } from './db/sessions.js';
+import { openInboundDb } from './session-manager.js';
 
 // Response + shutdown registries live in response-registry.ts to break the
 // circular import cycle: src/index.ts imports src/modules/index.js for side
@@ -46,6 +60,104 @@ async function dispatchResponse(payload: ResponsePayload): Promise<void> {
   log.warn('Unclaimed response', { questionId: payload.questionId, value: payload.value });
 }
 
+/**
+ * Snapshot of system health.
+ *
+ * Composes data from channel registry + delivery/sweep loop state + container
+ * runner + central DB + per-session inbound DBs (for task counters). Called
+ * by the `/health` HTTP endpoint on every request — no caching, snapshot is
+ * always fresh. Walks active session DBs in serial; trivially fast for
+ * single-digit session counts.
+ */
+function snapshotHealth(): HealthData {
+  const adapters = getActiveAdapters();
+
+  // SQLite's MAX(last_active) is stored timezoneless; append 'Z' so formatAge
+  // reads it as UTC. Empty string when no sessions exist yet.
+  let lastMessageTimestamp = '';
+  try {
+    const row = getDb().prepare('SELECT MAX(last_active) AS m FROM sessions').get() as { m: string | null };
+    if (row.m) {
+      const isoish = row.m.includes('T') ? row.m : row.m.replace(' ', 'T');
+      const withZ = /[zZ]|[+-]\d{2}:?\d{2}$/.test(isoish) ? isoish : isoish + 'Z';
+      lastMessageTimestamp = withZ;
+    }
+  } catch (err) {
+    log.warn('Failed to read sessions.last_active for health snapshot', { err });
+  }
+
+  // Walk active session inbound DBs once for task counts. Activated/paused/
+  // failed live as `messages_in` rows with kind='task'; v2 has no central
+  // task table.
+  let activeTasks = 0;
+  let pausedTasks = 0;
+  let recentTaskFailures = 0;
+  let nextTaskRunTime: string | null = null;
+
+  for (const session of getActiveSessions()) {
+    let inDb;
+    try {
+      inDb = openInboundDb(session.agent_group_id, session.id);
+    } catch {
+      continue;
+    }
+    try {
+      const counts = inDb
+        .prepare(
+          `SELECT
+             SUM(CASE WHEN kind = 'task' AND status = 'pending' THEN 1 ELSE 0 END) AS active,
+             SUM(CASE WHEN kind = 'task' AND status = 'paused' THEN 1 ELSE 0 END) AS paused,
+             SUM(CASE WHEN kind = 'task' AND status = 'failed'
+                       AND timestamp >= datetime('now', '-1 day') THEN 1 ELSE 0 END) AS failures
+           FROM messages_in`,
+        )
+        .get() as { active: number | null; paused: number | null; failures: number | null };
+      activeTasks += counts.active ?? 0;
+      pausedTasks += counts.paused ?? 0;
+      recentTaskFailures += counts.failures ?? 0;
+
+      const nextRow = inDb
+        .prepare(
+          `SELECT MIN(process_after) AS next FROM messages_in
+           WHERE kind = 'task' AND status = 'pending' AND process_after IS NOT NULL`,
+        )
+        .get() as { next: string | null };
+      if (nextRow.next) {
+        const isoish = nextRow.next.includes('T') ? nextRow.next : nextRow.next.replace(' ', 'T');
+        const withZ = /[zZ]|[+-]\d{2}:?\d{2}$/.test(isoish) ? isoish : isoish + 'Z';
+        if (!nextTaskRunTime || withZ < nextTaskRunTime) {
+          nextTaskRunTime = withZ;
+        }
+      }
+    } catch (err) {
+      log.warn('Failed to read task counts for health snapshot', { sessionId: session.id, err });
+    } finally {
+      inDb.close();
+    }
+  }
+
+  return collectHealth({
+    channels: adapters.map((a) => ({ name: a.channelType, isConnected: () => a.isConnected() })),
+    messageLoopRunning: getDeliveryPollsRunning() && isHostSweepRunning(),
+    queueActiveCount: getActiveContainerCount(),
+    queueWaitingCount: 0,
+    maxConcurrentContainers: MAX_CONCURRENT_CONTAINERS,
+    registeredGroupCount: getAllAgentGroups().length,
+    activeSessionCount: getActiveSessions().length,
+    lastMessageTimestamp,
+    activeTasks,
+    pausedTasks,
+    nextTaskRunTime,
+    recentTaskFailures,
+  });
+}
+
+let healthServer: http.Server | null = null;
+let watchdog: Watchdog | null = null;
+let watchdogTimer: NodeJS.Timeout | null = null;
+const WATCHDOG_TICK_MS = 2000;
+const DEFAULT_HEALTH_PORT = 3002;
+
 // Channel barrel — each enabled channel self-registers on import.
 // Channel skills uncomment lines in channels/index.ts to enable them.
 import './channels/index.js';
@@ -61,7 +173,12 @@ import './cli/delivery-action.js';
 import { startCliServer, stopCliServer } from './cli/socket-server.js';
 
 import type { ChannelAdapter, ChannelSetup } from './channels/adapter.js';
-import { initChannelAdapters, teardownChannelAdapters, getChannelAdapter } from './channels/channel-registry.js';
+import {
+  initChannelAdapters,
+  teardownChannelAdapters,
+  getChannelAdapter,
+  getActiveAdapters,
+} from './channels/channel-registry.js';
 
 async function main(): Promise<void> {
   log.info('NanoClaw starting');
@@ -177,12 +294,35 @@ async function main(): Promise<void> {
   // 7. Start the `ncl` CLI socket server (data/ncl.sock).
   await startCliServer();
 
+  // 8. Start the /health HTTP endpoint (loopback only).
+  const healthPort = parseInt(process.env.HEALTH_PORT || String(DEFAULT_HEALTH_PORT), 10);
+  healthServer = startHealthServer(healthPort, snapshotHealth);
+
+  // 9. systemd watchdog — sd_notify READY=1 + 2s WATCHDOG ticks.
+  // Returns null when NOTIFY_SOCKET is absent (Type=simple unit, dev mode);
+  // code path is a no-op in that case.
+  watchdog = initWatchdog();
+  if (watchdog) {
+    const wd = watchdog;
+    watchdogTimer = setInterval(() => wd.tick(), WATCHDOG_TICK_MS);
+    watchdogTimer.unref();
+  }
+
   log.info('NanoClaw running');
 }
 
 /** Graceful shutdown. */
 async function shutdown(signal: string): Promise<void> {
   log.info('Shutdown signal received', { signal });
+  if (watchdogTimer) {
+    clearInterval(watchdogTimer);
+    watchdogTimer = null;
+  }
+  watchdog?.close();
+  if (healthServer) {
+    await new Promise<void>((resolve) => healthServer!.close(() => resolve()));
+    healthServer = null;
+  }
   for (const cb of getShutdownCallbacks()) {
     try {
       await cb();

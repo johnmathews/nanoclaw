@@ -118,6 +118,11 @@ export function startSweepDeliveryPoll(): void {
   pollSweep();
 }
 
+/** Whether both delivery polls are currently enabled. Read by the health snapshot. */
+export function getDeliveryPollsRunning(): boolean {
+  return activePolling && sweepPolling;
+}
+
 async function pollActive(): Promise<void> {
   if (!activePolling) return;
 
