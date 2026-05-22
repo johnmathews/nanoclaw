@@ -8,24 +8,25 @@ continue the migration. The prompt is self-contained — the new session won't s
 
 ---
 
-I'm continuing the NanoClaw v1→v2 migration. **State as of 2026-05-22 post-bridge-audit:** P0 + P1 + P2 + P3 + W4.0
-+ W4.3 + W4.5 + W4.4 + Task A + W4.5.1 + `writeOutboundDirect` rw fix + W4.1 sender-allowlist retire + v2 installer-
-template watchdog patch + **chat-sdk-bridge audit (§17 + §17.9)** all complete. v2 is live in production at
-`/srv/apps/nanoclaw-v2` (`nanoclaw-v2-787facac.service`, active+enabled). v1 stopped+disabled. WhatsApp + Slack
-inbound/outbound + scheduled tasks + `/health` on `127.0.0.1:3002` + chat `/usage` + chat `/status` + `ncl usage`
-all working.
+I'm continuing the NanoClaw v1→v2 migration. **State as of 2026-05-22 post-bridge-audit + skill-output catch-up:**
+P0 + P1 + P2 + P3 + W4.0 + W4.3 + W4.5 + W4.4 + Task A + W4.5.1 + `writeOutboundDirect` rw fix + W4.1 sender-
+allowlist retire + v2 installer-template watchdog patch + **chat-sdk-bridge audit (§17 + §17.9)** + skill-output
+commit batch (slack/whatsapp/resend channels + gmail/gcal MCPs + 4 agent skills) all complete. v2 is live in
+production at `/srv/apps/nanoclaw-v2` (`nanoclaw-v2-787facac.service`, active+enabled). v1 stopped+disabled.
+WhatsApp + Slack inbound/outbound + scheduled tasks + `/health` on `127.0.0.1:3002` + chat `/usage` + chat `/status`
++ `ncl usage` all working. **Working tree is clean and everything is pushed to `origin/main`.**
 
 **Git topology** (unchanged from Task A):
 
 ```
-johnmathews/nanoclaw          ← all fork work
-├── main                       ← HEAD = d562a1b    (FIVE HEAD commits LOCAL ONLY,
-├── v1-archive                 ← v1 frozen at 0bd42bb     not yet pushed to origin)
+johnmathews/nanoclaw          ← all fork work, all current commits pushed
+├── main                       ← HEAD = fc49581    (tracking origin/main)
+├── v1-archive                 ← v1 frozen at 0bd42bb
 └── v1-final-2026-05-22 (tag)  ← annotated tag on 0bd42bb
 
 On /srv/apps/nanoclaw-v2 (canonical working tree):
-  origin    → https://github.com/johnmathews/nanoclaw.git
-  upstream  → https://github.com/nanocoai/nanoclaw.git
+  origin    → https://github.com/johnmathews/nanoclaw.git  (default push target for main)
+  upstream  → https://github.com/nanocoai/nanoclaw.git     (read-only — fetch upstream NanoClaw updates)
 
 On /srv/apps/nanoclaw (v1 tombstone — DO NOT `git pull` here):
   origin    → https://github.com/johnmathews/nanoclaw.git
@@ -54,11 +55,14 @@ downloaded by bridge but discarded by formatter (dead-letter).
 
 ## Working tree state on `/srv/apps/nanoclaw-v2` (start-of-session)
 
-- Committed but **not yet pushed**: `574c7b1` (W4.1 retire docs), `7cde667` (installer-template watchdog patch),
-  `c732e16` (next-session-prompt refresh), `fce147e` (§17 audit), `d562a1b` (§17.9 cron addendum). Five commits.
-  Decide whether to `git push origin main` at session start.
-- Uncommitted, deliberately: skill output from `/migrate-from-v1`, `/add-gmail-tool`, `/add-gcal-tool` — see project
-  memory item #28 for the full list. Decide what to do with them as a separate concern.
+**Clean.** All P4-era work committed and pushed:
+- `b952767` channels + deps (slack/whatsapp/resend adapters, baileys)
+- `1b21950` container Dockerfile (gmail + gcal MCPs) + 4 agent skills (capabilities, pdf-reader, reactions, status)
+- `405c74d` `.claude/settings.json` (gh run watch permission)
+- `fc49581` untracked runtime group memory (already in `.gitignore`)
+
+`groups/main/CLAUDE.md` and other `groups/*/CLAUDE.md` files remain on disk but are no longer tracked — `.gitignore`
+already excludes `groups/*`. `git status` should be empty when you start.
 
 ## Pick one of these next units (in priority order)
 
@@ -68,9 +72,10 @@ downloaded by bridge but discarded by formatter (dead-letter).
 `messages_in[id=task-1775472071448-rpvh6c]` (group `ag-1779373702794-62oxsv`,
 sess `sess-1779373704595-mqteww`, recurrence `3 2 * * 1,4` → next fire `2026-05-25T00:03:00Z`,
 Mon CEST 04:03) calls `send_blocks` MCP tool (does not exist on v2) and uses actionIds
-`nanoclaw_checkbox_branches` / `nanoclaw_confirm_delete` (would be dropped by bridge filter).
+`nanoclaw_checkbox_branches` / `nanoclaw_confirm_delete` (would be dropped by bridge filter even
+if the tool existed).
 
-Per §17.9 recommendation — port the v1 pattern (option B in §17.9.):
+Per §17.9 recommendation — port the v1 pattern (option B in §17.9):
 
 1. Add `send_blocks` MCP tool in `container/agent-runner/src/mcp-tools/`:
    - Inputs: `blocks` (JSON string), `fallbackText` (string), `to` (optional destination name).
@@ -108,7 +113,8 @@ content blocks. Then per-type handlers:
    audio, store the transcription in `attachments[i].transcription`. Formatter renders inline.
    (Alternative: local whisper.cpp on Apple Silicon — see `/use-local-whisper` skill.)
 4. PDF: pre-process on the host — call `pdftotext` CLI on the base64 data, store extracted text.
-   Formatter renders inline. Apply the `/add-pdf-reader` skill behaviour.
+   Formatter renders inline. The `pdf-reader` container skill (now bundled in `1b21950`) gives the
+   agent the in-container PDF extraction path; the host-side prep is the missing half.
 5. Test for each attachment type. Per-group `skipImageMultimodal=true` should still work.
 6. Commit + add §18 (or §19 if Option 1 also ran) to `p3-notes.md`.
 
@@ -123,18 +129,14 @@ Bridge does not subscribe to `chat.onReaction()`. Chat SDK fires it; bridge igno
    user, target messageId).
 3. Add DB migration for a `reactions` table OR store on the existing `messages_in` row.
 4. Add `query_reactions` MCP tool in `container/agent-runner/src/mcp-tools/core.ts` so agents can
-   read the reaction state on a target message.
+   read the reaction state on a target message. (The `reactions` container skill bundled in
+   `1b21950` covers WhatsApp's native reaction-via-Baileys path; this adds the cross-channel one.)
 5. Commit + add §18/§19/§20 to `p3-notes.md`.
 
 ### Option 4: W4.7 Journal MCP cron verify (~10 min observe)
 
 Wait until 09:05+ tomorrow (morning-report 07:28 + docs-summary 09:03 will have fired). Check the
 main-group's outbound log for `mcp__journal__journal_*` tool invocations. Mark W4.7 done if green.
-
-### Option 5: push pending commits + skill-output triage (~30 min)
-
-`git push origin main` for the five LOCAL-ONLY commits. Decide whether to commit the deliberately-
-uncommitted skill-output (project memory item #28). Lower-priority cleanup.
 
 ## Out of scope this session
 
@@ -175,12 +177,21 @@ uncommitted skill-output (project memory item #28). Lower-priority cleanup.
 20. **Git-maintenance cron task id** = `task-1775472071448-rpvh6c`, located at
     `data/v2-sessions/ag-1779373702794-62oxsv/sess-1779373704595-mqteww/inbound.db` `messages_in[kind=task]`.
     Recurrence `3 2 * * 1,4`. The cron is currently broken on v2 — see §17.9.
+21. **`main` tracks `origin/main`** (fixed 2026-05-22 via `git branch --set-upstream-to=origin/main main`).
+    Previously tracked `upstream` (read-only nanocoai/nanoclaw); bare `git push` errored 403. Sane now —
+    `gp` / `git push` go to the fork; `git fetch upstream` still works to see what upstream ships.
+22. **`groups/*/CLAUDE.md` files are NOT tracked.** `.gitignore` excludes `groups/*`; the two files that
+    slipped through history (`groups/main/CLAUDE.md`, `groups/global/CLAUDE.md`) were untracked in `fc49581`
+    via `git rm --cached`. Files preserved on disk. Never `git add` anything under `groups/`.
 
 ## Rollback recipes
 
 - **For W4.x-slack-interactivity port**: `git revert <sha>` per commit + `pnpm run build` +
   `systemctl --user restart nanoclaw-v2-787facac.service`. The cron stays broken (its existing state).
-- **For audit commits (574c7b1 onwards)**: all doc-only; `git revert <sha>` is safe.
+- **For the skill-output commits (b952767 / 1b21950)**: `git revert <sha>`, then `pnpm install` and
+  `./container/build.sh` if reverting the container/Dockerfile commit. Be aware: reverting `b952767`
+  would also un-register the channel adapters and stop v2's live channels from initialising —
+  almost certainly not what you want.
 - **For Task A topology**: `git push --force-with-lease origin v1-archive:main` from any working tree
   with `johnmathews/nanoclaw` as a remote. Restores v1 main.
 - **For a service regression**: `git checkout -- <files>`; `pnpm run build`;
@@ -189,8 +200,8 @@ uncommitted skill-output (project memory item #28). Lower-priority cleanup.
 ## What to deliver this session
 
 1. Whichever option(s) from §"Pick one of these next units" you tackled, with their per-section deliverables.
-2. Tests pass (`cd /srv/apps/nanoclaw-v2 && pnpm test` — baseline is 37 files / 424 tests post-installer-template).
+2. Tests pass (`cd /srv/apps/nanoclaw-v2 && pnpm test` — baseline is 37 files / 424 tests).
 3. v2 healthy after any service-touching change (`curl http://127.0.0.1:3002/health` returns 200).
 4. `project_v2_migration.md` memory updated with completed items + new operational gotchas.
-5. **Decide on `git push origin main`** for the five LOCAL-ONLY commits.
+5. `git push origin main` at end of session (tracking is sane now — bare `git push` works).
 6. End-of-session: produce a new next-session-prompt at `docs/v2-migration/next-session-prompt.md`.
