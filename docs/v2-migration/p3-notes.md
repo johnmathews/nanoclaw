@@ -1345,3 +1345,459 @@ dropped (unchanged behaviour). Confirmed: an actionId of
   tracks fork-local files retired/kept; §18 added new code, none
   retired).
 
+## §19 W4.7 — Journal MCP verification (2026-05-22)
+
+### 19.1 Outcome
+
+W4.7 is **structurally satisfied**. The v1 plan called for
+re-porting v1's `JOURNAL_MCP_URL` / `JOURNAL_API_TOKEN` env-var
+based conditional registration. That mechanism is obsolete in v2.
+The v2-canonical wiring is **per-group `container.json` →
+`mcpServers` map**, and the main group already has it:
+
+```json
+"journal": {
+  "type": "http",
+  "url": "http://192.168.2.105:8400/mcp",
+  "headers": { "Authorization": "Bearer jnl_…" }
+}
+```
+
+(`groups/main/container.json`, written during the §12 fork
+restructure / re-registration.)
+
+### 19.2 Evidence
+
+1. Journal MCP server reachable from the host —
+   `curl -m 5 http://192.168.2.105:8400/mcp` returns a JSON-RPC
+   error frame ("Client must accept text/event-stream") which is
+   the expected MCP-streaming handshake refusal for a plain
+   `GET`, i.e. the server is up and protocol-conformant.
+2. Agent-runner `container/agent-runner/src/index.ts:84-87`
+   iterates every `config.mcpServers` entry and registers them
+   with the Claude SDK. Container.json's `type: "http"` variant
+   is forwarded by-reference; the type narrowing in
+   `RunnerConfig.mcpServers` is loose (cast-through) but the
+   runtime SDK understands the `type: "http"` shape.
+3. No `mcp.*error|journal.*error|connect.*refused|192\.168\.2\.105`
+   matches in `logs/nanoclaw.log` or `logs/nanoclaw.error.log`
+   since v2 went live (i.e. no spawn-time MCP wiring failure).
+4. v2 has been serving live channels since 2026-05-21T14:28Z; the
+   main group has spawned ≥10 container sessions today alone (see
+   `data/v2-sessions/ag-1779373702795-5wbiev/`) — if journal MCP
+   registration crashed the agent on startup, none of those
+   spawns would have produced replies.
+
+### 19.3 What this does NOT prove
+
+A live functional call to `mcp__journal__journal_list_entries`
+from inside a v2 container was not performed in this session. The
+next-session prompt's "observe the morning-report and docs-summary
+crons for `mcp__journal__*` tool invocations" approach was based
+on a faulty premise: **neither cron actually exercises the
+journal MCP**. They call `mcp__gmail__send_email`,
+`mcp__docs__query_docs`, and `mcp__docs__get_document` (the
+docs-summary cron filters docs by `file_path_contains="journal"`,
+which is a docs-MCP `journal/` path query, NOT a journal-MCP
+call). Confirmed by reading the actual cron prompts at
+`data/v2-sessions/ag-1779373702795-5wbiev/sess-1779373704233-eu40dq/inbound.db`
+`task-1779428333728-govkca` (morning report) and
+`task-1779433496304-qukjog` (docs summary).
+
+### 19.4 If a live test is wanted later
+
+Ask the agent in `#main` (or DM the WhatsApp bot from the main
+group): *"List the 3 most recent journal entries via the journal
+MCP."* The agent's tool-call trace will appear in
+`logs/nanoclaw.log` (host-side `chat-sdk-bridge` events) and the
+final `chat` outbound row in the active session's `outbound.db`.
+If `mcp__journal__journal_list_entries` is callable, the agent
+will return a structured list; if the MCP isn't wired, the agent
+will reply that the tool is unavailable.
+
+### 19.5 Plan revisions
+
+- **`implementation-plan.md` §5 P4** — mark **W4.7 DONE** pointing
+  at §19. Remaining P4 = `W4.x-multimodal` + `W4.x-reactions-inbound`.
+- **`fork-local-inventory.md`** — no row changes (env-var path
+  retired; per-group `mcpServers` is generic v2 wiring, not
+  fork-local).
+- Carry forward: the `RunnerConfig.mcpServers` type at
+  `container/agent-runner/src/config.ts:18` is narrowed to the
+  stdio variant `{ command, args, env }`. The http variant is
+  cast-through. If we ever tighten that type, also add the http
+  variant or it will break this wiring.
+
+## §20 W4.x-multimodal + W4.x-reactions-inbound (2026-05-22)
+
+### 20.1 W4.x-multimodal — image / voice / PDF
+
+**What changed.** v2 now delivers image attachments as Claude
+Messages-API content blocks and ships voice/PDF attachments as
+host-preprocessed inline text. Three orthogonal slices, separately
+revertable.
+
+#### Slice A — provider interface widening + image blocks
+
+The load-bearing v2 change. `QueryInput.prompt` stays a string;
+multimodal turns travel via a new `AgentQuery.pushBlocks(blocks)`
+method. The poll-loop calls `pushBlocks` AFTER `query(...)` so the
+SDK sees two consecutive user messages: the text prompt, then the
+content-block array. Mirrors v1's exact pattern
+(`/srv/apps/nanoclaw/container/agent-runner/src/index.ts:288-299`).
+
+- `container/agent-runner/src/providers/types.ts`
+  - Added `ContentBlock = ImageContentBlock | TextContentBlock`.
+  - Added `ImageMediaType` = the SDK's narrowed union
+    (`image/jpeg | image/png | image/gif | image/webp`). Without
+    this narrowing tsc rejects the cast into the SDK's
+    `Base64ImageSource`.
+  - Added `AgentProvider.supportsMultimodalContent: boolean`.
+  - Added `AgentQuery.pushBlocks(blocks: ContentBlock[]): void`.
+- `container/agent-runner/src/providers/claude.ts`
+  - `MessageStream` now has both `push(text)` and
+    `pushBlocks(blocks)` — same SDKUserMessage shape, just
+    `content: string` vs `content: ContentBlock[]`.
+  - `ClaudeProvider.supportsMultimodalContent = true`.
+- `container/agent-runner/src/providers/mock.ts`
+  - Added `pushBlocks` for parity. Tests assert via the synthetic
+    `__BLOCKS__ ...` text the mock surfaces so the integration
+    test surface stays string-based.
+- `container/agent-runner/src/multimodal.ts` (NEW)
+  - `extractImageBlocks(messages)` walks `messages_in.content.attachments`,
+    filters to `chat`/`chat-sdk` rows + `image/(jpeg|png|gif|webp)`
+    + non-`skipMultimodal`, refuses paths that escape `/workspace`,
+    drops images > 4 MB, returns `ContentBlock[]`.
+  - `setWorkspaceRootForTests(root)` overrides the `/workspace`
+    constant so unit tests don't need to be running inside a
+    container.
+- `container/agent-runner/src/poll-loop.ts`
+  - After the initial `query(...)`, calls
+    `extractImageBlocks(keep)` and `pushBlocks` if non-empty.
+  - Same for follow-up batches inside `processQuery`. The
+    capability flag is threaded through as the
+    `supportsMultimodal` parameter to `processQuery`.
+
+**Tests:**
+`container/agent-runner/src/multimodal.test.ts` (10 cases) covers:
+no-attachments → `[]`; non-image attachments → `[]`; missing
+`localPath` → `[]`; unsupported mime → `[]`; absolute or
+`..`-escaping path → `[]`; `skipMultimodal=true` → `[]`; happy
+path → one base64 block; multiple attachments → multiple blocks;
+non-chat kinds (`task`, `webhook`) → `[]`; missing file silently
+skipped, other attachments still emit; oversize (5 MB) → `[]`.
+
+#### Slice B — voice transcription via OpenAI Whisper
+
+Host-side pre-processing, called inside `messageToInbound` in
+`src/channels/chat-sdk-bridge.ts`. Container never sees the
+OPENAI_API_KEY; v1's pattern (`/srv/apps/nanoclaw/src/transcription.ts`)
+already established this boundary.
+
+- `src/transcription.ts` (NEW)
+  - `transcribeAudio(audio, filename, mimeType, opts?)` posts to
+    `https://api.openai.com/v1/audio/transcriptions` with
+    `model=whisper-1`. Key lookup: `process.env.OPENAI_API_KEY`
+    first, then `readEnvFile(['OPENAI_API_KEY'])`. Result is
+    memoised in the module to avoid re-reading `.env` on every
+    voice note. `resetTranscriptionCacheForTests()` clears it for
+    tests.
+  - `TranscriptionError` classes the failure mode as
+    `no-key | too-large | http | network | malformed-response`
+    so the bridge can stamp a specific
+    `attachment.transcriptionError` for the formatter.
+  - `isTranscribableMime(mime)` whitelist:
+    `audio/* | video/mp4 | video/webm` (Slack and Telegram both
+    surface voice notes as a video container in some adapters).
+  - Whisper's documented 25 MB cap is enforced at 24 MB to leave
+    headroom for multipart-form overhead.
+- `src/channels/chat-sdk-bridge.ts`
+  - In `messageToInbound`, after `entry.data = ...base64`, call
+    `await maybeTranscribe(entry, buffer)` which mutates `entry`
+    in place: sets `entry.transcription` on success or
+    `entry.transcriptionError` on failure.
+
+**Tests:** `src/transcription.test.ts` (12 cases): missing key,
+empty buffer, oversize buffer, OK + bearer-auth assertion, HTTP
+error, network error, malformed JSON, missing text field, empty
+text field, mime-whitelist matrix.
+
+#### Slice C — PDF text extraction via `pdftotext`
+
+Same host-side preprocessing pattern as voice.
+
+- `src/pdf-extract.ts` (NEW)
+  - `extractPdfText(pdf, opts?)` spawns
+    `pdftotext -layout -nopgbrk -enc UTF-8 - -` and pipes the PDF
+    bytes through stdin. `-layout` preserves columns/tables (the
+    reflow default collapses them, which kills readability for
+    code / tables). 15s hard timeout. Output truncated at
+    250_000 bytes to bound prompt size; input refused over 50 MB.
+  - `PdfExtractionError` classes:
+    `too-large | binary-missing | spawn-failed | nonzero-exit | empty-output`.
+  - `isPdfMime(mime)` accepts `application/pdf | application/x-pdf`.
+- `src/channels/chat-sdk-bridge.ts`
+  - In `messageToInbound`, after `entry.data`, call
+    `await maybePdfExtract(entry, buffer)` which sets
+    `entry.extractedText` on success or `entry.pdfExtractionError`
+    on failure.
+
+**Tests:** `src/pdf-extract.test.ts` (10 cases): mime
+whitelist; empty/oversize input; trimmed-text on success;
+ENOENT → `binary-missing`; spawn throw → `spawn-failed`;
+non-zero exit; empty output; output truncation cap.
+
+#### Cross-cutting — formatter renders the new fields inline
+
+`container/agent-runner/src/formatter.ts` `formatAttachments` was
+extended to render:
+
+- `transcription` →
+  `[voice: name — saved to /workspace/<path>]\nTranscription: <text>`
+- `transcriptionError` →
+  `[voice: name — saved to /workspace/<path>]\nTranscription failed: <reason>`
+- `extractedText` →
+  `[pdf: name — saved to /workspace/<path>]\n<pdf_text><![CDATA[<text>]]></pdf_text>`
+  — CDATA block neutralises any embedded `]]>` so the wrapping
+  closes cleanly.
+- `pdfExtractionError` →
+  `[pdf: name — saved to /workspace/<path>]\nPDF extraction failed: <reason>`
+
+Images keep the existing `[image: name — saved to ...]` line; the
+base64 binary travels separately via the multimodal block path so
+the agent has BOTH the visual content AND the file path it can
+`Read` if it needs raw bytes.
+
+Tests: 6 new cases in `container/agent-runner/src/formatter.test.ts`.
+
+#### Per-group skipImageMultimodal
+
+Honored at the attachment level via `att.skipMultimodal=true`.
+The bridge does NOT set this today — wiring it from a group's
+`container.json` is a 1-line follow-up if/when a group needs it
+(set during `messageToInbound` based on `getGroupConfig(...)`).
+For now `skipMultimodal` is the contract the container respects;
+no group exercises it yet so this is the cheapest possible carve-out.
+
+### 20.2 W4.x-reactions-inbound
+
+Subscribes the bridge to `chat.onReaction` and routes each event
+through the existing router as a synthetic chat-sdk inbound. The
+agent gets to "see" reactions exactly like other inbound messages,
+gated by the channel's engage settings. Bare reactions carry
+`isMention=false`, so trigger-required channels accumulate them as
+context and only ride along on the next real wake — matching
+v1's behavior (`/srv/apps/nanoclaw/src/index.ts:1077-1115`).
+
+- `src/channels/chat-sdk-bridge.ts`
+  - New `buildReactionInbound(input): InboundMessage` helper.
+    Symmetric with `buildNcv2Inbound`. Renders
+    `[<userName> reacted <emoji> on message <ts>]` (or
+    `removed reaction <emoji>` for `added=false`). Carries the
+    structured payload under `content.reaction` =
+    `{ emoji, rawEmoji, added, targetMessageId, threadId, userId }`.
+  - Subscribes during `setup()` ONLY if
+    `typeof chat.onReaction === 'function'` (so older / non-chat
+    adapters degrade gracefully without throwing at startup).
+  - Self-reaction filter: skips events where `event.user.userId`
+    is empty. Slack's adapter doesn't fire onReaction for the
+    bot's own reactions; this is belt-and-braces.
+
+- `container/agent-runner/src/mcp-tools/core.ts`
+  - New `query_reactions` MCP tool. Scans the session's
+    `messages_in` for chat-sdk rows with a `reaction` payload,
+    optionally filters by `target_message_id`, returns up to
+    `limit` (default 50, hard cap 500) newest-first. Preserves
+    `added=false` so callers can distinguish removals from adds.
+    Returns JSON in the tool's text content for the agent to
+    parse.
+
+**Tests:**
+- `src/channels/chat-sdk-bridge.test.ts` — 4 cases on
+  `buildReactionInbound`: kind/isMention/isGroup, added text,
+  removed text, structured payload shape.
+- `container/agent-runner/src/mcp-tools/core.test.ts` — 6 cases
+  on `query_reactions`: empty session, all-reactions listing,
+  `target_message_id` filter, `added=false` preservation, newest-
+  first limit ordering, non-reaction chat-sdk rows are ignored.
+
+### 20.3 Test + deploy state
+
+```
+container: bun test → 118 pass / 0 fail / 251 expect() calls
+host:      pnpm test → 39 files / 459 passed
+format:    pnpm run format:check → all matched
+build:     pnpm run build → clean (tsc, no emit errors)
+service:   systemctl --user restart nanoclaw-v2-787facac.service
+           sleep 6; curl /health → 200 healthy=true
+           channels: cli + whatsapp + slack all connected
+```
+
+Container source was NOT rebuilt — the v2 install bind-mounts
+`container/agent-runner/src` → `/app/src` and runs with
+`bun /app/src/index.ts`, so the new code takes effect on the next
+container spawn without `./container/build.sh`. Same property
+documented in §18.4. If anyone later flips agent-runner to a
+compiled image (e.g. for cold-start latency), this property
+reverses and the rebuild is mandatory.
+
+### 20.4 What was NOT done
+
+- **Voice/PDF live exercise:** the test surface is unit-only.
+  A real voice note in `#main` or DM hasn't been sent through the
+  end-to-end path yet. Risk: a chat-adapter quirk on the
+  `att.mimeType` or `fetchData` shape could surface only in
+  production. Mitigation: failures are non-fatal — the formatter
+  renders `Transcription failed: <reason>` rather than dropping
+  the message, so the agent can still respond with context.
+- **`skipImageMultimodal` wiring from group config:** see §20.1
+  cross-cutting note. Contract exists; no group exercises it.
+- **Reactions live exercise:** the v2-canonical reaction inbound
+  path has never been triggered by a real reaction on Slack.
+  Same risk profile as voice/PDF.
+- **PDF reader Skill:** the bundled `pdf-reader` container skill
+  (commit 1b21950) gives the in-container PDF read path; this
+  §20 work is the OTHER half (host-side preprocessing). Combined,
+  the agent can both `Read` the raw `.pdf` AND see the extracted
+  text inline — and the user can decide which to rely on.
+- **Multi-page voice / very long PDFs:** Whisper's 25 MB and
+  pdftotext's 50 MB / 250 KB output caps both kick in well below
+  the agent's context budget; the truncation behavior is opaque
+  to the agent (it sees text that just stops, no continuation
+  marker). Acceptable for now; revisit if anyone reports it.
+
+### 20.5 Plan revisions
+
+- **`implementation-plan.md` §5 P4** — mark `W4.x-multimodal` and
+  `W4.x-reactions-inbound` DONE pointing at §20. P4 is now
+  effectively closed (W4.6 remote-control is deferred / nice-to-have).
+- **`project_v2_migration.md` memory** — append the new
+  operational gotchas:
+  - `transcription.ts` caches the OpenAI key on first use; tests
+    must call `resetTranscriptionCacheForTests()` and mock
+    `./env.js` (the project root `.env` has a real key that
+    leaks into tests if not mocked).
+  - `pdf-extract.ts` requires the `pdftotext` binary on the host
+    `$PATH`. Missing binary surfaces as
+    `PdfExtractionError(kind=binary-missing)` and renders as
+    `PDF extraction failed: pdftotext not installed` in the
+    prompt. Service-level concern only if the binary disappears
+    from $PATH; provider is poppler.
+  - Provider `supportsMultimodalContent` flag now gates block
+    extraction in poll-loop. Setting it `false` on a custom
+    provider preserves the v2 dead-letter behavior.
+  - `messages_in` rows of `kind='chat-sdk'` may now carry a
+    `content.reaction` payload. Anything that scans inbound
+    history (e.g. compaction, agent-to-agent return path) MUST
+    tolerate this shape — it isn't a "message" in the usual
+    sense.
+  - `query_reactions` MCP tool is per-session by construction.
+    Cross-session reaction lookup is not supported (would need
+    the host to expose a global reactions view).
+
+## §21 W4.x-slack-interactivity live-verify plan (Mon 2026-05-25T00:03Z)
+
+This section is the test plan + runbook for the FIRST live fire
+of the git-maintenance cron after §18. The cron is scheduled
+`3 2 * * 1,4` (UTC = 02:03 Mon/Thu in winter, 04:03 in summer),
+which means the next fire is **Mon 2026-05-25 02:03 UTC =
+04:03 CEST**. The task id is `task-1775472071448-rpvh6c` in
+`data/v2-sessions/ag-1779373702794-62oxsv/sess-1779373704595-mqteww/inbound.db`.
+
+### 21.1 What to do on Monday morning
+
+1. Open `#git-maintenance` in Slack between ~04:10–09:00 CEST.
+   The cron fires at 04:03; the agent posts a Block Kit report
+   typically within a minute of waking.
+2. Confirm the rendered card shows:
+   - A summary line with branch counts.
+   - A checkbox group (`action_id="ncv2:branches_to_delete"`)
+     listing every candidate branch.
+   - A button (`action_id="ncv2:confirm_delete"`) labelled
+     something like "Confirm Delete" or "Apply".
+3. **Check the action ids.** If the card uses `nanoclaw_*` or
+   anything other than `ncv2:*`, the agent slipped back into the
+   v1 naming; the bridge will silently drop the clicks and the
+   cron will appear broken. Open Slack's "View Source" on the
+   card if action_ids aren't visible from the UI.
+4. (Optional) Toggle 1–2 checkboxes on or off. They DO fire
+   `chat.onAction` events for each toggle, which the bridge
+   routes as `ncv2:branches_to_delete` synthetic inbounds. The
+   agent should persist the current set in
+   `groups/slack_git-maintenance/CLAUDE.local.md` (or its own
+   working memory).
+5. Click "Confirm Delete". Within ~30s the agent should react
+   in-thread with the result: either a list of deleted branches
+   or an error explaining why the operation failed.
+
+### 21.2 Likely failure modes
+
+- **(A) Wrong action_id namespace.** Agent posts with
+  `nanoclaw_*` from muscle memory. The bridge filter at
+  `src/channels/chat-sdk-bridge.ts:452` drops every event that
+  isn't `ncv2:` or `ncq:`. Fix: edit the cron prompt at
+  `task-1775472071448-rpvh6c.content.prompt` to re-emphasise
+  the prefix, OR backport the agent to use ncv2 via the group's
+  `CLAUDE.local.md` (already done in §18.2).
+- **(B) Checkbox state lost.** Slack does NOT re-deliver the
+  checkbox state with the button click — only the checkbox's
+  own toggle events fire `chat.onAction`. If the agent doesn't
+  persist the selected branches at toggle time and then re-read
+  them at confirm time, the button click has nothing to act on.
+  §18.3 logged this; fix is in the group's CLAUDE.local.md.
+- **(C) chat.postMessage fails the typed structural check.**
+  `src/channels/slack.ts:makeSlackPostBlocks` walks into the
+  private `WebClient` to send raw Block Kit (Chat SDK's typed
+  `postMessage` can't carry raw blocks). A @chat-adapter/slack
+  bump can rename the private path; if you see the warning
+  `Slack adapter has no .client.chat.postMessage` in
+  `logs/nanoclaw.log`, the bridge falls back to text-only and
+  the checkbox UI never renders. Pin: this warning fires
+  immediately on adapter init, so it would show up at boot,
+  not at cron-fire time.
+- **(D) Cron task lookup failure.** v2's task scheduler reads
+  `data/v2-sessions/ag-1779373702794-62oxsv/sess-1779373704595-mqteww/inbound.db`
+  and uses `recurrence='3 2 * * 1,4'` to compute the next fire.
+  If the inbound.db got cleared by a session cleanup, the cron
+  is gone. Sanity check before Monday:
+  ```bash
+  node -e "
+  const Database = require('better-sqlite3');
+  const db = new Database('data/v2-sessions/ag-1779373702794-62oxsv/sess-1779373704595-mqteww/inbound.db', {readonly: true});
+  console.log(db.prepare(\"SELECT id, recurrence, process_after FROM messages_in WHERE id = 'task-1775472071448-rpvh6c'\").all());
+  "
+  ```
+  Expect: a single row with `recurrence='3 2 * * 1,4'`.
+
+### 21.3 Where to look if it misfires
+
+- `logs/nanoclaw.log` (tail with `tail -f`) — bridge events,
+  Slack postMessage errors, chat.onAction dispatch.
+- `logs/nanoclaw.error.log` — uncaught rejections.
+- `data/v2-sessions/ag-1779373702794-62oxsv/sess-1779373704595-mqteww/outbound.db`
+  → the agent's outgoing Block Kit blob (kind=`chat-sdk` if
+  it's a `send_blocks`, kind=`chat` if it fell back to text).
+
+### 21.4 Documentation hooks
+
+After Monday's fire, add §22 to p3-notes.md with the live-test
+outcome: which path executed, which (A)–(D) failure modes
+surfaced, and what (if anything) needed patching. Mark
+W4.x-slack-interactivity verified-live.
+
+### 21.5 What's NOT in this plan
+
+- §20's voice/PDF live exercise. No cron exercises voice or PDF;
+  the verification has to be a manual send.
+- §20's image multimodal live exercise. Send any image to the
+  main group's WhatsApp or any wired Slack channel; agent
+  should describe the image content (vs. just acknowledging
+  the filename).
+- W4.x-reactions-inbound live exercise. React to any agent
+  reply in `#main` with 👍; the next interactive turn should
+  show `[John reacted 👍 on message <ts>]` in the formatted
+  prompt.
+
+These can be done ad-hoc by John and don't need a scheduled
+window — folded into normal use of the bot.
+

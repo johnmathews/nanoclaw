@@ -650,7 +650,7 @@ This is now a P7-equivalent step. Rollback after a successful W3.6 means reversi
 
 Most labor-intensive phase. The fork's custom credential proxy is **retired**, not ported (P1 outcome — see [spike-notes.md](spike-notes.md) §3); subscription auth was wired in at W2.4 via OneCLI's Anthropic-typed secret.
 
-> **Post-W4.5 ordering** (see [p3-notes.md](p3-notes.md) §9 + §10 + §11): P4 runs against a LIVE v2 in production. **W4.0 (Slack inbound), W4.3 (health/watchdog), and W4.5 (`/usage`) are DONE** — see below. **W4.1 (sender allowlist) is optional / likely retire** — v1 never enforced it in production (see [p3-notes.md](p3-notes.md) §3.6). Remaining order: **W4.4 → W4.5.1 → W4.7 → W4.6**, plus follow-ups: **W4.8 (Slack interactivity port)**, **W4.9 (chat-sdk-bridge consumer audit)**, and **v2 installer-template watchdog patch** (from W4.3).
+> **Post-W4.x ordering** (see [p3-notes.md](p3-notes.md) §9–§20): P4 ran against a LIVE v2 in production. **W4.0 (Slack inbound), W4.3 (health/watchdog), W4.5 (`/usage`), W4.5.1 (`/status`), W4.4 (mount-security audit/retire), W4.1 (sender-allowlist retire), W4.8 (Slack interactivity port = §18), W4.7 (Journal MCP = §19), W4.x-multimodal (§20.1), and W4.x-reactions-inbound (§20.2) are all DONE.** Remaining: **W4.6 (remote-control)** is the last nice-to-have, deferred. Follow-ups closed: v2 installer-template watchdog patch (§16), chat-sdk-bridge consumer audit (§17). Live-verify plan for §18's Mon 2026-05-25 cron in [p3-notes.md](p3-notes.md) §21.
 
 All work in `/srv/apps/nanoclaw-v2`. Read v1 implementation in `/srv/apps/nanoclaw/src/<file>.ts` before porting.
 
@@ -885,29 +885,11 @@ This is a "nice-to-have" fork feature, not load-bearing. Don't burn the migratio
 
 ---
 
-#### W4.7: Journal MCP integration
+#### W4.7: Journal MCP integration — DONE 2026-05-22 (see [p3-notes.md](p3-notes.md) §19)
 
-**Action:**
+**Outcome:** ✅ Structurally satisfied via v2's per-group `container.json` → `mcpServers` map. The v1 env-var conditional registration approach is obsolete in v2; the main group already has the journal MCP wired via `groups/main/container.json` (`type: "http"`, `url: http://192.168.2.105:8400/mcp`, bearer auth). Server reachable from host; agent-runner forwards `mcpServers` verbatim to the Claude SDK; no spawn-time MCP errors in logs. The next-session prompt's "watch the morning-report / docs-summary crons for `mcp__journal__*` invocations" was based on a faulty premise — neither cron actually exercises the journal MCP (they call `mcp__gmail__*` and `mcp__docs__*`). See §19 for evidence and the live-test recipe.
 
-1. Read v1's conditional registration in `/srv/apps/nanoclaw/container/agent-runner/src/index.ts` (grep for `JOURNAL_MCP_URL` and `JOURNAL_API_TOKEN`).
-2. Read v2's container runtime (Bun-based — check `/srv/apps/nanoclaw-v2/container/`).
-3. Port the conditional registration: if `JOURNAL_MCP_URL` is set and `JOURNAL_API_TOKEN` is set, register the MCP server at startup.
-4. Fix any `bun:sqlite` parameter syntax issues (uses `$name` instead of `?` or `@name` — relevant if any DB code touches journal data).
-5. Ensure `JOURNAL_MCP_URL` and `JOURNAL_API_TOKEN` are passed into the container env (check v2's `container-runner` equivalent).
-
-**Verification:**
-
-In v2 dev mode, spawn a container with `JOURNAL_MCP_URL` and `JOURNAL_API_TOKEN` set. Inside the container (or via SDK message), confirm `mcp__journal__*` tools are listed. Call `mcp__journal__journal_list_entries` with a small limit; expect a successful response.
-
-```bash
-# From a v2 dev session, send a chat message that lists tools, then call a journal tool.
-# Or: from the container, `claude` REPL with --list-tools to see journal__*.
-```
-
-**Rollback:** `git checkout --` modified files.
-
-**Notes:**
-The journal MCP server lives at `192.168.2.105:8400` (per project memory). It must be reachable from the container's network namespace.
+**Carry-forward gotcha:** `RunnerConfig.mcpServers` type at `container/agent-runner/src/config.ts:18` is narrowed to the stdio variant `{ command, args, env }`. The http variant is cast-through and works at runtime, but if we ever tighten that type we must also add the http variant or this wiring will break.
 
 ---
 
