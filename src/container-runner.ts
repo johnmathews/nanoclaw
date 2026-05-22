@@ -380,17 +380,23 @@ function syncSkillSymlinks(claudeDir: string, containerConfig: import('./contain
     }
   }
 
-  // Create symlinks for desired skills (container path targets)
+  // Create symlinks for desired skills (container path targets).
+  // If a real file/directory shadows the symlink target (legacy copies from
+  // pre-symlink installs), replace it — otherwise edits to the shared skill
+  // source under container/skills/ silently never reach the agent.
   for (const skill of desired) {
     const linkPath = path.join(skillsDir, skill);
-    let exists = false;
+    let stat: fs.Stats | null = null;
     try {
-      fs.lstatSync(linkPath);
-      exists = true;
+      stat = fs.lstatSync(linkPath);
     } catch {
       /* missing */
     }
-    if (!exists) {
+    if (stat && !stat.isSymbolicLink()) {
+      fs.rmSync(linkPath, { recursive: true, force: true });
+      stat = null;
+    }
+    if (!stat) {
       fs.symlinkSync(`/app/skills/${skill}`, linkPath);
     }
   }
