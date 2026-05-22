@@ -58,7 +58,7 @@ Cron task id = `task-1775472071448-rpvh6c`, in
 After the cron has fired (Mon ~04:10 onwards):
 
 1. Open `#git-maintenance` in Slack. Confirm the Block Kit card rendered.
-2. Verify action*ids start with `ncv2:` (NOT `nanoclaw*\*` — that's failure mode A from §21.2).
+2. Verify `action_id`s start with `ncv2:` (NOT `nanoclaw_*` — that's failure mode A from §21.2).
 3. Optionally tick a few checkboxes. Click "Confirm Delete". Confirm the agent acts on the pre-selected list.
 4. Document outcome in `p3-notes.md` §22.
 
