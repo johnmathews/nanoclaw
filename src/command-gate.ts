@@ -13,6 +13,8 @@
  */
 import { getDb, hasTable } from './db/connection.js';
 import { getUsageText } from './usage.js';
+import { formatHealthText } from './health.js';
+import { snapshotHealth } from './health-snapshot.js';
 
 export type GateResult =
   | { action: 'pass' }
@@ -30,6 +32,7 @@ const ADMIN_COMMANDS = new Set(['/clear', '/compact', '/context', '/cost', '/fil
  */
 const HOST_RESPONDER_COMMANDS: Record<string, () => Promise<string>> = {
   '/usage': () => getUsageText(),
+  '/status': async () => formatHealthText(snapshotHealth()),
 };
 
 /**

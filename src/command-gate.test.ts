@@ -9,6 +9,14 @@ vi.mock('./usage.js', () => ({
   getUsageText: vi.fn(async () => 'mock usage text'),
 }));
 
+vi.mock('./health-snapshot.js', () => ({
+  snapshotHealth: vi.fn(() => ({ stub: true })),
+}));
+
+vi.mock('./health.js', () => ({
+  formatHealthText: vi.fn(() => 'mock status text'),
+}));
+
 import { hasTable } from './db/connection.js';
 import { gateCommand } from './command-gate.js';
 
@@ -60,6 +68,26 @@ describe('gateCommand', () => {
 
     it('matches /usage regardless of trailing text', () => {
       const result = gateCommand(content('/usage right now please'), 'u1', 'ag-1');
+      expect(result.action).toBe('respond');
+    });
+  });
+
+  describe('/status host responder', () => {
+    it('returns a respond action whose render produces the status text', async () => {
+      const result = gateCommand(content('/status'), 'u1', 'ag-1');
+      expect(result.action).toBe('respond');
+      if (result.action === 'respond') {
+        expect(result.command).toBe('/status');
+        await expect(result.render()).resolves.toBe('mock status text');
+      }
+    });
+
+    it('denies /status when caller is anonymous', () => {
+      expect(gateCommand(content('/status'), null, 'ag-1')).toEqual({ action: 'deny', command: '/status' });
+    });
+
+    it('matches /status regardless of trailing text', () => {
+      const result = gateCommand(content('/status please'), 'u1', 'ag-1');
       expect(result.action).toBe('respond');
     });
   });
