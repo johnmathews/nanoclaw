@@ -291,11 +291,17 @@ async function deliverMessage(
   // path in deliverSessionMessages and eventually marks the message as failed
   // (instead of marking it delivered when nothing was actually delivered,
   // which was the pre-refactor bug).
+  // Per-channel reply mode override (set on the messaging_group). For
+  // `'channel'`, we strip the inbound thread_id so the bridge falls back to
+  // platform_id (channel root). Hoisted out of the destinations-ACL block
+  // below so the override survives to the deliver() call.
+  let effectiveThreadId = msg.thread_id;
   if (msg.channel_type && msg.platform_id) {
     const mg = getMessagingGroupByPlatform(msg.channel_type, msg.platform_id);
     if (!mg) {
       throw new Error(`unknown messaging group for ${msg.channel_type}/${msg.platform_id} (message ${msg.id})`);
     }
+    if (mg.reply_mode === 'channel') effectiveThreadId = null;
     const isOriginChat = session.messaging_group_id === mg.id;
     // Guarded: without the agent-to-agent module, `agent_destinations`
     // doesn't exist and we permit all non-origin channel sends (the
@@ -361,7 +367,7 @@ async function deliverMessage(
   const platformMsgId = await deliveryAdapter.deliver(
     msg.channel_type,
     msg.platform_id,
-    msg.thread_id,
+    effectiveThreadId,
     msg.kind,
     msg.content,
     files,

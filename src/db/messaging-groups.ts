@@ -78,7 +78,7 @@ export function getMessagingGroupsByChannel(channelType: string): MessagingGroup
 
 export function updateMessagingGroup(
   id: string,
-  updates: Partial<Pick<MessagingGroup, 'name' | 'is_group' | 'unknown_sender_policy'>>,
+  updates: Partial<Pick<MessagingGroup, 'name' | 'is_group' | 'unknown_sender_policy' | 'reply_mode'>>,
 ): void {
   const fields: string[] = [];
   const values: Record<string, unknown> = { id };

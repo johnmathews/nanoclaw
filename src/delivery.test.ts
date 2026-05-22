@@ -29,6 +29,7 @@ const TEST_DIR = '/tmp/nanoclaw-test-delivery';
 import {
   initTestDb,
   closeDb,
+  getDb,
   runMigrations,
   createAgentGroup,
   createMessagingGroup,
@@ -217,6 +218,81 @@ describe('deliverSessionMessages — retry and permanent failure', () => {
     // Attempt 3 — not called, message already delivered
     await deliverSessionMessages(session);
     expect(callCount).toBe(2);
+  });
+});
+
+describe('deliverSessionMessages — reply_mode', () => {
+  it("preserves thread_id when reply_mode is the default 'thread'", async () => {
+    seedAgentAndChannel();
+    createMessagingGroupAgent({
+      id: 'mga-1',
+      messaging_group_id: 'mg-1',
+      agent_group_id: 'ag-1',
+      engage_mode: 'pattern',
+      engage_pattern: '.',
+      sender_scope: 'all',
+      ignored_message_policy: 'drop',
+      session_mode: 'shared',
+      priority: 0,
+      created_at: now(),
+    });
+    const { session } = resolveSession('ag-1', 'mg-1', 'telegram:123:thread-abc', 'shared');
+
+    const db = new Database(outboundDbPath('ag-1', session.id));
+    db.prepare(
+      `INSERT INTO messages_out (id, timestamp, kind, platform_id, channel_type, thread_id, content)
+       VALUES (?, datetime('now'), 'chat', 'telegram:123', 'telegram', ?, ?)`,
+    ).run('out-thread', 'telegram:123:thread-abc', JSON.stringify({ text: 'hi' }));
+    db.close();
+
+    let seenThreadId: string | null | undefined;
+    setDeliveryAdapter({
+      async deliver(_ct, _pid, threadId) {
+        seenThreadId = threadId;
+        return 'plat-msg';
+      },
+    });
+
+    await deliverSessionMessages(session);
+    expect(seenThreadId).toBe('telegram:123:thread-abc');
+  });
+
+  it("clears thread_id when reply_mode is 'channel'", async () => {
+    seedAgentAndChannel();
+    createMessagingGroupAgent({
+      id: 'mga-1',
+      messaging_group_id: 'mg-1',
+      agent_group_id: 'ag-1',
+      engage_mode: 'pattern',
+      engage_pattern: '.',
+      sender_scope: 'all',
+      ignored_message_policy: 'drop',
+      session_mode: 'shared',
+      priority: 0,
+      created_at: now(),
+    });
+    // Flip the messaging group to channel reply mode
+    getDb().prepare("UPDATE messaging_groups SET reply_mode = 'channel' WHERE id = ?").run('mg-1');
+
+    const { session } = resolveSession('ag-1', 'mg-1', 'telegram:123:thread-abc', 'shared');
+
+    const db = new Database(outboundDbPath('ag-1', session.id));
+    db.prepare(
+      `INSERT INTO messages_out (id, timestamp, kind, platform_id, channel_type, thread_id, content)
+       VALUES (?, datetime('now'), 'chat', 'telegram:123', 'telegram', ?, ?)`,
+    ).run('out-chan', 'telegram:123:thread-abc', JSON.stringify({ text: 'hi' }));
+    db.close();
+
+    let seenThreadId: string | null | undefined;
+    setDeliveryAdapter({
+      async deliver(_ct, _pid, threadId) {
+        seenThreadId = threadId;
+        return 'plat-msg';
+      },
+    });
+
+    await deliverSessionMessages(session);
+    expect(seenThreadId).toBeNull();
   });
 });
 

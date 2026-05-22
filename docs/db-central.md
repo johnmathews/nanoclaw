@@ -37,12 +37,14 @@ CREATE TABLE messaging_groups (
   name                  TEXT,
   is_group              INTEGER DEFAULT 0,
   unknown_sender_policy TEXT NOT NULL DEFAULT 'strict',
+  reply_mode            TEXT NOT NULL DEFAULT 'thread',
   created_at            TEXT NOT NULL,
   UNIQUE(channel_type, platform_id)
 );
 ```
 
 - `unknown_sender_policy`: `strict` (drop), `request_approval` (ask admin), `public` (allow).
+- `reply_mode`: `thread` (default — reply in the originating thread) or `channel` (reply in the channel root regardless of where the inbound landed). Only meaningful on threaded adapters (Slack); non-threaded adapters already collapse threads in the router. Applied in `src/delivery.ts` by clearing the per-message `thread_id` before calling `adapter.deliver`, so the bridge falls back to `platform_id`.
 - **Readers:** `src/router.ts`, `src/delivery.ts`, `src/session-manager.ts`
 - **Writers:** `src/db/messaging-groups.ts`, channel setup flows
 
@@ -341,6 +343,7 @@ Migrations live in `src/db/migrations/`, one file per migration. Runner: `runMig
 | 009 | `009-drop-pending-credentials.ts` | Drop the defunct `pending_credentials` table |
 | 014 | `014-container-configs.ts` | `container_configs` — per-agent-group container runtime config |
 | 015 | `015-cli-scope.ts` | `ALTER TABLE container_configs ADD COLUMN cli_scope` |
+| 016 | `016-reply-mode.ts` | `ALTER TABLE messaging_groups ADD COLUMN reply_mode` (`thread`/`channel`; Slack-only effect) |
 
 Numbers 005 and 006 are intentionally absent — migrations were renumbered during early development.
 

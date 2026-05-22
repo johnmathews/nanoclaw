@@ -47,8 +47,23 @@ export interface MessagingGroup {
    * the column itself defaults to NULL in SQLite.
    */
   denied_at?: string | null;
+  /**
+   * Reply behavior on threaded platforms (currently Slack only).
+   *
+   * - `'thread'` (default): reply in the originating thread.
+   * - `'channel'`: reply in the channel root regardless of where the inbound
+   *   message landed. Delivery strips the per-message thread_id and the
+   *   bridge falls back to the messaging_group's platform_id.
+   *
+   * Optional on the TS type so pre-migration-016 callers that build
+   * MessagingGroup objects in code (fixtures, etc.) don't need to update;
+   * the column itself defaults to `'thread'` in SQLite.
+   */
+  reply_mode?: ReplyMode;
   created_at: string;
 }
+
+export type ReplyMode = 'thread' | 'channel';
 
 // ── Identity & privilege ──
 
