@@ -4,9 +4,33 @@ Copy the block below (everything between the `---` lines) into a new Claude Code
 
 ---
 
-I'm continuing the NanoClaw v1→v2 migration. P0–P3 + W4.0 + W4.3 + W4.5 are complete. v2 is live in production at /srv/apps/nanoclaw-v2 (`nanoclaw-v2-787facac.service`, active+enabled, `Type=notify` + `WatchdogSec=30s`). v1 is stopped+disabled. WhatsApp + Slack + scheduled tasks + `/health` on `127.0.0.1:3002` all working. `/usage` is now available as both `ncl usage` (CLI) and chat `/usage` (admin-gated, handled inline by command-gate's `respond` action). This session's job:
+I'm continuing the NanoClaw v1→v2 migration. P0–P3 + W4.0 + W4.3 + W4.5 are complete. v2 is live in production at /srv/apps/nanoclaw-v2 (`nanoclaw-v2-787facac.service`, active+enabled, `Type=notify` + `WatchdogSec=30s`). v1 is stopped+disabled. WhatsApp + Slack + scheduled tasks + `/health` on `127.0.0.1:3002` all working. `/usage` is now available as both `ncl usage` (CLI) and chat `/usage` (admin-gated, handled inline by command-gate's `respond` action). The W4.5 docs are committed and pushed to `johnmathews/nanoclaw` main (commit `2c23dac` at 2026-05-22). This session has **two equally-important tasks** — order them as you see fit but ideally tackle the fork restructuring first since W4.4 might want to commit code into the new structure:
 
-**Primary task: W4.4 — mount-security audit + v1 fork-local `mount-security.ts` retire-or-port decision.**
+**Task A (FORK RESTRUCTURING — do first if possible): Consolidate v2 work into `johnmathews/nanoclaw`, archive v1, keep upstream pullable.**
+
+Long-standing problem: `/srv/apps/nanoclaw-v2`'s git origin is `nanocoai/nanoclaw` (UPSTREAM). All W4.3 + W4.5 code lives uncommitted on that working tree because there's no fork-remote configured. Per operator decision: v1 is ready to archive and v2 work should live in `johnmathews/nanoclaw`. Upstream `nanocoai/nanoclaw` must remain pullable.
+
+Plan (validate each step with the operator before destructive ops — force-push, branch deletion, etc.):
+
+1. **Archive v1.** Push a `v1-archive` branch (or `archive/v1-final`) on `johnmathews/nanoclaw` from current `main` (which holds the v1 + all v2-migration docs as of commit `2c23dac`). Confirm visible on GitHub. Optionally tag `v1-final-2026-05-22`.
+2. **On `/srv/apps/nanoclaw-v2`**, rename current `origin` (nanocoai) → `upstream`, add a new `origin` pointing at `johnmathews/nanoclaw`.
+3. **Decide whether the v2 install becomes the new `johnmathews/nanoclaw` main.** Two options:
+    - (a) **Force-push v2's local main onto `johnmathews/nanoclaw` main.** Destructive — v1 commit history is no longer reachable via main. Mitigated by step 1's archive branch. Clean end-state.
+    - (b) **Push v2 to a `v2-main` branch on `johnmathews/nanoclaw` and migrate main later.** Less destructive; lets v1 main live alongside v2 work for a few days as a safety net before the swap.
+4. **Commit our W4.3 + W4.5 code on `/srv/apps/nanoclaw-v2`** (NOT the upstream skill output — those are `/migrate-from-v1` channel adapters that should stay separate). Files to commit:
+    - W4.3: `src/health.ts`, `src/health.test.ts`, `src/health-server.ts`, `src/health-server.test.ts`, `src/watchdog.ts`, `src/watchdog.test.ts`, plus changes to `src/index.ts` + `src/delivery.ts` + `src/host-sweep.ts` for the health snapshot composer.
+    - W4.5: `src/usage.ts`, `src/usage.test.ts`, `src/cli/commands/usage.ts`, `src/command-gate.test.ts`, plus changes to `src/cli/commands/index.ts` + `src/command-gate.ts` + `src/router.ts`.
+    - Possibly: `package.json` / `pnpm-lock.yaml` / `container/Dockerfile` if those are from W4.3/W4.5 era; LEAVE if they're from earlier skill output (`git log --diff` to disambiguate).
+    - DO NOT commit: `src/channels/{slack,resend,whatsapp,index}.ts` (skill output from `/migrate-from-v1` — separate concern), `container/skills/*` (skill output), `setup/groups.ts` + `setup/whatsapp-auth.ts` (skill output unless our edits).
+5. **Push to the new origin** (johnmathews/nanoclaw) once committed.
+6. **Verify `git fetch upstream` works** from the new origin layout. Pull any upstream changes since v2.0.64 onto a new branch and rebase or merge per fork policy.
+7. **Update `/srv/apps/nanoclaw` working tree state** — since the v1 install is dead, decide whether to:
+    - Keep `/srv/apps/nanoclaw` as a separate v1 working tree (still useful while journal mount points at v1's tree per p3-notes §4)
+    - Rename to `/srv/apps/nanoclaw-v1-archive` to make the v1-ness explicit
+    - Or leave both paths intact for now (W8.6 tombstones v1 in ~30 days anyway).
+8. **Update memory + p3-notes §12** with the new git topology so future sessions know which working tree is canonical.
+
+**Task B: W4.4 — mount-security audit + v1 fork-local `mount-security.ts` retire-or-port decision.**
 
 READ FIRST, in this order:
 
@@ -34,7 +58,23 @@ Working tree on /srv/apps/nanoclaw is uncommitted from P0+P1+P2+P3+W4.0+W4.3+W4.
 
 2. **W4.5.1 `/status` chat fold-in** (NEW, from W4.5 — see implementation-plan §5 W4.5.1) — single entry in `HOST_RESPONDER_COMMANDS` + a `formatHealthText` helper that wraps the existing `src/health.ts` snapshot composer (already wired for the `/health` HTTP endpoint). Estimated <30 min once W4.4 settles — or fold into W4.4's commit if it's convenient.
 
-3. **v2's untracked working tree** at `/srv/apps/nanoclaw-v2` has the channel-adapter files from `/migrate-from-v1` (`src/channels/{slack,resend,whatsapp,index}.ts`, plus container/skills/*). Leave alone — those are upstream skill output.
+3. **v2's untracked working tree** at `/srv/apps/nanoclaw-v2` has the channel-adapter files from `/migrate-from-v1` (`src/channels/{slack,resend,whatsapp,index}.ts`, plus container/skills/*). Per the fork-restructuring plan above, those are skill output and should stay OUT of any W4.3/W4.5 code commit. Decide what to do with them as a separate concern (probably commit them on a `v2-skill-output` branch or leave untracked for now).
+
+4. **Resulting git topology after Task A** (validate this matches what the operator wants before pushing):
+
+    ```
+    johnmathews/nanoclaw          ← all fork work, main = v2
+    ├── main                       ← v2.0.64 + W4.3 + W4.5 (+ skill outputs separate or merged)
+    └── v1-archive (or branch)    ← v1.2.71 final + all v2-migration docs (commit 2c23dac frozen)
+
+    On /srv/apps/nanoclaw-v2:
+      origin    → https://github.com/johnmathews/nanoclaw.git
+      upstream  → https://github.com/nanocoai/nanoclaw.git
+
+    On /srv/apps/nanoclaw (or wherever the v1 working tree lives):
+      origin    → https://github.com/johnmathews/nanoclaw.git  (now tracking v2 main; v1 archive accessible via v1-archive branch)
+      OR archive the working tree entirely once journal mount is repointed.
+    ```
 
 ## W4.4 scope — mount-security audit
 
@@ -110,15 +150,17 @@ See "Carry-forward housekeeping #2" above. Quick checklist:
 
 ## What to deliver this session
 
-1. W4.4 decision: retire or port v1's `src/mount-security.ts`, with the decision documented in `docs/v2-migration/p3-notes.md` §12 (new section).
-2. If retire: `docs/v2-migration/fork-local-inventory.md` updated; v1's file untouched on disk (don't delete from `/srv/apps/nanoclaw` until P7-final/P8 cleanup).
-3. If port: code changes on v2 atop `src/modules/mount-security/`, plus tests, plus `pnpm run build` + restart.
-4. Tests pass on v2 (`cd /srv/apps/nanoclaw-v2 && pnpm test` — should still be at 36 files / 389 tests from W4.5 baseline, plus whatever you add).
-5. p3-notes.md appended with §12 W4.4 resolution log (date, retire-vs-port decision, gap matrix if any, gotchas).
-6. project_v2_migration.md memory updated: W4.4 done, next work unit listed.
-7. Optionally: W4.5.1 `/status` fold-in done if time permits; W4.5.1 section in p3-notes §13.
+1. **Task A:** Fork restructured. `johnmathews/nanoclaw` main = v2; v1 archived to a branch; `/srv/apps/nanoclaw-v2` origin → johnmathews/nanoclaw with upstream remote configured for upstream pulls. W4.3 + W4.5 code committed and pushed to the new origin. Document the new topology in p3-notes §12 + project memory.
+2. **Task B:** W4.4 decision: retire or port v1's `src/mount-security.ts`, with the decision documented in `docs/v2-migration/p3-notes.md` §13 (new section).
+3. If W4.4 retire: `docs/v2-migration/fork-local-inventory.md` updated; v1's file untouched on disk (don't delete from `/srv/apps/nanoclaw` until P7-final/P8 cleanup).
+4. If W4.4 port: code changes on v2 atop `src/modules/mount-security/`, plus tests, plus `pnpm run build` + restart.
+5. Tests pass on v2 (`cd /srv/apps/nanoclaw-v2 && pnpm test` — should still be at 36 files / 389 tests from W4.5 baseline, plus whatever you add).
+6. project_v2_migration.md memory updated: Task A + W4.4 done, next work unit listed, new git topology recorded.
+7. Optionally: W4.5.1 `/status` fold-in done if time permits; W4.5.1 section in p3-notes §14.
 8. End-of-session: produce a next-session prompt for the next work unit (W4.5.1 if you didn't fold it in, else W4.7 / installer-template / interactivity port).
 
 Service-level rollback: `git checkout --` any new v2 source files; `pnpm run build`; `systemctl --user restart nanoclaw-v2-787facac.service`. v2 currently has `NRestarts=0` from the post-W4.5 restart — keep it green by NOT touching the systemd unit unless W4.4 itself requires it (it shouldn't).
+
+For Task A rollback: if the force-push to `johnmathews/nanoclaw` main goes wrong, the archive branch from step 1 IS the rollback. `git push --force-with-lease origin v1-archive:main` restores main. Take this seriously: validate the archive branch is pushed and visible on GitHub BEFORE step 3.
 
 ---
