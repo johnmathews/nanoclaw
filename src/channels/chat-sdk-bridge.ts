@@ -235,9 +235,11 @@ export function buildReactionInbound(input: ReactionInboundInput): InboundMessag
  * captured on `entry.transcriptionError` instead of throwing — the agent
  * gets to see why transcription was skipped rather than receiving a silent
  * voice note with no text.
+ *
+ * Exported for tests. Production callers go through `messageToInbound`.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function maybeTranscribe(entry: Record<string, any>, buffer: Buffer): Promise<void> {
+export async function maybeTranscribe(entry: Record<string, any>, buffer: Buffer): Promise<void> {
   const mime = typeof entry.mimeType === 'string' ? entry.mimeType : '';
   if (!isTranscribableMime(mime)) return;
   const filename = (typeof entry.name === 'string' && entry.name) || 'voice';
@@ -254,9 +256,11 @@ async function maybeTranscribe(entry: Record<string, any>, buffer: Buffer): Prom
 /**
  * Run host-side `pdftotext` on a PDF attachment and stamp the result onto
  * the attachment entry. Same error contract as `maybeTranscribe`.
+ *
+ * Exported for tests. Production callers go through `messageToInbound`.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function maybePdfExtract(entry: Record<string, any>, buffer: Buffer): Promise<void> {
+export async function maybePdfExtract(entry: Record<string, any>, buffer: Buffer): Promise<void> {
   const mime = typeof entry.mimeType === 'string' ? entry.mimeType : '';
   if (!isPdfMime(mime)) return;
   try {

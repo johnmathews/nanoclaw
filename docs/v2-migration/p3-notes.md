@@ -1161,8 +1161,9 @@ short-term.
 
 ## §18 W4.x-slack-interactivity — `send_blocks` MCP + `ncv2:` action namespace (2026-05-22)
 
-Picked option B from §17.9. Pre-empts the Mon 04:03 CEST (= 02:03
-UTC + DST offset) git-maintenance cron breakage by porting v1's
+Picked option B from §17.9. Pre-empts the Mon 02:03 CEST (= 00:03
+UTC, see §21 for the timezone math) git-maintenance cron
+breakage by porting v1's
 `send_blocks` + `app.action(/^nanoclaw_…/)` pattern into v2 with a
 v2-prefixed action namespace.
 
@@ -1322,8 +1323,8 @@ dropped (unchanged behaviour). Confirmed: an actionId of
 
 - Did not fire a manual test of the git-maintenance cron. Risk:
   the cron does substantial git/network work (fetch, GitHub API
-  calls, possibly cherry-picks). The real Mon 2026-05-25 04:03
-  CEST fire is the first live test.
+  calls, possibly cherry-picks). The real Mon 2026-05-25 02:03
+  CEST fire (= 00:03 UTC, see §21) is the first live test.
 - Did not back-port the `ncv2:` namespace to any other group. Only
   `slack_git-maintenance/CLAUDE.local.md` was updated. If/when
   another group needs Block Kit interactivity, repeat the
@@ -1665,6 +1666,17 @@ reverses and the rebuild is mandatory.
   the agent's context budget; the truncation behavior is opaque
   to the agent (it sees text that just stops, no continuation
   marker). Acceptable for now; revisit if anyone reports it.
+- **Sequential preprocessing inside `messageToInbound`.** The
+  bridge handles attachments serially: each `await
+  maybeTranscribe(entry, buffer)` is followed by `await
+  maybePdfExtract(entry, buffer)` per attachment, and the loop
+  is sequential across attachments. Worst case is a message with
+  3 PDFs at the 15s pdftotext timeout each — 45s of host-side
+  blocking before the inbound row reaches the DB. Same behavior
+  as v1; chat platforms tolerate it because long-running message
+  handlers don't release the connection. If we ever see chat-SDK
+  timeouts in production, fan out via `Promise.all` per
+  attachment + a per-message overall cap.
 
 ### 20.5 Plan revisions
 
@@ -1698,17 +1710,31 @@ reverses and the rebuild is mandatory.
 ## §21 W4.x-slack-interactivity live-verify plan (Mon 2026-05-25T00:03Z)
 
 This section is the test plan + runbook for the FIRST live fire
-of the git-maintenance cron after §18. The cron is scheduled
-`3 2 * * 1,4` (UTC = 02:03 Mon/Thu in winter, 04:03 in summer),
-which means the next fire is **Mon 2026-05-25 02:03 UTC =
-04:03 CEST**. The task id is `task-1775472071448-rpvh6c` in
+of the git-maintenance cron after §18. The cron expression is
+`3 2 * * 1,4` and v2's recurrence sweep interprets it in
+`TIMEZONE = Europe/Amsterdam` (`src/modules/scheduling/recurrence.ts:31`).
+So `02:03 Mon/Thu local`:
+
+- In summer (CEST = UTC+2): `02:03 CEST = 00:03 UTC`.
+- In winter (CET = UTC+1): `02:03 CET = 01:03 UTC`.
+
+The DB confirms the next fire: `process_after = 2026-05-25T00:03:00.000Z`
+on row `task-1775472071448-rpvh6c` in
 `data/v2-sessions/ag-1779373702794-62oxsv/sess-1779373704595-mqteww/inbound.db`.
+**Next fire = Mon 2026-05-25 02:03 CEST = 00:03 UTC.**
+
+(§18's resolution log incorrectly said "04:03 CEST"; that was off
+by 2 hours. The cron-expression / UTC timestamp pair was right;
+only the human-readable CEST translation was wrong. Same fix
+needed in any operator-facing doc that references this fire.)
 
 ### 21.1 What to do on Monday morning
 
-1. Open `#git-maintenance` in Slack between ~04:10–09:00 CEST.
-   The cron fires at 04:03; the agent posts a Block Kit report
-   typically within a minute of waking.
+1. Open `#git-maintenance` in Slack between ~02:10 CEST and
+   whenever you next look at Slack on Monday. The cron fires at
+   02:03 CEST; the agent posts a Block Kit report typically
+   within a minute of waking, and the report sits in-channel
+   until someone interacts.
 2. Confirm the rendered card shows:
    - A summary line with branch counts.
    - A checkbox group (`action_id="ncv2:branches_to_delete"`)

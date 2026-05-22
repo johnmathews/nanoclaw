@@ -1,8 +1,24 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Adapter, AdapterPostableMessage, RawMessage } from 'chat';
 
-import { buildNcv2Inbound, buildReactionInbound, createChatSdkBridge, splitForLimit } from './chat-sdk-bridge.js';
+// Stub readEnvFile so the production .env's OPENAI_API_KEY doesn't leak
+// into the maybeTranscribe "no-key" branch tests below.
+vi.mock('../env.js', () => ({
+  readEnvFile: vi.fn(() => ({})),
+}));
+
+import {
+  buildNcv2Inbound,
+  buildReactionInbound,
+  createChatSdkBridge,
+  maybePdfExtract,
+  maybeTranscribe,
+  splitForLimit,
+} from './chat-sdk-bridge.js';
+import { resetTranscriptionCacheForTests } from '../transcription.js';
+
+const ORIGINAL_OPENAI_KEY = process.env.OPENAI_API_KEY;
 
 function stubAdapter(partial: Partial<Adapter>): Adapter {
   return { name: 'stub', ...partial } as unknown as Adapter;
@@ -441,5 +457,72 @@ describe('createChatSdkBridge.deliver — raw Slack Block Kit (send_blocks)', ()
     expect(calls).toHaveLength(1);
     const msg = calls[0].message as { markdown?: string };
     expect(msg.markdown).toBe('fallthrough text');
+  });
+});
+
+describe('maybeTranscribe', () => {
+  // maybeTranscribe is the wrapper messageToInbound calls per attachment
+  // after fetchData(). Verifies the wrapper's mime guard, error capture,
+  // and entry mutation contract. The underlying Whisper call is exercised
+  // exhaustively by src/transcription.test.ts; here we just sanity-check
+  // the branching.
+
+  beforeEach(() => {
+    delete process.env.OPENAI_API_KEY;
+    resetTranscriptionCacheForTests();
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_OPENAI_KEY === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = ORIGINAL_OPENAI_KEY;
+    resetTranscriptionCacheForTests();
+  });
+
+  it('is a no-op for non-audio mime types', async () => {
+    const entry = { mimeType: 'image/png', name: 'pic.png' } as Record<string, unknown>;
+    await maybeTranscribe(entry, Buffer.from('not audio'));
+    expect(entry.transcription).toBeUndefined();
+    expect(entry.transcriptionError).toBeUndefined();
+  });
+
+  it('is a no-op when mimeType is missing', async () => {
+    const entry = { name: 'unknown' } as Record<string, unknown>;
+    await maybeTranscribe(entry, Buffer.from('audio'));
+    expect(entry.transcription).toBeUndefined();
+    expect(entry.transcriptionError).toBeUndefined();
+  });
+
+  it('captures transcriptionError when OPENAI_API_KEY is missing', async () => {
+    const entry = { mimeType: 'audio/ogg', name: 'v.ogg' } as Record<string, unknown>;
+    await maybeTranscribe(entry, Buffer.from('audio'));
+    expect(entry.transcriptionError).toContain('OPENAI_API_KEY not set');
+    expect(entry.transcription).toBeUndefined();
+  });
+});
+
+describe('maybePdfExtract', () => {
+  // Same shape as maybeTranscribe: thin wrapper, mime guard, error capture.
+  // The underlying pdftotext spawn is exercised by src/pdf-extract.test.ts;
+  // here we sanity-check the wrapper.
+
+  it('is a no-op for non-PDF mime types', async () => {
+    const entry = { mimeType: 'image/png', name: 'pic.png' } as Record<string, unknown>;
+    await maybePdfExtract(entry, Buffer.from('not pdf'));
+    expect(entry.extractedText).toBeUndefined();
+    expect(entry.pdfExtractionError).toBeUndefined();
+  });
+
+  it('is a no-op when mimeType is missing', async () => {
+    const entry = { name: 'unknown' } as Record<string, unknown>;
+    await maybePdfExtract(entry, Buffer.from('something'));
+    expect(entry.extractedText).toBeUndefined();
+    expect(entry.pdfExtractionError).toBeUndefined();
+  });
+
+  it('captures pdfExtractionError for an empty PDF buffer', async () => {
+    const entry = { mimeType: 'application/pdf', name: 'broken.pdf' } as Record<string, unknown>;
+    await maybePdfExtract(entry, Buffer.alloc(0));
+    expect(entry.pdfExtractionError).toContain('Empty PDF buffer');
+    expect(entry.extractedText).toBeUndefined();
   });
 });

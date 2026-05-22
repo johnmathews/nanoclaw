@@ -38,8 +38,8 @@ On /srv/apps/nanoclaw (v1 tombstone — DO NOT `git pull` here):
 
     docs/v2-migration/p3-notes.md              §19 W4.7 (journal MCP via per-group container.json,
                                                not env-var path); §20 W4.x-multimodal + reactions;
-                                               §21 Monday 2026-05-25 04:03 CEST live-verify plan
-                                               for §18 git-maintenance cron.
+                                               §21 Monday 2026-05-25 02:03 CEST (= 00:03 UTC)
+                                               live-verify plan for §18 git-maintenance cron.
     docs/v2-migration/implementation-plan.md   §5 P4 ordering: P4 effectively closed except W4.6.
     docs/v2-migration/fork-local-inventory.md  src/transcription.ts row flipped to re-ported.
 
@@ -49,22 +49,24 @@ OPENAI_API_KEY path; pdftotext dependency; messages_in reaction-shape compatibil
 
 **Pick one of these next units** (in priority order)
 
-## Option 1 (Recommended): Monday 2026-05-25 04:03 CEST — first live fire of §18
+## Option 1 (Recommended): Monday 2026-05-25 02:03 CEST — first live fire of §18
 
 Cron task id = `task-1775472071448-rpvh6c`, in
-`data/v2-sessions/ag-1779373702794-62oxsv/sess-1779373704595-mqteww/inbound.db`, recurrence `3 2 * * 1,4`. Next fire is
-**Mon 2026-05-25T02:03:00Z = Mon 2026-05-25 04:03 CEST**. Full test plan + failure modes in `p3-notes.md` §21.
+`data/v2-sessions/ag-1779373702794-62oxsv/sess-1779373704595-mqteww/inbound.db`, recurrence `3 2 * * 1,4` (interpreted in
+`Europe/Amsterdam`). DB `process_after = 2026-05-25T00:03:00Z`. **Next fire = Mon 2026-05-25 02:03 CEST = 00:03 UTC.**
+Full test plan + failure modes in `p3-notes.md` §21. (Older docs incorrectly said "04:03 CEST" — that was off by 2 hours;
+the DB UTC timestamp is the source of truth.)
 
-After the cron has fired (Mon ~04:10 onwards):
+After the cron has fired (any time after Mon 02:10 CEST, the report stays in-channel until someone interacts):
 
 1. Open `#git-maintenance` in Slack. Confirm the Block Kit card rendered.
 2. Verify `action_id`s start with `ncv2:` (NOT `nanoclaw_*` — that's failure mode A from §21.2).
 3. Optionally tick a few checkboxes. Click "Confirm Delete". Confirm the agent acts on the pre-selected list.
 4. Document outcome in `p3-notes.md` §22.
 
-If the report doesn't appear at 04:10:
+If no report appears on Monday morning:
 
-- Check `logs/nanoclaw.log` for `[task-scheduler]` lines around 04:03.
+- Check `logs/nanoclaw.log` for `[task-scheduler]` lines around 00:03 UTC (= 02:03 CEST).
 - Sanity-check the cron is still scheduled with the snippet in §21.2 (D).
 - Confirm `/health` returns 200 and `tasks.activeCount` > 0.
 
