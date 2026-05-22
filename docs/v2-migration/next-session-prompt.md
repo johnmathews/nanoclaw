@@ -1,25 +1,25 @@
-# Next-session prompt — continue NanoClaw v1→v2 migration after W4.1 + installer-template watchdog patch
+# Next-session prompt — continue NanoClaw v1→v2 migration after chat-sdk-bridge audit (§17 + §17.9)
 
 Copy the block below (everything between the `---` lines) into a new Claude Code session in `/srv/apps/nanoclaw-v2` to
 continue the migration. The prompt is self-contained — the new session won't see this conversation.
 
 > **Note on working directory:** canonical tree is `/srv/apps/nanoclaw-v2`. Start the next session there.
-> `/srv/apps/nanoclaw` stays as the v1 tombstone for ~30 days (journal mount still points at it; W8.6 cleans up).
+> `/srv/apps/nanoclaw` stays as the v1 tombstone for ~30 days.
 
 ---
 
-I'm continuing the NanoClaw v1→v2 migration. **State as of 2026-05-22 post-W4.1 + installer-template:** P0 + P1 + P2 +
-P3 + W4.0 + W4.3 + W4.5 + W4.4 + Task A + W4.5.1 + `writeOutboundDirect` rw fix + **W4.1 sender-allowlist retire** +
-**v2 installer-template watchdog patch** all complete. v2 is live in production at `/srv/apps/nanoclaw-v2`
-(`nanoclaw-v2-787facac.service`, active+enabled, `Type=notify` + `WatchdogSec=30s`). v1 is stopped+disabled. WhatsApp
-+ Slack inbound/outbound + scheduled tasks + `/health` on `127.0.0.1:3002` + chat `/usage` + chat `/status` (both
-admin-gated) + `ncl usage` CLI all working.
+I'm continuing the NanoClaw v1→v2 migration. **State as of 2026-05-22 post-bridge-audit:** P0 + P1 + P2 + P3 + W4.0
++ W4.3 + W4.5 + W4.4 + Task A + W4.5.1 + `writeOutboundDirect` rw fix + W4.1 sender-allowlist retire + v2 installer-
+template watchdog patch + **chat-sdk-bridge audit (§17 + §17.9)** all complete. v2 is live in production at
+`/srv/apps/nanoclaw-v2` (`nanoclaw-v2-787facac.service`, active+enabled). v1 stopped+disabled. WhatsApp + Slack
+inbound/outbound + scheduled tasks + `/health` on `127.0.0.1:3002` + chat `/usage` + chat `/status` + `ncl usage`
+all working.
 
-**Git topology** (unchanged from Task A 2026-05-22):
+**Git topology** (unchanged from Task A):
 
 ```
 johnmathews/nanoclaw          ← all fork work
-├── main                       ← HEAD = 7cde667    (two HEAD commits LOCAL ONLY,
+├── main                       ← HEAD = d562a1b    (FIVE HEAD commits LOCAL ONLY,
 ├── v1-archive                 ← v1 frozen at 0bd42bb     not yet pushed to origin)
 └── v1-final-2026-05-22 (tag)  ← annotated tag on 0bd42bb
 
@@ -38,159 +38,153 @@ On /srv/apps/nanoclaw (v1 tombstone — DO NOT `git pull` here):
     docs/v2-migration/p3-notes.md              §10 W4.3, §11 W4.5, §12 fork restructuring,
                                                §13 W4.4, §14 W4.5.1 + writeOutboundDirect
                                                fix, §15 W4.1 retire, §16 installer-template
-                                               watchdog patch — full audit per work unit.
-    docs/v2-migration/implementation-plan.md   §5 P4 remaining order:
-                                               W4.7 → chat-sdk-bridge audit → Slack
-                                               interactivity port → W4.6 (defer).
-    docs/v2-migration/fork-local-inventory.md  Updated 2026-05-22:
-                                               sender-allowlist + mount-security both
-                                               retired; health/watchdog/usage/status all
-                                               done; only remote-control + transcription
-                                               + channel customizations left.
+                                               watchdog patch, §17 chat-sdk-bridge audit,
+                                               §17.9 git-maintenance cron NOT self-resolved.
+    docs/v2-migration/implementation-plan.md   §5 P4 remaining order: W4.x-slack-interactivity
+                                               (urgent — broken in prod) → W4.x-multimodal →
+                                               W4.x-reactions-inbound → W4.7 Journal verify.
+    docs/v2-migration/fork-local-inventory.md  Updated 2026-05-22: sender-allowlist +
+                                               mount-security retired; health/watchdog/usage/
+                                               status all done.
 
 Project memory at `~/.claude/projects/-srv-apps-nanoclaw/memory/project_v2_migration.md` is current as of 2026-05-22
-post-W4.1 + installer-template. Read items #26-#33 in operational gotchas. Items new this session: #31 (installer-
-template now writes `Type=notify`; live unit unchanged because W4.3 hand-edit already had the flags), #32 (git author
-identity workaround — no `user.name`/`user.email` set anywhere visible; use per-command `-c user.name=... -c
-user.email=...` override), #33 (`v1-archive` branch is load-bearing for retire audits — read v1 files there or from
-`/srv/apps/nanoclaw` while it exists, not from v2 main).
+post-audit. Read items #34-#36 in operational gotchas: provider interface is text-only (load-bearing for multimodal);
+bridge `chat.onAction` is catch-all but filters at line 270 (wire path exists for interactivity); attachments are
+downloaded by bridge but discarded by formatter (dead-letter).
 
-**Working tree state on `/srv/apps/nanoclaw-v2` (start-of-session):**
+## Working tree state on `/srv/apps/nanoclaw-v2` (start-of-session)
 
-- Committed but **not yet pushed**: `574c7b1` (W4.1 retire docs), `7cde667` (installer-template watchdog patch).
+- Committed but **not yet pushed**: `574c7b1` (W4.1 retire docs), `7cde667` (installer-template watchdog patch),
+  `c732e16` (next-session-prompt refresh), `fce147e` (§17 audit), `d562a1b` (§17.9 cron addendum). Five commits.
   Decide whether to `git push origin main` at session start.
-- Uncommitted, deliberately: skill output from `/migrate-from-v1`, `/add-gmail-tool`, `/add-gcal-tool` —
-  `src/channels/{slack,resend,whatsapp,index}.ts`, `container/skills/{capabilities,pdf-reader,reactions,status}/`,
-  `setup/{groups,whatsapp-auth}.ts`, `package.json` + `pnpm-lock.yaml` (slack/baileys/resend deps),
-  `container/Dockerfile` (gmail/calendar MCP additions), `.claude/settings.json` (gh permission),
-  `groups/main/CLAUDE.md` (modified) + `groups/global/CLAUDE.md` (deleted, runtime state). Decide what to do
-  with them as a separate concern — probably commit on main once reviewed, or on a `v2-skill-output` branch.
-  Group-memory files (`groups/*/CLAUDE.md`) should never be in git.
+- Uncommitted, deliberately: skill output from `/migrate-from-v1`, `/add-gmail-tool`, `/add-gcal-tool` — see project
+  memory item #28 for the full list. Decide what to do with them as a separate concern.
 
-## Pick one of these next units (small, in priority order)
+## Pick one of these next units (in priority order)
 
-### Option 1 (Recommended): chat-sdk-bridge audit (~60-90 min)
+### Option 1 (Recommended — urgent): W4.x-slack-interactivity port (~90-120 min)
 
-v2's `src/chat-sdk-bridge.ts` is the shim between the inbound channel adapter and the SDK-side agent. v2's adapter
-already exposes images, voice, PDF attachments, reactions, typing indicators, and streaming (verified by grep at W4.0
-time). What's UNVERIFIED is whether the bridge forwards each of those to the agent, and whether the agent surfaces
-them through `mcp__nanoclaw__send_message`/`send_blocks` on the way back.
+**Production breakage on a known schedule.** The git-maintenance cron at
+`messages_in[id=task-1775472071448-rpvh6c]` (group `ag-1779373702794-62oxsv`,
+sess `sess-1779373704595-mqteww`, recurrence `3 2 * * 1,4` → next fire `2026-05-25T00:03:00Z`,
+Mon CEST 04:03) calls `send_blocks` MCP tool (does not exist on v2) and uses actionIds
+`nanoclaw_checkbox_branches` / `nanoclaw_confirm_delete` (would be dropped by bridge filter).
 
-1. Map the universe: grep v2 for `chat-sdk-bridge` references; read the file top-to-bottom.
-2. Build a matrix: rows = {image, voice, PDF, reaction-received, reaction-sent, typing-start/stop, streaming-text}.
-   Columns = {adapter exposes?, bridge forwards inbound?, agent receives in container?, agent can emit outbound?,
-   adapter delivers outbound?}. Fill from code reads.
-3. For each broken cell, classify: gap-by-design / missing-port / latent-bug.
-4. Decide what to fix in this session vs. defer to a follow-up.
-5. Commit + add §17 to `p3-notes.md` with the matrix + decisions.
+Per §17.9 recommendation — port the v1 pattern (option B in §17.9.):
 
-The result either confirms "nothing to port" (clean §17 + retire claim), or surfaces 1-3 small follow-ups. Either
-outcome is useful.
+1. Add `send_blocks` MCP tool in `container/agent-runner/src/mcp-tools/`:
+   - Inputs: `blocks` (JSON string), `fallbackText` (string), `to` (optional destination name).
+   - Behaviour: write a `messages_out` row with `content = { type: 'blocks', blocks, fallbackText }`.
+   - Mirror the `send_card` shape; this is a sibling.
+2. Extend bridge's `deliver()` in `src/channels/chat-sdk-bridge.ts` to recognise `content.type === 'blocks'`:
+   - Call `adapter.postMessage(tid, { blocks: <parsed JSON>, fallbackText })`.
+   - The Slack adapter's underlying API accepts raw blocks — verify via `@chat-adapter/slack` v4.26.0 type defs.
+3. Extend bridge's `chat.onAction` handler to recognise a v2-prefixed actionId namespace.
+   Suggested: `ncv2:<sessionId>:<actionId>` so the existing `ncq:` flow stays untouched.
+   On match: emit a new `messages_in` row of `kind = 'chat-sdk'` with structured `action` payload
+   (actionId, value, clicker user id, original messageId for context).
+4. Update `groups/slack_git-maintenance/CLAUDE.local.md` to point at the new actionId namespace
+   (`ncv2:<sessionId>:nanoclaw_checkbox_branches` etc.). Update the cron prompt similarly if needed.
+5. Test end-to-end: trigger a manual fire of the git-maintenance task (via `ncl tasks` or DB write),
+   confirm the agent posts a block with the new actionIds, click a checkbox in Slack, confirm the
+   agent sees the action.
+6. Commit + add §18 to `p3-notes.md`.
 
-### Option 2: W4.7 Journal MCP cron verify (~10 min observe, then docs)
+Alternative (option A in §17.9): rewrite the prompt + CLAUDE.local.md to use `ask_user_question`.
+Zero code change, but UX degrades to sequential one-branch-at-a-time round-trips. Reject unless you
+want to make a separate UX call.
 
-`JOURNAL_MCP_URL` + `JOURNAL_API_TOKEN` are wired into the v2 container env (per project memory item #14 in
-[[reference_journal_mcp]] and p3-notes §3). What's pending is confirming the morning-report cron (07:28 CEST) and
-docs-summary cron (09:03 CEST) actually use journal tools end-to-end on a real fire. Tomorrow's run is the next
-natural verification opportunity.
+### Option 2: W4.x-multimodal (~4-6 h)
 
-1. Wait until 09:05+ (both crons have fired).
-2. Pull the morning-report output from the main-group's outbound log; check for `mcp__journal__journal_*` tool
-   invocations in the agent-runner stderr (or via `data/v2-sessions/ag-main/sess-*/logs/`).
-3. If absent, dig — the env var may not reach the container, or the SDK MCP wiring may be wrong.
-4. Mark W4.7 DONE in `project_v2_migration.md` + `fork-local-inventory.md` once verified; append §17 to
-   `p3-notes.md`.
+Image + voice + PDF inbound binaries are downloaded by the bridge but discarded by the formatter
+(dead-letter). The load-bearing change is widening `provider.query({ prompt: string })` to accept
+content blocks. Then per-type handlers:
 
-### Option 3: Slack interactivity port (~60-90 min)
+1. Widen the provider interface in `container/agent-runner/src/poll-loop.ts` to pass either a string
+   prompt or a content-block array. The Claude provider needs to wrap in user message content.
+2. Image: convert `attachments[i].data` (base64) into a Claude image content block in the message
+   array. Skip when `skipImageMultimodal=true` per group config.
+3. Voice: pre-process on the host before container spawn — call OpenAI Whisper API on the base64
+   audio, store the transcription in `attachments[i].transcription`. Formatter renders inline.
+   (Alternative: local whisper.cpp on Apple Silicon — see `/use-local-whisper` skill.)
+4. PDF: pre-process on the host — call `pdftotext` CLI on the base64 data, store extracted text.
+   Formatter renders inline. Apply the `/add-pdf-reader` skill behaviour.
+5. Test for each attachment type. Per-group `skipImageMultimodal=true` should still work.
+6. Commit + add §18 (or §19 if Option 1 also ran) to `p3-notes.md`.
 
-Carry-forward from W4.0. v1's `src/channels/slack.ts` had `app.action(/^nanoclaw_(checkbox|confirm)_/)` handlers for
-the git-maintenance branch-delete confirm flow (Mon/Thu 02:03 CEST cron). v2's Slack adapter receives interactivity
-payloads at `/webhook/slack` but `chat-sdk-bridge.ts` may not surface them to the agent. Without this port, the
-git-maintenance cron fires but the confirmation can't be clicked through Slack.
+### Option 3: W4.x-reactions-inbound (~2-3 h)
 
-1. Find v1's `app.action` handler shape (likely in `/srv/apps/nanoclaw/src/channels/slack.ts` on the `v1-archive`
-   branch).
-2. Read v2's Slack adapter to see where `block_actions` payloads land in the inbound event stream.
-3. Port the handler into v2's appropriate layer (likely a new responder in the bridge, or a routed event the agent
-   can subscribe to via MCP).
-4. End-to-end test: trigger the git-maintenance flow, see the checkbox, click, confirm the agent sees the click.
-5. Commit + add §17 (or §18 if Option 1 also ran) to `p3-notes.md`.
+Bridge does not subscribe to `chat.onReaction()`. Chat SDK fires it; bridge ignores.
 
-This unit may overlap with Option 1's bridge audit — running Option 1 first will inform the right port shape.
+1. Verify `@chat-adapter/slack` v4.26.0 actually fires `onReaction` for Slack (the SDK type surface
+   says yes; verify the adapter implements it before depending on it).
+2. Subscribe in `src/channels/chat-sdk-bridge.ts` `setup()`: `chat.onReaction(async (event) => { … })`.
+   Emit a `messages_in` row of kind `chat-sdk` with structured `reaction` field (emoji, added/removed,
+   user, target messageId).
+3. Add DB migration for a `reactions` table OR store on the existing `messages_in` row.
+4. Add `query_reactions` MCP tool in `container/agent-runner/src/mcp-tools/core.ts` so agents can
+   read the reaction state on a target message.
+5. Commit + add §18/§19/§20 to `p3-notes.md`.
 
-### Option 4: skill-output triage + push pending commits (~30 min)
+### Option 4: W4.7 Journal MCP cron verify (~10 min observe)
 
-Lower-risk cleanup work. Goes well alongside Option 2 (which is mostly observation).
+Wait until 09:05+ tomorrow (morning-report 07:28 + docs-summary 09:03 will have fired). Check the
+main-group's outbound log for `mcp__journal__journal_*` tool invocations. Mark W4.7 done if green.
 
-1. `git diff src/channels/whatsapp.ts container/skills/...` etc. for each uncommitted file.
-2. For each file, decide: commit on `main`, move to a `v2-skill-output` branch, or discard.
-3. `git push origin main` for the two pending commits (`574c7b1`, `7cde667`).
-4. If you commit any skill-output, decide structure: one big "skill output catch-up" commit, or split per skill.
+### Option 5: push pending commits + skill-output triage (~30 min)
+
+`git push origin main` for the five LOCAL-ONLY commits. Decide whether to commit the deliberately-
+uncommitted skill-output (project memory item #28). Lower-priority cleanup.
 
 ## Out of scope this session
 
 - **Gmail channel re-install** — deferred.
-- **W4.6 remote-control** — defer (nice-to-have).
+- **W4.6 remote-control** — defer / nice-to-have.
 - Anything in P5/P7/P8.
-- Touching the systemd unit on the running install (NRestarts=0; keep it green). The installer-template patch is
-  fresh-install-only — the live unit doesn't change.
+- Touching the systemd unit on the running install (NRestarts=0; keep it green).
 
 ## Operational gotchas (carry into this session)
 
 1. **Canonical working tree** is `/srv/apps/nanoclaw-v2`. Start the next session there.
-2. **Never restart v1's service** (`nanoclaw.service`). It's stopped+disabled; restarting would conflict with v2 on
-   the WhatsApp Baileys keystore.
+2. **Never restart v1's service** (`nanoclaw.service`). Stopped+disabled.
 3. **`pnpm`** at `~/.npm-global/bin/pnpm`, **`onecli`** same dir, **`ncl`** at `/srv/apps/nanoclaw-v2/bin/ncl` —
-   none on Claude Code's default PATH. Prefix `PATH=…:$PATH` or use absolute paths.
-4. **v2's logs** go to `/srv/apps/nanoclaw-v2/logs/nanoclaw.{log,error.log}`, not journald.
-   `journalctl --user -u nanoclaw-v2-787facac.service` only shows systemd-side events.
-5. **v2 runs from `dist/`, not `src/`.** `ExecStart=/usr/bin/node /srv/apps/nanoclaw-v2/dist/index.js`. After any
-   source edit, `cd /srv/apps/nanoclaw-v2 && pnpm run build` (= `tsc`) before `systemctl --user restart`.
-6. **OneCLI gateway** runs on `127.0.0.1:10255`, not 10254. 10254 is the web UI.
-7. **`/health` reachable** from anywhere on the host loopback. `curl http://127.0.0.1:3002/health` returns the
-   snapshot. After `systemctl --user restart`, sleep ≥6s before curling — channels reconnect first.
-8. **`Type=notify` requires `READY=1`** from the process before systemd marks the unit active. If you change startup
-   ordering in `src/index.ts`, make sure `initWatchdog()` still fires and the start path reaches "NanoClaw running".
-9. **`HOST_RESPONDER_COMMANDS` renderers** run fire-and-forget off the hot path (W4.5 pattern). Render failures fall
-   back to inline error messages — the original inbound row is already marked processed (no retry). Acceptable for
-   idempotent commands; reconsider for state-mutating ones.
-10. **Mount allowlist** after P3+W4.5: 3 `allowedRoots` (`/srv/apps/nanoclaw`, `/srv/apps/nanoclaw-v2`,
-    `/home/john/.gmail-mcp`) + `~/.calendar-mcp` added by `/add-gcal-tool`. 17 `blockedPatterns`.
-11. **v2 `additionalMounts` `containerPath` must be RELATIVE** (p3-notes §3.5). v2 prefixes with `/workspace/extra/`.
-    Absolute paths are rejected.
-12. **DO NOT `git pull` on `/srv/apps/nanoclaw`.** It's the v1 working tree; its local main still = `0bd42bb` but
-    remote main = v2 head `7cde667`. A pull would try to merge v2 into v1's tree.
-13. **Migration docs now live on v2's main** at `docs/v2-migration/`. Edit there. The v1 tree still has a frozen copy
-    at `0bd42bb` (= `v1-archive` branch). Don't dual-maintain.
-14. **`writeOutboundDirect` now writes** (fixed 2026-05-22 in `d8c04b8`). Non-admin slash commands deliver
-    "Permission denied" to the channel instead of failing silently. If you add new gate paths that call
-    `writeOutboundDirect`, keep the invariant: the function is only safe when no container is mid-write to this
-    session's `outbound.db` (which holds while the gate runs before `writeSessionMessage`).
-15. **v2 installer-template now writes `Type=notify`** (new in `7cde667`). Single template at `setup/service.ts`
-    `setupSystemd()`; test shadow at `setup/service.test.ts` `generateSystemdUnit()` (production function isn't
-    exported). Fresh-install-only — the live unit isn't touched.
-16. **Git author identity workaround**: there is no `user.name`/`user.email` in `~/.gitconfig`, repo `.git/config`,
-    or env vars, yet prior commits show `John Mathews <mthwsjc@gmail.com>` as author. Use
-    `git -c user.name="John Mathews" -c user.email="mthwsjc@gmail.com" commit ...` per-command override (does NOT
-    modify config, so satisfies CLAUDE.md "NEVER update the git config").
-17. **`v1-archive` branch is load-bearing for retire audits.** When v2 retires a v1 file (W4.4 mount-security, W4.1
-    sender-allowlist), the file disappears from `johnmathews/nanoclaw` `main` but remains accessible at
-    `johnmathews/nanoclaw` `v1-archive`. Pattern for future retires: read v1 files via that branch or via
-    `/srv/apps/nanoclaw` while it still exists; don't blank-grep against v2's `main`.
+   prefix `PATH=…:$PATH` or use absolute paths.
+4. **v2's logs** at `/srv/apps/nanoclaw-v2/logs/nanoclaw.{log,error.log}`, not journald.
+5. **v2 runs from `dist/`, not `src/`.** `cd /srv/apps/nanoclaw-v2 && pnpm run build` (= `tsc`) is mandatory
+   between any host-source edit and `systemctl --user restart`.
+6. **OneCLI gateway** runs on `127.0.0.1:10255`. 10254 is the web UI.
+7. **`/health` reachable** at `127.0.0.1:3002`. After `systemctl --user restart`, sleep ≥6s before curling.
+8. **`HOST_RESPONDER_COMMANDS` renderers** run fire-and-forget off the hot path (W4.5 pattern). Render failures
+   fall back to inline error messages — original inbound row already marked processed (no retry).
+9. **Mount allowlist** after P3+W4.5: 3 `allowedRoots` + `~/.calendar-mcp`. 17 `blockedPatterns`.
+10. **v2 `additionalMounts` `containerPath` must be RELATIVE.** v2 prefixes with `/workspace/extra/`.
+11. **DO NOT `git pull` on `/srv/apps/nanoclaw`.** It's the v1 working tree.
+12. **Migration docs now live on v2's main** at `docs/v2-migration/`. Edit there.
+13. **`writeOutboundDirect` now writes** (fixed in `d8c04b8`). Non-admin slash commands deliver "Permission
+    denied" to the channel instead of failing silently.
+14. **v2 installer-template now writes `Type=notify`** (fixed in `7cde667`). Fresh-install-only.
+15. **Git author identity workaround**: no `user.name`/`user.email` set anywhere visible. Use
+    `git -c user.name="John Mathews" -c user.email="mthwsjc@gmail.com" commit ...` per-command override.
+16. **`v1-archive` branch is load-bearing for retire audits.** Read v1 files there or via `/srv/apps/nanoclaw`.
+17. **v2's `provider.query({ prompt: string })` is text-only.** Load-bearing constraint for multimodal.
+18. **Bridge's `chat.onAction` filter at line 270** drops non-`ncq:` actionIds. Wire path for Slack
+    interactivity already exists at the bridge — gap is between bridge and agent, not platform and bridge.
+19. **Attachments are dead-letter on v2.** Bridge downloads + base64-encodes; formatter renders
+    `[<type>: <name>]` text only; provider takes a string prompt. All three layers need touching to
+    fix multimodal.
+20. **Git-maintenance cron task id** = `task-1775472071448-rpvh6c`, located at
+    `data/v2-sessions/ag-1779373702794-62oxsv/sess-1779373704595-mqteww/inbound.db` `messages_in[kind=task]`.
+    Recurrence `3 2 * * 1,4`. The cron is currently broken on v2 — see §17.9.
 
 ## Rollback recipes
 
-- **For W4.1 retire** (`574c7b1`): `git revert 574c7b1` (docs-only — restores the row to `decide-at-port-time`).
-- **For installer-template watchdog patch** (`7cde667`): `git revert 7cde667 && pnpm run build`. Live
-  `nanoclaw-v2-787facac.service` is unaffected; the revert only changes what `pnpm run setup` would emit on a fresh
-  install. Probably not worth reverting — it's a strict improvement on the previous template.
-- **For Task A topology** (the v1 → v2 `main` swap): `git push --force-with-lease origin v1-archive:main` from any
-  working tree with `johnmathews/nanoclaw` as a remote. Restores v1 `main`. The `v1-archive` branch +
-  `v1-final-2026-05-22` tag are durable.
-- **For a service regression**: `git checkout -- <files>` on v2; `pnpm run build`;
+- **For W4.x-slack-interactivity port**: `git revert <sha>` per commit + `pnpm run build` +
+  `systemctl --user restart nanoclaw-v2-787facac.service`. The cron stays broken (its existing state).
+- **For audit commits (574c7b1 onwards)**: all doc-only; `git revert <sha>` is safe.
+- **For Task A topology**: `git push --force-with-lease origin v1-archive:main` from any working tree
+  with `johnmathews/nanoclaw` as a remote. Restores v1 main.
+- **For a service regression**: `git checkout -- <files>`; `pnpm run build`;
   `systemctl --user restart nanoclaw-v2-787facac.service`. Keep `NRestarts=0`.
-- **For a bad commit on main**: `git revert <sha>` (preserves history) or
-  `git reset --hard <previous-sha> && git push --force-with-lease` (rewrites — only if absolutely necessary).
 
 ## What to deliver this session
 
@@ -198,7 +192,5 @@ Lower-risk cleanup work. Goes well alongside Option 2 (which is mostly observati
 2. Tests pass (`cd /srv/apps/nanoclaw-v2 && pnpm test` — baseline is 37 files / 424 tests post-installer-template).
 3. v2 healthy after any service-touching change (`curl http://127.0.0.1:3002/health` returns 200).
 4. `project_v2_migration.md` memory updated with completed items + new operational gotchas.
-5. **Decide on `git push origin main`** for the two LOCAL-ONLY commits (`574c7b1`, `7cde667`) — push at session
-   start or end, your call. Note: the user normally pushes these as part of the standard flow.
-6. End-of-session: produce a new next-session-prompt for the work unit after this one (write at
-   `docs/v2-migration/next-session-prompt.md` on v2's working tree).
+5. **Decide on `git push origin main`** for the five LOCAL-ONLY commits.
+6. End-of-session: produce a new next-session-prompt at `docs/v2-migration/next-session-prompt.md`.
