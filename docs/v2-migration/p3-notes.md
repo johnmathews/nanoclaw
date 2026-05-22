@@ -1094,4 +1094,68 @@ sub-options:
 - **`implementation-plan.md` §5 P4** — no structural change; the
   three new units fit under the existing W4.x carry-forward bucket.
 
+### 17.9 Addendum — git-maintenance cron is NOT self-resolved
+
+Done as the one-line check §17.6 deferred. The cron's actual prompt
++ `groups/slack_git-maintenance/CLAUDE.local.md` both still describe
+v1's Block Kit flow verbatim:
+
+- Task row at `ag-1779373702794-62oxsv/sess-1779373704595-mqteww`
+  `messages_in[id=task-1775472071448-rpvh6c]`, recurrence
+  `3 2 * * 1,4` (Mon/Thu 02:03 CEST), next fire
+  `2026-05-25T00:03:00.000Z`. Prompt step 5: "Post an interactive
+  Block Kit report using the **`send_blocks` MCP tool**".
+- `groups/slack_git-maintenance/CLAUDE.local.md:107` —
+  "Use the `send_blocks` MCP tool to post an interactive report
+  with checkboxes." Lines 124-125 + 141 + 171 specify the v1
+  actionIds: `nanoclaw_checkbox_branches`, `nanoclaw_confirm_delete`.
+
+Three things will break in sequence when this cron next fires:
+
+1. **`mcp__nanoclaw__send_blocks` tool does not exist on v2** —
+   agent's tool call errors out before any UI is even attempted.
+2. **Bridge would silently drop the click** — bridge's
+   `chat.onAction` filters to `ncq:` prefix; `nanoclaw_checkbox_*`
+   and `nanoclaw_confirm_*` would never reach the agent even if a
+   block were posted by some other path.
+3. **No fallback UX** — there's no `ask_user_question` branch in
+   the prompt to fall through to.
+
+This raises W4.x-slack-interactivity's priority from "verify first"
+to "**broken in production on a Mon/Thu schedule — pick a
+remediation**". Two natural options, both still appropriate for a
+new session:
+
+- **(A) Rewrite the cron prompt + CLAUDE.local.md to use
+  `ask_user_question`.** Zero v2 code change. Cost: UX degrades from
+  one Block Kit checklist with N checkboxes + one confirm button to
+  N sequential `ask_user_question` round-trips (or one
+  `ask_user_question` with N options, which only allows picking one
+  branch at a time). For a maintenance flow that may surface ~5-15
+  branches, this is significantly worse UX, but it works.
+- **(B) Port `send_blocks` MCP + `app.action` pattern.** Add a
+  `send_blocks` tool in `container/agent-runner/src/mcp-tools/` that
+  takes a raw Block Kit JSON string + fallback text and emits a
+  Slack-specific outbound payload. Extend bridge's `deliver()` to
+  recognise the new content shape and call
+  `adapter.postMessage(tid, { blocks: ... })`. Extend bridge's
+  `chat.onAction` handler to route non-`ncq:` actionIds matching a
+  v2-prefixed namespace to a new `messages_in` row (kind = `chat-sdk`
+  with structured `action` payload, OR a new kind = `interaction`).
+  Update CLAUDE.local.md to point at the new actionId namespace.
+  Estimated: 90-120 min.
+
+Recommendation for the next session: **option B** — the UX delta
+is too steep to absorb, and porting the pattern aligns with v1's
+production-tested shape. The audit's "missing-port" classification
+of W4.x-slack-interactivity stands.
+
+**Interim mitigation:** none needed if the cron is allowed to fail
+quietly until W4.x-slack-interactivity lands. The cron writes a
+text-only Slack message (the fallback path agents tend to fall
+into when an MCP tool errors), so John will at least see the
+branch analysis in plain text — just without the interactive
+delete flow. Confirm at next 02:03 fire if this is acceptable
+short-term.
+
 
