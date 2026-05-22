@@ -844,22 +844,11 @@ Authoritative record: [p3-notes.md](p3-notes.md) §11.
 
 ---
 
-#### W4.5.1: `/status` chat command (NEW, fold-in from W4.5)
+#### W4.5.1: `/status` chat command — DONE 2026-05-22
 
-**Action:**
+**Outcome:** Folded in cleanly. `snapshotHealth()` extracted from `src/index.ts` into `src/health-snapshot.ts`; `formatHealthText` already exported from `src/health.ts`; `'/status': async () => formatHealthText(snapshotHealth())` added to `HOST_RESPONDER_COMMANDS`. Three test cases in `src/command-gate.test.ts` mirror the `/usage` shape. Commit `600be3b`.
 
-`/status` overlaps with the v2 `/health` endpoint W4.3 added; v1's chat `/status` rendered the same snapshot. Cheap port now that the `respond` GateResult shape exists:
-
-1. Export a `formatHealthText(snapshot)` helper from `src/health.ts` if not already exposed.
-2. Add a `snapshotHealth` getter that the `respond` renderer can call (the wired-up snapshot composer already lives in `src/index.ts` for W4.3's `/health` server — refactor or expose it for direct host use).
-3. Add `'/status': () => formatHealthText(snapshotHealth())` to `HOST_RESPONDER_COMMANDS` in `src/command-gate.ts`.
-4. One test in `src/command-gate.test.ts` for the new entry.
-
-**Verification:** send `/status` in Slack as an admin user; receive a formatted health snapshot identical to `curl http://127.0.0.1:3002/health` shape, but human-readable.
-
-**Rollback:** `git checkout --` the touched files.
-
-**Estimate:** <30 min once W4.4 settles, or fold into W4.4's commit if convenient.
+End-to-end verify exposed a latent v2 bug: `writeOutboundDirect` opened the outbound DB read-only, so deny/respond writes threw `SqliteError`. Fixed separately by switching to `openOutboundDbRw` + regression test in `src/host-core.test.ts`. Commit `d8c04b8`. Full audit in [p3-notes.md](p3-notes.md) §14.
 
 ---
 

@@ -594,3 +594,76 @@ Result: 37 test files / 417 tests passing on v2 (+28 vs. W4.5 baseline).
 
 - **§5 P4 W4.4** — mark DONE. Pointer to this §13.
 - **§5 P4** — promote W4.1 (sender-allowlist) next in the retire queue; likely 30 min once someone confirms there's no `~/.config/nanoclaw/sender-allowlist.json` on host (memory says there isn't).
+
+## §14 W4.5.1 — `/status` chat command + writeOutboundDirect rw fix (2026-05-22)
+
+Two-commit batch picking up after W4.5/§11. First is a tiny fold-in;
+second is a latent bug exposed during the W4.5.1 end-to-end verify.
+
+### 14.1 W4.5.1 — `/status` host responder
+
+W4.5 (§11) shipped `/usage` via the `HOST_RESPONDER_COMMANDS` map in
+`src/command-gate.ts`. The data already existed for `/status`: the `/health`
+HTTP endpoint snapshot from W4.3 (§10), exposed as `snapshotHealth()` in
+`src/index.ts` and formatted via `formatHealthText()` in `src/health.ts`.
+Fold-in is one entry in the map. No new data sources, no new formatter, no
+behavioural change for `/health` HTTP.
+
+`snapshotHealth()` moved out of `src/index.ts` into a new
+`src/health-snapshot.ts` so `command-gate.ts` can call it without pulling
+the entry-point module into its import graph. Pure refactor —
+`src/index.ts` still re-imports it and passes it to `startHealthServer()`.
+
+Three test cases added to `src/command-gate.test.ts` mirroring the existing
+`/usage` shape: respond-when-admin, deny-when-anon, match-with-trailing-text.
+
+End-to-end verify: sent `/status` from a non-admin Slack user (my Slack
+user `slack:U0AMGE1SNGY` is not in `user_roles`); gate logged
+`Admin command denied by gate command="/status"`; "Permission denied" reply
+threaded back into the channel. Positive (admin) path is structurally
+identical to `/usage` so it inherits W4.5's verification.
+
+Commit `600be3b`.
+
+### 14.2 writeOutboundDirect — readonly DB bug
+
+The W4.5.1 verify exposed a pre-existing latent bug in
+`src/session-manager.ts`. `writeOutboundDirect()` (W4.5 era) called
+`openOutboundDb()` which opens the SQLite file `readonly: true` — meant
+for the host's delivery-loop reader. The function's three call sites in
+`src/router.ts` (deny / respond-success / respond-error) all threw
+`SqliteError: attempt to write a readonly database` instead of writing the
+response to `messages_out`.
+
+Symptom seen in the field: `/usage` (and now `/status`) silently produced
+no reply when sent from a non-admin user — the deny write failed, the
+error went to `logs/nanoclaw.error.log`, and the original inbound row had
+already been treated as processed (no retry). The host-responder happy
+path (admin sends `/usage`) was untested in production because John's
+WhatsApp user is admin globally — so the success-path `writeOutboundDirect`
+call never fired from there either; the v1→v2 cutover ran the admin
+`/usage` through the SDK pre-fold-in. The first time the host-responder
+write path actually ran in prod was 16:48 today.
+
+Fix: open `openOutboundDbRw()` in `writeOutboundDirect`. Safe because the
+gate runs before `writeSessionMessage`, so the agent for *this* inbound
+row was never woken — no container is mid-write to this session's
+`outbound.db`. (Older sessions of the same agent group have their own
+outbound DBs; no shared file.) Regression test added to
+`src/host-core.test.ts` under the `session manager` describe — calls
+`writeOutboundDirect` then reads `messages_out` with a fresh readonly
+connection.
+
+Commit `d8c04b8`. Pushed alongside W4.5.1 at end of session.
+
+### 14.3 Status
+
+- Test count: 37 files / **421 tests** pass (+4 from W4.4 baseline of 417;
+  3 from command-gate.test.ts and 1 from host-core.test.ts).
+- v2 service: healthy after restart (`/health` 200, all channels connected).
+- v2 main HEAD: `600be3b`.
+
+### 14.4 Plan revisions
+
+- **§5 P4 W4.5.1** — mark DONE. Pointer to this §14.
+- **§5 P4** — next still W4.1 (sender-allowlist) per §13.7.
