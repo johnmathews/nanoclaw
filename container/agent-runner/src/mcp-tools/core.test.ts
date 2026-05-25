@@ -10,7 +10,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { initTestSessionDb, closeSessionDb, getInboundDb } from '../db/connection.js';
 import { getUndeliveredMessages } from '../db/messages-out.js';
 import { setCurrentInReplyTo, clearCurrentInReplyTo } from '../current-batch.js';
-import { queryReactions, sendMessage } from './core.js';
+import { sendMessage } from './core.js';
+import { queryReactions } from './reactions.js';
 
 beforeEach(() => {
   initTestSessionDb();
