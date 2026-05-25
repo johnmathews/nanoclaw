@@ -28,6 +28,9 @@ groups/*
 # Temp files
 .tmp-*
 
+# Local backup archives (not tracked)
+nanoclaw-v1-backup-*.tar.gz
+
 # OS
 .DS_Store
 
