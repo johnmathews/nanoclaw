@@ -219,7 +219,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       const initialBlocks = extractImageBlocks(keep);
       if (initialBlocks.length > 0) {
         log(`Pushing ${initialBlocks.length} initial image block(s) to the active query`);
-        query.pushBlocks(initialBlocks);
+        query.pushBlocks?.(initialBlocks);
       }
     }
 
@@ -235,7 +235,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
         routing,
         processingIds,
         config.providerName,
-        config.provider.supportsMultimodalContent,
+        config.provider.supportsMultimodalContent ?? false,
       );
       if (result.continuation && result.continuation !== continuation) {
         continuation = result.continuation;
@@ -405,7 +405,7 @@ async function processQuery(
           const followUpBlocks = extractImageBlocks(keep);
           if (followUpBlocks.length > 0) {
             log(`Pushing ${followUpBlocks.length} follow-up image block(s) into active query`);
-            query.pushBlocks(followUpBlocks);
+            query.pushBlocks?.(followUpBlocks);
           }
         }
         markCompleted(keptIds);
