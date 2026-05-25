@@ -8,10 +8,11 @@ export interface AgentProvider {
 
   /**
    * True if this provider can accept image / multimodal content blocks via
-   * `AgentQuery.pushBlocks`. When false, the poll-loop will fall back to
-   * text-only attachment rendering and skip block extraction.
+   * `AgentQuery.pushBlocks`. Omitted/false: the poll-loop falls back to
+   * text-only attachment rendering and skips block extraction. Optional so
+   * a non-multimodal provider needs no boilerplate to declare the negative.
    */
-  readonly supportsMultimodalContent: boolean;
+  readonly supportsMultimodalContent?: boolean;
 
   /** Start a new query. Returns a handle for streaming input and output. */
   query(input: QueryInput): AgentQuery;
@@ -121,10 +122,12 @@ export interface AgentQuery {
    * call `push()` for the text turn first and then `pushBlocks()` for the
    * image turn, mirroring v1's pattern.
    *
-   * Optional: providers that don't support multimodal input throw or no-op.
-   * Callers must guard with `AgentProvider.supportsMultimodalContent`.
+   * Optional method: providers that don't support multimodal input omit it.
+   * Callers must guard with `AgentProvider.supportsMultimodalContent` (or
+   * with `?.()` optional-chaining) so a non-multimodal provider needs no
+   * matching stub.
    */
-  pushBlocks(blocks: ContentBlock[]): void;
+  pushBlocks?(blocks: ContentBlock[]): void;
 
   /** Signal that no more input will be sent. */
   end(): void;

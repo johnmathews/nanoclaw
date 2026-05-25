@@ -281,8 +281,12 @@ function transcriptRotateBytes(): number {
  * non-positive value) disables the age check; size alone then governs.
  */
 function transcriptRotateAgeMs(): number {
-  const days = Number(process.env.CLAUDE_TRANSCRIPT_ROTATE_AGE_DAYS);
-  return Number.isFinite(days) && days > 0 ? days * 86_400_000 : 14 * 86_400_000;
+  const raw = process.env.CLAUDE_TRANSCRIPT_ROTATE_AGE_DAYS;
+  if (raw === undefined || raw.trim() === '') return 14 * 86_400_000;
+  const days = Number(raw);
+  if (!Number.isFinite(days)) return 14 * 86_400_000;
+  // Explicit non-positive override disables the age check; size alone governs.
+  return days > 0 ? days * 86_400_000 : Infinity;
 }
 
 function claudeProjectsDir(): string {
@@ -436,7 +440,7 @@ export class ClaudeProvider implements AgentProvider {
         effort: this.effort as any,
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
-        settingSources: ['project', 'user'],
+        settingSources: ['project', 'user', 'local'],
         mcpServers: this.mcpServers,
         hooks: {
           PreToolUse: [{ hooks: [preToolUseHook] }],

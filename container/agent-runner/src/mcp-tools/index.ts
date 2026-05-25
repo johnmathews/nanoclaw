@@ -6,6 +6,7 @@
  * at module scope, and append the import here. No central list.
  */
 import './core.js';
+import './reactions.js';
 import './scheduling.js';
 import './interactive.js';
 import './agents.js';
