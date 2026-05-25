@@ -4,16 +4,16 @@ import { getLaunchdLabel, getSystemdUnit } from '../install-slug.js';
 import { formatTransportError } from './transport-errors.js';
 
 describe('formatTransportError', () => {
-  it('renders per-install service names on ENOENT, not the bare v1 names', () => {
+  it('renders per-install service names on ENOENT, not the bare names', () => {
     const out = formatTransportError(new Error('connect ENOENT /tmp/nanoclaw.sock'));
 
     // Regression for #2484: pre-fix, this string was a hardcoded
     // `com.nanoclaw` / `nanoclaw`, which doesn't match the actual
-    // v2 per-install slug-suffixed unit and label.
+    // per-install slug-suffixed unit and label.
     expect(out).toContain(`gui/$(id -u)/${getLaunchdLabel()}`);
     expect(out).toContain(`systemctl --user restart ${getSystemdUnit()}`);
-    expect(out).not.toMatch(/gui\/\$\(id -u\)\/com\.nanoclaw\b(?!-v2)/);
-    expect(out).not.toMatch(/systemctl --user restart nanoclaw\b(?!-v2)/);
+    expect(out).not.toMatch(/gui\/\$\(id -u\)\/com\.nanoclaw\b(?!-[0-9a-f])/);
+    expect(out).not.toMatch(/systemctl --user restart nanoclaw\b(?!-[0-9a-f])/);
   });
 
   it('renders the same on ECONNREFUSED', () => {
