@@ -30,6 +30,7 @@ groups/*
 
 # Local backup archives (not tracked)
 nanoclaw-v1-backup-*.tar.gz
+nanoclaw-v1-archive/
 
 # OS
 .DS_Store
