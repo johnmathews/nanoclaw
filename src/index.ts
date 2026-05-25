@@ -4,6 +4,7 @@
  * Thin orchestrator: init DB, run migrations, start channel adapters,
  * start delivery polls, start sweep, handle shutdown.
  */
+import http from 'http';
 import path from 'path';
 
 import { backfillContainerConfigs } from './backfill-container-configs.js';
@@ -17,6 +18,8 @@ import { startActiveDeliveryPoll, startSweepDeliveryPoll, setDeliveryAdapter, st
 import { startHostSweep, stopHostSweep } from './host-sweep.js';
 import { routeInbound } from './router.js';
 import { log } from './log.js';
+import { snapshotHealth } from './health-snapshot.js';
+import { startHealthServer } from './health-server.js';
 
 // Response + shutdown registries live in response-registry.ts to break the
 // circular import cycle: src/index.ts imports src/modules/index.js for side
@@ -45,6 +48,9 @@ async function dispatchResponse(payload: ResponsePayload): Promise<void> {
   }
   log.warn('Unclaimed response', { questionId: payload.questionId, value: payload.value });
 }
+
+let healthServer: http.Server | null = null;
+const DEFAULT_HEALTH_PORT = 3002;
 
 // Channel barrel — each enabled channel self-registers on import.
 // Channel skills uncomment lines in channels/index.ts to enable them.
@@ -177,12 +183,20 @@ async function main(): Promise<void> {
   // 7. Start the `ncl` CLI socket server (data/ncl.sock).
   await startCliServer();
 
+  // 8. Start the /health HTTP endpoint (loopback only).
+  const healthPort = parseInt(process.env.HEALTH_PORT || String(DEFAULT_HEALTH_PORT), 10);
+  healthServer = startHealthServer(healthPort, snapshotHealth);
+
   log.info('NanoClaw running');
 }
 
 /** Graceful shutdown. */
 async function shutdown(signal: string): Promise<void> {
   log.info('Shutdown signal received', { signal });
+  if (healthServer) {
+    await new Promise<void>((resolve) => healthServer!.close(() => resolve()));
+    healthServer = null;
+  }
   for (const cb of getShutdownCallbacks()) {
     try {
       await cb();

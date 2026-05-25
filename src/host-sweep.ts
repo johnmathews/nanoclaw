@@ -129,6 +129,11 @@ export function stopHostSweep(): void {
   running = false;
 }
 
+/** Whether the host sweep loop is currently enabled. Read by the health snapshot. */
+export function isHostSweepRunning(): boolean {
+  return running;
+}
+
 async function sweep(): Promise<void> {
   if (!running) return;
 
