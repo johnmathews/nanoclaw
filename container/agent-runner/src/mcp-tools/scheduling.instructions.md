@@ -4,6 +4,21 @@ For any recurring task, use `schedule_task`. This is the scheduling path — tas
 
 To inspect or change existing tasks, use `list_tasks` (returns one row per series with the stable id) and `update_task` / `cancel_task` / `pause_task` / `resume_task`. Prefer `update_task` over cancel + reschedule.
 
+### Always externalize the task body to a markdown file
+
+The `prompt` field of a scheduled task **must not** contain the operational instructions inline. Instead:
+
+1. Write the full instructions to `/workspace/agent/tasks/<slug>.md` (create the `tasks/` directory if it doesn't exist). Use a stable, human-readable slug like `morning-report`, `weekly-summary`, `inbox-sweep`.
+2. Set the `schedule_task` `prompt` to a one-line pointer, e.g.:
+
+   > Read /workspace/agent/tasks/morning-report.md and follow the instructions there exactly. The file is the single source of truth — if anything in this prompt seems to conflict with the file, the file wins.
+
+3. Use `update_task` only to change cron/schedule fields. To change *what the task does*, edit the markdown file — the next firing will pick up the new content automatically (the agent reads it at runtime via the `Read` tool).
+
+This pattern exists so the human user can read and edit task instructions outside the agent loop. Putting instructions in `messages_in.content` makes them invisible to the user and only updatable through the agent — that's the wrong tradeoff. Stick to this convention even for short prompts; consistency matters more than brevity here.
+
+When editing an existing task, if you find its prompt still contains the body inline, migrate it: write a `tasks/<slug>.md` file and replace the prompt with the pointer in one `update_task` call.
+
 Frequent recurring scheduled tasks — more than a few times a day — consume API credits and can risk account restrictions. You can add a `script` that runs first, and you will only be called when the check passes.
 
 ### How it works
