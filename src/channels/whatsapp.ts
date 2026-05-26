@@ -39,9 +39,10 @@ import {
 import type { GroupMetadata, WAMessageKey, WAMessage, WASocket } from '@whiskeysockets/baileys';
 
 import { isSafeAttachmentName } from '../attachment-safety.js';
-import { ASSISTANT_HAS_OWN_NUMBER, ASSISTANT_NAME, DATA_DIR } from '../config.js';
+import { ASSISTANT_HAS_OWN_NUMBER, ASSISTANT_NAME } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { log } from '../log.js';
+import { maybePdfExtract, maybeTranscribe } from './chat-sdk-bridge.js';
 import { registerChannelAdapter } from './channel-registry.js';
 import { normalizeOptions, type NormalizedOption } from './ask-question.js';
 import type { ChannelAdapter, ChannelSetup, ConversationInfo, InboundMessage, OutboundMessage } from './adapter.js';
@@ -246,6 +247,30 @@ export function computeIsMention(isGroup: boolean, botMentionedInGroup: boolean)
   return botMentionedInGroup ? true : undefined;
 }
 
+/**
+ * Decide what to do with the auth state when the Baileys socket closes.
+ *
+ * - `reconnect` — transient close; spin up a new socket on the same creds.
+ * - `wipe`      — server-side logout (reason 401 / loggedOut); creds are
+ *                 invalidated by WhatsApp, keeping them on disk only causes
+ *                 a 401 loop on next start.
+ * - `preserve`  — graceful host shutdown, or any other non-logout close
+ *                 during shutdown. Creds remain valid; the next start
+ *                 reconnects without re-pairing.
+ *
+ * Extracted from the connection.update handler so the wipe decision can be
+ * tested in isolation — a regression here once silently invalidated the
+ * user's WhatsApp session on every service restart.
+ */
+export function classifyConnectionClose(
+  reason: number | undefined,
+  shuttingDown: boolean,
+): 'reconnect' | 'wipe' | 'preserve' {
+  if (reason === DisconnectReason.loggedOut) return 'wipe';
+  if (shuttingDown) return 'preserve';
+  return 'reconnect';
+}
+
 /** Map file extension to Baileys media message type. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function buildMediaMessage(data: Buffer, filename: string, ext: string, caption?: string): any {
@@ -264,6 +289,90 @@ function buildMediaMessage(data: Buffer, filename: string, ext: string, caption?
   }
   // Default: send as document
   return { document: data, fileName: filename, caption, mimetype: 'application/octet-stream' };
+}
+
+/**
+ * Inbound attachment entry shape produced by the WA adapter. `data` is
+ * base64; session-manager's extractAttachmentFiles spills it to the session
+ * inbox and replaces it with `localPath`. `transcription` / `extractedText`
+ * (plus their *Error siblings) are stamped by the maybe* helpers.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type WhatsAppInboundAttachment = Record<string, any>;
+
+const INBOUND_MEDIA_TYPES = [
+  { key: 'imageMessage', type: 'image', ext: '.jpg', fallbackMime: 'image/jpeg' },
+  { key: 'videoMessage', type: 'video', ext: '.mp4', fallbackMime: 'video/mp4' },
+  { key: 'audioMessage', type: 'audio', ext: '.ogg', fallbackMime: 'audio/ogg' },
+  { key: 'documentMessage', type: 'document', ext: '', fallbackMime: 'application/octet-stream' },
+] as const;
+
+/**
+ * Download media from an inbound WhatsApp message and produce attachment
+ * entries the router can hand to session-manager. Bytes are returned as
+ * base64 in `data`; the spill machinery in extractAttachmentFiles writes
+ * them to `<sessionDir>/inbox/<messageId>/<filename>` and the container
+ * sees them at `/workspace/inbox/<messageId>/<filename>`.
+ *
+ * Voice notes are passed through maybeTranscribe; PDFs through
+ * maybePdfExtract — same hooks the chat-sdk bridge uses for Slack/etc., so
+ * the agent gets inline transcribed/extracted text rather than a path it
+ * can't decode.
+ *
+ * The Baileys downloader is injected so tests can stub it without touching
+ * the @whiskeysockets/baileys module surface.
+ */
+export async function downloadInboundMedia(
+  msg: WAMessage,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  normalized: any,
+  download: typeof downloadMediaMessage = downloadMediaMessage,
+): Promise<WhatsAppInboundAttachment[]> {
+  const results: WhatsAppInboundAttachment[] = [];
+  for (const { key, type, ext, fallbackMime } of INBOUND_MEDIA_TYPES) {
+    if (!normalized[key]) continue;
+    try {
+      const buffer = await download(msg, 'buffer', {});
+      // documentMessage.fileName is attacker-controlled and rides through
+      // WhatsApp's E2E channel — Meta can't sanitize it server-side. Without
+      // this guard, a `..`-laden fileName escapes the session inbox on the
+      // host side too.
+      const rawFilename: unknown = normalized[key].fileName;
+      const fallback = `${type}-${Date.now()}${ext}`;
+      const filename = typeof rawFilename === 'string' && isSafeAttachmentName(rawFilename) ? rawFilename : fallback;
+      if (typeof rawFilename === 'string' && rawFilename && filename !== rawFilename) {
+        log.warn('Refused unsafe attachment filename — would escape inbox', {
+          rawFilename,
+          replacement: filename,
+        });
+      }
+      // Prefer the mime WhatsApp reports on the payload; fall back to the
+      // media-class default so transcription / multimodal gates still fire
+      // when the field is missing. Audio mimes like `audio/ogg; codecs=opus`
+      // pass isTranscribableMime as-is via its startsWith('audio/') check.
+      const mimeType: string =
+        typeof normalized[key].mimetype === 'string' && normalized[key].mimetype
+          ? normalized[key].mimetype
+          : fallbackMime;
+
+      const entry: WhatsAppInboundAttachment = {
+        type,
+        name: filename,
+        mimeType,
+        size: buffer.length,
+        data: buffer.toString('base64'),
+      };
+
+      await maybeTranscribe(entry, buffer);
+      await maybePdfExtract(entry, buffer);
+
+      results.push(entry);
+      log.info('Media downloaded', { type, filename, size: buffer.length, mimeType });
+    } catch (err) {
+      log.warn('Failed to download media', { type, err });
+    }
+  }
+  return results;
 }
 
 registerChannelAdapter('whatsapp', {
@@ -423,48 +532,6 @@ registerChannelAdapter('whatsapp', {
       }
     }
 
-    /** Download media from an inbound message, save to /workspace/attachments/. */
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async function downloadInboundMedia(
-      msg: WAMessage,
-      normalized: any,
-    ): Promise<Array<{ type: string; name: string; localPath: string }>> {
-      const mediaTypes: Array<{ key: string; type: string; ext: string }> = [
-        { key: 'imageMessage', type: 'image', ext: '.jpg' },
-        { key: 'videoMessage', type: 'video', ext: '.mp4' },
-        { key: 'audioMessage', type: 'audio', ext: '.ogg' },
-        { key: 'documentMessage', type: 'document', ext: '' },
-      ];
-      const results: Array<{ type: string; name: string; localPath: string }> = [];
-      for (const { key, type, ext } of mediaTypes) {
-        if (!normalized[key]) continue;
-        try {
-          const buffer = await downloadMediaMessage(msg, 'buffer', {});
-          // documentMessage.fileName is attacker-controlled and rides through
-          // WhatsApp's E2E channel — Meta can't sanitize it server-side. Without
-          // this guard, a `..`-laden fileName escapes attachDir on path.join.
-          const rawFilename = normalized[key].fileName;
-          const fallback = `${type}-${Date.now()}${ext}`;
-          const filename = isSafeAttachmentName(rawFilename) ? rawFilename : fallback;
-          if (rawFilename && filename !== rawFilename) {
-            log.warn('Refused unsafe attachment filename — would escape attachments dir', {
-              rawFilename,
-              replacement: filename,
-            });
-          }
-          const attachDir = path.join(DATA_DIR, 'attachments');
-          fs.mkdirSync(attachDir, { recursive: true });
-          const filePath = path.join(attachDir, filename);
-          fs.writeFileSync(filePath, buffer);
-          results.push({ type, name: filename, localPath: `attachments/${filename}` });
-          log.info('Media downloaded', { type, filename });
-        } catch (err) {
-          log.warn('Failed to download media', { type, err });
-        }
-      }
-      return results;
-    }
-
     async function sendRawMessage(jid: string, text: string, mentions?: string[]): Promise<string | undefined> {
       if (!connected) {
         outgoingQueue.push({ jid, text, mentions });
@@ -553,11 +620,11 @@ registerChannelAdapter('whatsapp', {
           // initializes useMultiFileAuthState which can truncate creds.json
           // mid-write when the process exits, leaving a 0-byte creds file
           // and forcing a fresh QR pairing on next start.
-          const shouldReconnect = !shuttingDown && reason !== DisconnectReason.loggedOut;
+          const disposition = classifyConnectionClose(reason, shuttingDown);
 
-          log.info('WhatsApp connection closed', { reason, shouldReconnect, shuttingDown });
+          log.info('WhatsApp connection closed', { reason, disposition, shuttingDown });
 
-          if (shouldReconnect) {
+          if (disposition === 'reconnect') {
             log.info('Reconnecting...');
             connectSocket().catch((err) => {
               log.error('Failed to reconnect, retrying in 5s', { err });
@@ -567,7 +634,7 @@ registerChannelAdapter('whatsapp', {
                 });
               }, RECONNECT_DELAY_MS);
             });
-          } else {
+          } else if (disposition === 'wipe') {
             log.info('WhatsApp logged out');
             // Delete auth credentials immediately. Keeping stale credentials
             // causes the next service restart to attempt authentication with an
@@ -582,6 +649,21 @@ registerChannelAdapter('whatsapp', {
             }
             if (rejectFirstOpen) {
               rejectFirstOpen(new Error('WhatsApp logged out'));
+              rejectFirstOpen = undefined;
+              resolveFirstOpen = undefined;
+            }
+          } else {
+            // disposition === 'preserve': graceful shutdown, creds untouched.
+            // A previous version wiped creds here, which meant every service
+            // restart silently invalidated the WA session — the user would
+            // think WhatsApp had logged them out server-side when it was
+            // really the host eating its own credentials.
+            log.info('WhatsApp adapter closing without logout — credentials preserved', {
+              reason,
+              shuttingDown,
+            });
+            if (rejectFirstOpen) {
+              rejectFirstOpen(new Error(`WhatsApp connection closed (reason=${reason ?? 'undefined'})`));
               rejectFirstOpen = undefined;
               resolveFirstOpen = undefined;
             }
