@@ -57,25 +57,27 @@ pdf-reader list
 
 Recursively lists all `.pdf` files with page count and file size.
 
-## WhatsApp PDF attachments
+## PDF attachments from chat
 
-When a user sends a PDF on WhatsApp, it is automatically saved to the `attachments/` directory. The message will include a path hint like:
+When a user sends a PDF (WhatsApp, Slack, or any other channel that delivers binary attachments), it is automatically spilled to the session inbox at `/workspace/inbox/<message-id>/<filename>`. The message will include a path hint like:
 
-> [PDF attached: attachments/document.pdf]
+> [pdf: document.pdf — saved to /workspace/inbox/msg-123/document.pdf]
 
-To read the attached PDF:
+Use the path from the hint verbatim:
 
 ```bash
-pdf-reader extract attachments/document.pdf --layout
+pdf-reader extract /workspace/inbox/msg-123/document.pdf --layout
 ```
+
+Inbox files persist for the lifetime of the session — they are not auto-pruned, but they are not promoted to durable storage either. If the user wants a PDF kept long-term, copy it into `/workspace/agent/attachments/` (the group folder) and note it in `CLAUDE.local.md`.
 
 ## Example workflows
 
 ### Read a contract and summarize key terms
 
 ```bash
-pdf-reader info attachments/contract.pdf
-pdf-reader extract attachments/contract.pdf --layout
+pdf-reader info /workspace/inbox/msg-123/contract.pdf
+pdf-reader extract /workspace/inbox/msg-123/contract.pdf --layout
 ```
 
 ### Extract specific pages from a long report
