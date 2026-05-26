@@ -1,6 +1,15 @@
 import type { ContainerConfigRow } from '../types.js';
 import { getDb } from './connection.js';
 
+/**
+ * Default model for new agent groups. Quality > speed: every group gets the
+ * top Opus tier unless the operator explicitly sets `model` via
+ * `ncl groups config update` or the self-mod tooling. NULL is no longer a
+ * valid state — leaving model unset would silently fall back to the SDK's
+ * default (currently a Sonnet variant), which we don't want.
+ */
+export const DEFAULT_MODEL = 'claude-opus-4-7';
+
 const SCALAR_COLUMNS = new Set([
   'provider',
   'model',
@@ -43,10 +52,10 @@ export function createContainerConfig(config: ContainerConfigRow): void {
 export function ensureContainerConfig(agentGroupId: string): void {
   getDb()
     .prepare(
-      `INSERT OR IGNORE INTO container_configs (agent_group_id, updated_at)
-       VALUES (?, ?)`,
+      `INSERT OR IGNORE INTO container_configs (agent_group_id, model, updated_at)
+       VALUES (?, ?, ?)`,
     )
-    .run(agentGroupId, new Date().toISOString());
+    .run(agentGroupId, DEFAULT_MODEL, new Date().toISOString());
 }
 
 /** Update scalar fields on a config row. Only touches fields present in `updates`. */

@@ -321,6 +321,7 @@ CREATE TABLE container_configs (
 
 - **Readers:** `src/container-config.ts`, `src/container-runner.ts`, `src/cli/dispatch.ts` (scope enforcement), `src/claude-md-compose.ts`
 - **Writers:** `src/db/container-configs.ts`, `src/modules/self-mod/apply.ts`, `src/backfill-container-configs.ts`
+- **Default model:** `ensureContainerConfig()` seeds `model = 'claude-opus-4-7'` for new rows via `DEFAULT_MODEL` in `src/db/container-configs.ts`. NULL/empty `model` values are normalized to the default by migration 017. The agent-runner passes whatever's in `model` straight to the Claude Agent SDK — if you intentionally want SDK auto-selection, omit the field rather than leaving it blank in the DB.
 
 ---
 
@@ -344,6 +345,7 @@ Migrations live in `src/db/migrations/`, one file per migration. Runner: `runMig
 | 014 | `014-container-configs.ts` | `container_configs` — per-agent-group container runtime config |
 | 015 | `015-cli-scope.ts` | `ALTER TABLE container_configs ADD COLUMN cli_scope` |
 | 016 | `016-reply-mode.ts` | `ALTER TABLE messaging_groups ADD COLUMN reply_mode` (`thread`/`channel`; Slack-only effect) |
+| 017 | `017-default-model-opus.ts` | Backfills `container_configs.model` from NULL/empty to `claude-opus-4-7` (new default) |
 
 Numbers 005 and 006 are intentionally absent — migrations were renumbered during early development.
 
