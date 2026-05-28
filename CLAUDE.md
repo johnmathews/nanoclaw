@@ -16,9 +16,9 @@ user_roles (user_id, role, agent_group_id)       — owner | admin (global or sc
 agent_group_members (user_id, agent_group_id)    — unprivileged access gate
 user_dms (user_id, channel_type, messaging_group_id) — cold-DM cache
 
-agent_groups (workspace, memory, CLAUDE.md, personality, container config)
-    ↕ many-to-many via messaging_group_agents (session_mode, trigger_rules, priority)
-messaging_groups (one chat/channel on one platform; unknown_sender_policy)
+agent_groups (workspace, memory, CLAUDE.md, personality) — container config in container_configs
+    ↕ many-to-many via messaging_group_agents (session_mode, engage_mode, engage_pattern, sender_scope, priority)
+messaging_groups (one chat/channel on one platform; unknown_sender_policy, reply_mode, denied_at)
 
 sessions (agent_group_id + messaging_group_id + thread_id → per-session container)
 ```
