@@ -1,6 +1,6 @@
 # NanoClaw v1 → v2 Migration: Implementation Plan
 
-**Status:** 🏁 **CLOSED — migration declared complete 2026-05-22.** **Last updated:** 2026-05-22 (end-of-session closure).
+**Status:** closed 2026-05-22; archived 2026-05-28. **Last updated:** 2026-05-22 (end-of-session closure). Plan executed in full; closure record and deferred items in [../v2-migration/p3-notes.md §22](../v2-migration/p3-notes.md). Do not extend this file — new regression / feature work belongs in `journal/` or new top-level docs in `docs/`.
 
 > 🏁 **Migration complete.** P0 → P7 all done; P8 hardening rolled into ongoing regression-watch mode. v2 is the canonical install at `/srv/apps/nanoclaw-v2/` running `nanoclaw-v2-787facac.service` (active+enabled, `Type=notify` + `WatchdogSec=30s`). v1 stays stopped+disabled at `/srv/apps/nanoclaw/` as a read-only tombstone (the journal mount still references its path). Production traffic — 9 Slack channels + WhatsApp 1-on-1 + CLI + scheduled crons + multimodal (image/voice/PDF) + reactions + Block Kit interactivity — has been running clean since cutover. Tests green: host 39 files / 465 tests, container 10 files / 118 tests.
 >

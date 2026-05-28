@@ -1,5 +1,7 @@
 # Operational gotchas — NanoClaw v2 (this fork)
 
+**Status:** living — append-only runtime gotchas log for the v2 codebase. **Last updated:** 2026-05-28. Reference numbers are stable across edits.
+
 Durable runtime notes about the v2 install. Carry-over from past sessions;
 append new entries here rather than letting them accumulate in
 session-specific prompts. The next-session prompts reference this file as
@@ -25,18 +27,20 @@ entries with `[migration-only]` so they're easy to prune later.
 
 ## Service + working tree
 
-1. Canonical working tree is `/srv/apps/nanoclaw-v2`. Start every session
-   there.
-2. Never restart v1's service (`nanoclaw.service`). Stopped + disabled.
-   v1 keystore conflicts with v2's WhatsApp Baileys if v1 wakes up.
-   `[migration-only — retires at W8.6 tombstone]`
+1. Canonical working tree is `/srv/apps/nanoclaw`. Start every session
+   there. (Pre-2026-05-25 this was `/srv/apps/nanoclaw-v2` — the rename
+   happened when v1 was deleted; see
+   `journal/260525-remove-v1-and-drop-v2-suffix.md`.)
+2. ~~Never restart v1's service.~~ v1 has been deleted as of 2026-05-25.
+   Only artefact is the `v1-archive` git branch on the fork.
+   `[migration-only — RETIRED 2026-05-25]`
 3. `pnpm` at `~/.npm-global/bin/pnpm`, `onecli` at the same dir, `ncl` at
-   `/srv/apps/nanoclaw-v2/bin/ncl` — prefix `PATH=…:$PATH` or use absolute
+   `/srv/apps/nanoclaw/bin/ncl` — prefix `PATH=…:$PATH` or use absolute
    paths. These are not on Claude Code's Bash tool default PATH.
-4. v2's logs at `/srv/apps/nanoclaw-v2/logs/nanoclaw.{log,error.log}`, not
+4. v2's logs at `/srv/apps/nanoclaw/logs/nanoclaw.{log,error.log}`, not
    journald. Unit redirects via `StandardOutput=append:`. journalctl only
    shows the systemd start message.
-5. v2 runs from `dist/`, not `src/`. `cd /srv/apps/nanoclaw-v2 && pnpm run build`
+5. v2 runs from `dist/`, not `src/`. `cd /srv/apps/nanoclaw && pnpm run build`
    (= tsc) is mandatory between any host-source edit and
    `systemctl --user restart`. Pre-W4.3 muscle memory from v1 (tsx)
    will skip this.

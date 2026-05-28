@@ -1,5 +1,7 @@
 # Spike notes (P1)
 
+**Status:** closed — P1 spike complete (2026-05-21). **Last updated:** 2026-05-22. Immutable record of the credential-proxy investigation that pivoted the v2 plan from the `native-credential-proxy` skill to the OneCLI gateway approach. Do not edit; if newer findings invalidate something here, log a new `## §N` entry in [p3-notes.md](p3-notes.md) and link back.
+
 **Date:** 2026-05-21
 **Outcome:** **PASS WITH CAVEATS** — the load-bearing assumption (v2 supports Claude Max subscription billing without "extra usage") is true, but **via a different mechanism than the plan called for.** The plan's W2.4 / W4.x path of merging `upstream/skill/native-credential-proxy` is dead and the motivation document's Decision 3 is invalidated for v2.
 
@@ -9,7 +11,7 @@ The migration is still feasible. P2 cannot start without first revising the moti
 
 ## 1. What the spike was supposed to validate
 
-Per [motivation-and-context.md](motivation-and-context.md) §5 (load-bearing finding) and [implementation-plan.md](implementation-plan.md) §5 P1, the spike was to prove:
+Per [v2-motivation-and-context.md](../archive/v2-motivation-and-context.md) §5 (load-bearing finding; archived) and [v2-implementation-plan.md](../archive/v2-implementation-plan.md) §5 P1 (archived), the spike was to prove:
 
 1. The `/use-native-credential-proxy` skill can be applied to a fresh v2 install.
 2. Subscription billing via `CLAUDE_CODE_OAUTH_TOKEN` survives end-to-end on v2 (oauth token → exchange → container → reply).
@@ -177,7 +179,7 @@ OneCLI's MITM model achieves similar properties via TLS-termination + injection.
 
 ## 5. Plan revisions needed before P2
 
-These are the load-bearing pieces of [motivation-and-context.md](motivation-and-context.md) and [implementation-plan.md](implementation-plan.md) that must be updated. Without these updates, P2 will fail at W2.4 in the same way the spike failed at W1.3.
+These are the load-bearing pieces of [v2-motivation-and-context.md](../archive/v2-motivation-and-context.md) and [v2-implementation-plan.md](../archive/v2-implementation-plan.md) (both now archived; the updates below were applied before closure) that must be updated. Without these updates, P2 will fail at W2.4 in the same way the spike failed at W1.3.
 
 ### motivation-and-context.md
 

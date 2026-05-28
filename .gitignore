@@ -42,4 +42,7 @@ nanoclaw-v1-archive/
 # Skills system (local per-installation state)
 .nanoclaw/
 
+# engineering-team skill working dir (audit reports, improvement plans, intermediate notes)
+.engineering-team/
+
 agents-sdk-docs

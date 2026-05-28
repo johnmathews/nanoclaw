@@ -1,5 +1,10 @@
 # Tooling versions captured 2026-05-21T10:50:48Z
 
+**Status:** snapshot, archived 2026-05-28. One-time tooling-version capture from the start of the v1→v2 migration. No ongoing value; versions will have drifted. Kept as historical reference.
+
+---
+
+
 ## Node
 v22.22.1
 ## npm

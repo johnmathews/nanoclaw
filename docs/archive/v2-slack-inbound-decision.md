@@ -1,7 +1,9 @@
 # Slack inbound restoration — path decision (W4.0)
 
+**Status:** closed 2026-05-22; archived 2026-05-28. Path A (Events API + Tailscale Funnel) was decided and implemented; outcome and operational details in [../v2-migration/p3-notes.md §9](../v2-migration/p3-notes.md).
+
 **Date:** 2026-05-22
-**Status:** Decided — **Path A (reconfigure existing Slack app from Socket Mode → Events API; Tailscale Funnel for ingress).**
+**Original status (preserved for context):** Decided — **Path A (reconfigure existing Slack app from Socket Mode → Events API; Tailscale Funnel for ingress).**
 **Context:** [p3-notes.md](p3-notes.md) §3.2 — v2's `@chat-adapter/slack` is webhook-only; v1's `@slack/bolt` was Socket Mode. The existing Slack app remains configured for Socket Mode, so Slack has nowhere to POST events, so v2 receives zero inbound events. Slack outbound (`chat.postMessage`) is unaffected and continues to work for scheduled tasks.
 
 ---

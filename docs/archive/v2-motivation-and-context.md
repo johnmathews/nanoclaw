@@ -1,8 +1,8 @@
 # NanoClaw v1 → v2 Migration: Motivation and Context
 
-**Status:** active. **Last updated:** 2026-05-21 (post-P1 revision). **Supersedes:** pre-P1 §5/§6/§7/§8 (load-bearing mechanism replaced — see [spike-notes.md](spike-notes.md) §3 for the inversion).
+**Status:** closed 2026-05-22; archived 2026-05-28. **Last updated:** 2026-05-21 (post-P1 revision). Pre-migration rationale; the migration it motivated is complete. **Supersedes:** pre-P1 §5/§6/§7/§8 (load-bearing mechanism replaced — see [../v2-migration/spike-notes.md](../v2-migration/spike-notes.md) §3 for the inversion).
 
-**See also:** [implementation-plan.md](implementation-plan.md) for the step-by-step plan derived from the decisions captured here, and [spike-notes.md](spike-notes.md) for the immutable record of the P1 spike that inverted the credential-proxy decision.
+**See also:** [v2-implementation-plan.md](v2-implementation-plan.md) for the step-by-step plan derived from the decisions captured here, and [../v2-migration/spike-notes.md](../v2-migration/spike-notes.md) for the immutable record of the P1 spike that inverted the credential-proxy decision.
 
 ## 1. Executive summary
 

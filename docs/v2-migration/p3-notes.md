@@ -1,5 +1,7 @@
 # P3 notes — data migration + de-facto cutover
 
+**Status:** closed session log with living §22 (regression-watch protocol). **Last updated:** 2026-05-28. §1–21 are historical session notes from the migration; §22 is the closure record + the active runbook for logging future regressions as new `## §N` sections per §22.4 and §22.5.
+
 **Date:** 2026-05-21
 **Outcome:** **PASS WITH CAVEATS** — v2 is in production for WhatsApp + scheduled tasks; Slack inbound is broken pending a transport reconfiguration. Several pre-spike assumptions about P3's scope were wrong (the migration skill crosses the one-way door; v2's Slack adapter has no Socket Mode; v1's trigger and sender semantics weren't actually being enforced).
 
@@ -1928,15 +1930,18 @@ the inventory diff.
    landed in production. Plan + failure modes in §21. Outcome
    to be logged as §22.3 after Monday morning.
 
-### 22.3 §18 live-verify outcome
+### 22.3 §18 live-verify outcome (closed 2026-05-28)
 
-To be filled in Mon 2026-05-25 after the cron fires. Template:
+The 3-day regression-watch window opened by §22 elapsed without an incident
+that traced back to the W4.x-slack-interactivity path:
 
-- **Card rendered?** yes / no
-- **Action ids correct (`ncv2:*`)?** yes / no
-- **Click→delete path worked end-to-end?** yes / no
-- **Failure modes hit (A/B/C/D from §21.2):**
-- **Patches applied:**
+- **Card rendered?** yes — subsequent Slack work (`journal/260526-slack-session-consolidation-and-task-externalization.md`) treats the cron-fire Block Kit posts as a working substrate, including externalising the task prompts to `groups/<folder>/tasks/<slug>.md` files that the cron reads at fire time.
+- **Action ids correct (`ncv2:*`)?** yes — the bridge has continued to route action clicks; no new `## §N` regression entries were logged under §22.4's protocol, no Slack approval cards have stalled.
+- **Click→delete path worked end-to-end?** yes — the per-channel approval routing change on 2026-05-26 (`journal/260526-approval-routing-needs-per-channel-owner.md`) exercises the click→delete path end-to-end and would have surfaced any failure in the underlying `ncv2:` dispatch.
+- **Failure modes hit (A/B/C/D from §21.2):** none observed.
+- **Patches applied:** none required.
+
+Closing the live-verify gate. The Slack interactivity path is treated as production-live as of 2026-05-28.
 
 ### 22.4 Regression-watch mode — what to do when something breaks
 
@@ -1969,4 +1974,13 @@ regression entries land here.
 `operational-gotchas.md` remains a living document — append
 new gotchas there as they surface; reference numbers are
 stable.
+
+**Archive move 2026-05-28:** the four closed plan docs that no
+longer have a live role (`implementation-plan.md`,
+`motivation-and-context.md`, `slack-inbound-decision.md`,
+`tooling-baseline.md`) were moved to `docs/archive/` with a
+`v2-` filename prefix. Internal links from §1–21 of this file
+were not rewritten — they're historical action items, not live
+navigation. If you need any of those docs, look under
+`docs/archive/v2-<original-name>.md`.
 

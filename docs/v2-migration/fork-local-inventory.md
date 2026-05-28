@@ -4,7 +4,7 @@
 
 > 🏁 **All P4 + P5 items have a final disposition.** Items still labelled `port` that did not actually ship on v2 by the closure date are now `deferred` — see the disposition column for each, and §22.2 of `p3-notes.md` for the operator-facing summary of what's deferred and why. If a deferred item gets ported later, edit the row in place + add a new `## §N` entry to `p3-notes.md`.
 
-**Index source:** [`../fork-divergence.md`](../fork-divergence.md). **Disposition source:** [`motivation-and-context.md`](motivation-and-context.md) §6. **Phase mapping source:** [`implementation-plan.md`](implementation-plan.md) §5.
+**Index source:** [`../fork-divergence.md`](../fork-divergence.md). **Disposition source:** [`../archive/v2-motivation-and-context.md`](../archive/v2-motivation-and-context.md) §6 (archived). **Phase mapping source:** [`../archive/v2-implementation-plan.md`](../archive/v2-implementation-plan.md) §5 (archived).
 
 This is the P4/P5 porting checklist. Every fork-local code surface that needs a decision at migration time must appear here. If a file isn't here, it's either (a) upstream-derived code that will be wholesale replaced by v2 (e.g. `src/db.ts`, `src/index.ts`, `src/message-loop.ts`) and needs no port, or (b) a gap — flag it and update this document.
 
