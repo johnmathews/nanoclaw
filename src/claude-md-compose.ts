@@ -62,7 +62,15 @@ export function composeGroupClaudeMd(group: AgentGroup): void {
   const desired = new Map<string, { type: 'symlink' | 'inline'; content: string }>();
 
   // Skill fragments — every skill that ships an `instructions.md`.
-  // TODO (shared-source refactor): respect `container.json` skill selection.
+  //
+  // TODO (#731): respect `configRow.skills` here. Today this loop is
+  // unconditional — every skill in `container/skills/` is wired into every
+  // agent's CLAUDE.md. The data shape already exists
+  // (`container_configs.skills: string[] | 'all'`) and `syncSkillSymlinks`
+  // in container-runner.ts:342 already filters slash-command skills by it,
+  // so today the same field drives two systems with two defaults. The
+  // MCP-server loop a few lines below is the opt-in precedent. See
+  // journal/260528-defer-per-group-skill-selection-in-claudemd.md.
   const skillsHostDir = path.join(process.cwd(), 'container', 'skills');
   if (fs.existsSync(skillsHostDir)) {
     for (const skillName of fs.readdirSync(skillsHostDir)) {
