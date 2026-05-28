@@ -1872,17 +1872,16 @@ read-only tombstone (journal mount still references its path).
 
 ### 22.2 Deferred items (will not block migration closure)
 
-These are noted here so a future operator (or future-John)
-finds them in one place rather than re-discovering them via
-the inventory diff.
+Trimmed 2026-05-28 from 6 items to 2 — the four removed items
+were all "drop if not needed" placeholders whose reopen criteria
+were either trivially obvious (run `/add-gmail`), self-marked
+retired in their own description, or already resolved. They're
+still recoverable from `v1-archive` if a real need surfaces; a
+deferred-item list is for things a future operator could
+plausibly forget about, not for everything that used to exist
+in v1.
 
-1. **W4.6 remote-control** (`v1-archive`'s `src/remote-control.ts`,
-   224 LOC). Captures a `claude.ai/code` URL for ad-hoc remote
-   access. Nice-to-have; not load-bearing. Defer indefinitely
-   unless an actual need arises. Recover from v1-archive if
-   wanted.
-
-2. **W4.2 status-tracker** (`v1-archive`'s `src/status-tracker.ts`,
+1. **W4.2 status-tracker** (`v1-archive`'s `src/status-tracker.ts`,
    366 LOC). v1's progress-emoji reactions (received → thinking
    → working → done → failed) on the user's message for
    non-native-typing channels. v2's `src/modules/typing/` covers
@@ -1892,43 +1891,25 @@ the inventory diff.
    today. Reopen if a future non-native-typing channel (Discord,
    Matrix, etc.) gets wired and operators miss the visual cue.
 
-3. **W5.1 Slack fork customizations not re-applied:**
-   - `thread_ts` capture on the agent's outbound message
-     metadata (v1 used it to construct `thread_ts` in reply
-     payloads). v2 handles threading via the `slack:CHANNEL:THREAD_TS`
-     threadId encoding inside `@chat-adapter/slack`; the
-     end-to-end behaviour matches v1 in production.
-   - Migration v6 (`thread_ts` column on a v1 messages table).
-     Schema diverged at cutover — column not needed by any v2
-     code path.
-   - `getThreadMessages()` helper. No v2 caller; agents fetch
-     thread context via the SDK's natural conversation memory
-     instead.
-   None of these surfaced as missing functionality in production
-   use; mark **retired-in-favour-of-v2-bridge** unless a future
-   regression points back here.
-
-4. **W5.3 Gmail channel** (`v1-archive`'s `src/channels/gmail.ts`,
-   381 LOC, plus credentials). Originally "used in production"
-   per the inventory; **not installed on v2** as of the close-out.
-   v2's `messaging_groups` has zero Gmail rows. If/when John
-   wants Gmail back, run `/add-gmail` skill from a v2 session;
-   v1's credentials were not auto-migrated. Decision deferred
-   to the moment of need rather than pre-installing without a
-   live use case.
-
-5. **§20's `skipImageMultimodal` group-config wiring.** The
+2. **§20's `skipImageMultimodal` group-config wiring.** The
    per-attachment `att.skipMultimodal=true` contract exists
    inside `container/agent-runner/src/multimodal.ts` and is
    covered by `multimodal.test.ts`, but nothing on the host
    actually sets the flag. A 30-min wire-up if a future group
    wants text-only image fallback. Not needed today.
 
-6. **§18 live verification** (`task-1775472071448-rpvh6c`, fires
-   Mon 2026-05-25 02:03 CEST = 00:03 UTC, channel
-   `#git-maintenance`). First Block Kit cron post hasn't yet
-   landed in production. Plan + failure modes in §21. Outcome
-   to be logged as §22.3 after Monday morning.
+#### Removed from this list 2026-05-28
+
+- **W4.6 remote-control** — "Defer indefinitely" is functionally
+  not-on-the-list. `v1-archive:src/remote-control.ts` remains if
+  ad-hoc `claude.ai/code` URL capture is ever wanted.
+- **W5.1 Slack `thread_ts` / migration v6 / `getThreadMessages`** —
+  self-marked retired-in-favour-of-v2-bridge; v2 production behavior
+  matches v1.
+- **W5.3 Gmail channel** — well-understood reopen path
+  (`/add-gmail` skill); v1-archive has the original adapter if
+  needed for reference.
+- **§18 live verification** — closed in §22.3 below.
 
 ### 22.3 §18 live-verify outcome (closed 2026-05-28)
 

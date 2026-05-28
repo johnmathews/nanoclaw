@@ -55,13 +55,12 @@ Pick the matching playbook:
 
 ### B. You want to reopen a deferred item
 
-The deferred-items table is in `p3-notes.md` §22.2 (operator-facing) and `fork-local-inventory.md` §"Closure summary" (per-file). Current contents:
+The deferred-items table is in `p3-notes.md` §22.2 (operator-facing) and `fork-local-inventory.md` §"Closure summary" (per-file). Current contents (trimmed to 2 on 2026-05-28):
 
-- **W4.6 remote-control** — ad-hoc `claude.ai/code` URL capture; recover from `v1-archive:src/remote-control.ts` (224 LOC).
 - **W4.2 status-tracker** — progress-emoji reactions for non-native-typing channels. Reopen only if you wire a channel without native typing (Discord, Matrix, …).
-- **W5.1 Slack `getThreadMessages()` / migration v6 / `thread_ts` capture** — not retained; reopen only if a v2 caller actually needs them.
-- **W5.3 Gmail channel** — `/add-gmail` skill; credentials NOT auto-migrated from v1.
 - **§20 `skipImageMultimodal` host-side wiring** — per-attachment contract exists in `container/agent-runner/src/multimodal.ts` + tests; needs ~30 min to wire the host stamp from group config.
+
+If you want something that *used* to be on this list (W4.6 remote-control, W5.1 Slack `thread_ts`/v6/`getThreadMessages`, W5.3 Gmail channel), see §22.2's "Removed from this list" note — the reopen path is either obvious (run `/add-gmail`) or the original code is on `v1-archive`. Nothing was lost.
 
 When you reopen one: edit the row in `fork-local-inventory.md` in place + add a new `## §N` to `p3-notes.md`. Don't extend `implementation-plan.md` — that document is frozen at closure (and now lives under `docs/archive/`).
 
