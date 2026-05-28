@@ -173,7 +173,10 @@ erDiagram
     int messaging_group_id
     int agent_group_id
     string session_mode "agent-shared | shared | per-thread"
-    json trigger_rules
+    string engage_mode "pattern | mention | mention-sticky"
+    string engage_pattern
+    string sender_scope "all | known"
+    string ignored_message_policy "drop | accumulate"
     int priority
   }
   sessions {

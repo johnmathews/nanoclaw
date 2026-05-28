@@ -656,14 +656,16 @@ Three agent groups, one Discord channel (PR Factory), plus an admin channel:
 
 The central DB handles routing and entity management. All content and execution state lives in per-session DBs.
 
+The schema below is illustrative — it shows the load-bearing tables and the columns that route every inbound message. For the complete reference (every column, the migration that introduced it, all readers/writers), see [db-central.md](db-central.md). Authoritative source is `src/db/migrations/`; `src/db/schema.ts` is a comments-only mirror.
+
 ```sql
--- Agent workspaces: folder, skills, CLAUDE.md, container config
+-- Agent workspaces: folder, skills, CLAUDE.md. Container runtime config
+-- lives in container_configs (one row per agent_group); not on this table.
 CREATE TABLE agent_groups (
   id               TEXT PRIMARY KEY,
   name             TEXT NOT NULL,
   folder           TEXT NOT NULL UNIQUE,
   agent_provider   TEXT,              -- default for sessions (null = system default)
-  container_config TEXT,              -- JSON: { additionalMounts, timeout }
   created_at       TEXT NOT NULL
 );
 
@@ -675,6 +677,8 @@ CREATE TABLE messaging_groups (
   name                   TEXT,
   is_group               INTEGER DEFAULT 0,
   unknown_sender_policy  TEXT NOT NULL DEFAULT 'strict',  -- 'strict' | 'request_approval' | 'public'
+  reply_mode             TEXT NOT NULL DEFAULT 'thread',  -- 'thread' | 'channel'  (Slack-only effect)
+  denied_at              TEXT,                            -- set on channel-registration deny; router silently drops thereafter
   created_at             TEXT NOT NULL,
   UNIQUE(channel_type, platform_id)
 );
@@ -716,16 +720,18 @@ CREATE TABLE user_dms (
   PRIMARY KEY (user_id, channel_type)
 );
 
--- Which agent groups handle which messaging groups, with what rules
+-- Which agent groups handle which messaging groups, with what engage rules
 CREATE TABLE messaging_group_agents (
-  id                 TEXT PRIMARY KEY,
-  messaging_group_id TEXT NOT NULL REFERENCES messaging_groups(id),
-  agent_group_id     TEXT NOT NULL REFERENCES agent_groups(id),
-  trigger_rules      TEXT,              -- JSON: { pattern, mentionOnly, excludeSenders, includeSenders }
-  response_scope     TEXT DEFAULT 'all',    -- 'all' | 'triggered' | 'allowlisted'
-  session_mode       TEXT DEFAULT 'shared', -- 'shared' | 'per-thread'
-  priority           INTEGER DEFAULT 0,     -- higher = checked first when multiple agents match
-  created_at         TEXT NOT NULL,
+  id                     TEXT PRIMARY KEY,
+  messaging_group_id     TEXT NOT NULL REFERENCES messaging_groups(id),
+  agent_group_id         TEXT NOT NULL REFERENCES agent_groups(id),
+  engage_mode            TEXT NOT NULL DEFAULT 'mention',  -- 'pattern' | 'mention' | 'mention-sticky'
+  engage_pattern         TEXT,                              -- regex when engage_mode='pattern'; '.' means "always"
+  sender_scope           TEXT NOT NULL DEFAULT 'all',       -- 'all' | 'known'
+  ignored_message_policy TEXT NOT NULL DEFAULT 'drop',      -- 'drop' | 'accumulate'
+  session_mode           TEXT DEFAULT 'shared',             -- 'shared' | 'per-thread' | 'agent-shared'
+  priority               INTEGER DEFAULT 0,                 -- higher = checked first when multiple agents match
+  created_at             TEXT NOT NULL,
   UNIQUE(messaging_group_id, agent_group_id)
 );
 
@@ -754,9 +760,13 @@ CREATE TABLE pending_questions (
   platform_id    TEXT,              -- where the card was delivered
   channel_type   TEXT,
   thread_id      TEXT,
+  title          TEXT NOT NULL,     -- card render title
+  options_json   TEXT NOT NULL,     -- card render options (JSON array)
   created_at     TEXT NOT NULL
 );
 ```
+
+Several tables aren't shown above to keep the schema scannable — they're documented in full in [db-central.md](db-central.md): `agent_destinations` (per-agent ACL + name-resolution for outbound), `pending_approvals` (`install_packages` / `add_mcp_server` / OneCLI credential approvals), `pending_sender_approvals` (unknown-sender flow), `pending_channel_approvals` (unknown-channel registration flow), `unregistered_senders` (audit trail for dropped messages), `container_configs` (per-agent-group container runtime config — provider, model, packages, MCP servers, mounts, `cli_scope`), `chat_sdk_*` (Chat SDK bridge state), `schema_version` (migration ledger).
 
 ### Pending Question Flow
 

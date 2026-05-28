@@ -65,11 +65,11 @@ Added `session_mode: 'agent-shared'` for cross-channel shared sessions (e.g. Git
 
 ### Entity Model
 ```
-agent_groups (id, name, folder, agent_provider, container_config)
-    ↕ many-to-many
-messaging_groups (id, channel_type, platform_id, name, is_group, unknown_sender_policy)
+agent_groups (id, name, folder, agent_provider)
+    ↕ many-to-many                  -- container runtime config: separate container_configs table
+messaging_groups (id, channel_type, platform_id, name, is_group, unknown_sender_policy, reply_mode, denied_at)
     via
-messaging_group_agents (messaging_group_id, agent_group_id, trigger_rules, session_mode, priority)
+messaging_group_agents (messaging_group_id, agent_group_id, engage_mode, engage_pattern, sender_scope, ignored_message_policy, session_mode, priority)
 
 users (id, kind, display_name)          -- namespaced as "<channel>:<handle>"
 user_roles (user_id, role, agent_group_id)    -- owner / admin (global or scoped)
