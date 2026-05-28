@@ -10,7 +10,7 @@
  * OneCLI's vault is not used because (a) the @onecli-sh/sdk has no
  * getSecret-by-name API and (b) OneCLI's gateway proxy injects x-api-key for
  * api.anthropic.com, not the OAuth Bearer + `anthropic-beta` pair this
- * endpoint requires. See docs/v2-migration/p3-notes.md §11.
+ * endpoint requires. See docs/archive/v2-migration/p3-notes.md §11.
  *
  * Refresh: if the token is within 5 minutes of `expiresAt`, POSTs to
  * console.anthropic.com/v1/oauth/token with the refresh token and writes the

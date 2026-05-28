@@ -723,7 +723,7 @@ Implementation: write a `messages_out` row with `kind: 'system'`, `action: 'regi
 
 Source of truth: `container/agent-runner/src/multimodal.ts` (image blocks); `src/transcription.ts` + `src/pdf-extract.ts`
 (host-side voice / PDF preprocessing); `container/agent-runner/src/formatter.ts` `formatAttachments` (inline rendering of
-all four kinds). Updated 2026-05-22 by W4.x-multimodal — see `docs/v2-migration/p3-notes.md` §20.
+all four kinds). Updated 2026-05-22 by W4.x-multimodal — see `docs/archive/v2-migration/p3-notes.md` §20.
 
 #### Inbound (messages_in → agent prompt)
 

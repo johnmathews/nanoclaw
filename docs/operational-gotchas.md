@@ -16,7 +16,7 @@ required reading instead of duplicating the list.
   this changed to …").
 - **Delete** an entry only when the underlying behavior has been retired
   AND no in-flight migration step depends on it. Cross-check `journal/`,
-  `docs/v2-migration/p3-notes.md`, and recent commits before deleting.
+  `docs/archive/v2-migration/p3-notes.md`, and recent commits before deleting.
 - If a gotcha graduates into stable, well-documented behavior, move the
   authoritative text into the relevant doc (`docs/SPEC.md`,
   `docs/agent-runner-details.md`, etc.) and leave a short pointer here.
@@ -63,8 +63,8 @@ entries with `[migration-only]` so they're easy to prune later.
 11. DO NOT `git pull` on `/srv/apps/nanoclaw`. It's the v1 working tree;
     its local main = `0bd42bb` and diverges from remote main.
     `[migration-only]`
-12. Migration docs now live on v2's main at `docs/v2-migration/`. Edit
-    there, not on the v1 working tree.
+12. Migration docs are archived at `docs/archive/v2-migration/` as of
+    2026-05-28 (closure). `[migration-only — RETIRED 2026-05-28]`
 13. `writeOutboundDirect` now writes (fixed in `d8c04b8`). Before that
     fix, every deny / respond / respond-error path in `src/router.ts`
     silently failed because the function opened the outbound DB readonly.

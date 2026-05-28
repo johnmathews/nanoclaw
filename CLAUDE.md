@@ -278,6 +278,7 @@ This project uses pnpm with `minimumReleaseAge: 4320` (3 days) in `pnpm-workspac
 | [docs/build-and-runtime.md](docs/build-and-runtime.md) | Runtime split (Node host + Bun container), lockfiles, image build surface, CI, key invariants |
 | [docs/v1-to-v2-changes.md](docs/v1-to-v2-changes.md) | v1→v2 architecture diff — vocabulary for where v1 things moved |
 | [docs/migration-dev.md](docs/migration-dev.md) | Migration development guide — testing, debugging, dev loop |
+| [docs/operational-gotchas.md](docs/operational-gotchas.md) | Living, append-only log of v2 runtime gotchas (service paths, build steps, mounts, etc.) |
 
 ## Container Build Cache
 
