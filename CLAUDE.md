@@ -64,7 +64,7 @@ For ad-hoc queries from skills or scripts, use the in-tree wrapper rather than t
 | `src/channels/` | Channel adapter infra (registry, Chat SDK bridge); specific channel adapters are skill-installed from the `channels` branch |
 | `src/providers/` | Host-side provider container-config (`claude` baked in; `opencode` etc. installed from the `providers` branch) |
 | `container/agent-runner/src/` | Agent-runner: poll loop, formatter, provider abstraction, MCP tools, destinations |
-| `container/skills/` | Container skills mounted into every agent session (`onecli-gateway`, `welcome`, `self-customize`, `agent-browser`, `slack-formatting`) |
+| `container/skills/` | Container skills mounted into every agent session. Credentials gateway: `onecli-gateway`. Messaging UX: `welcome`, `slack-formatting`, `whatsapp-formatting`, `reactions`, `status`. Self-modification: `self-customize`. Tools: `agent-browser`, `pdf-reader`, `vercel-cli`, `email-sending`. Capability reporting: `capabilities`. Engineering discipline: `frontend-engineer`. |
 | `groups/<folder>/` | Per-agent-group filesystem (CLAUDE.md, skills, per-group `agent-runner-src/` overlay) |
 | `scripts/init-first-agent.ts` | Bootstrap the first DM-wired agent (used by `/init-first-agent` skill) |
 | `migrate-v2.sh` + `setup/migrate-v2/` | v1→v2 migration. Standalone script: `bash migrate-v2.sh`. Seeds DB, copies groups/sessions, installs channels, builds container, offers service switchover, then hands off to `/migrate-from-v1` skill for owner setup and CLAUDE.md cleanup. See [docs/migration-dev.md](docs/migration-dev.md). |
@@ -126,6 +126,15 @@ Per-agent-group container runtime config (provider, model, packages, MCP servers
 
 Key files: `src/db/container-configs.ts`, `src/container-config.ts`, `src/cli/dispatch.ts` (scope enforcement), `src/claude-md-compose.ts` (instructions exclusion).
 
+## Defaults & Conventions
+
+Four standing decisions that aren't obvious from the schema or the code path. If you're adding new wiring or seeding new rows, honor these.
+
+1. **Default agent-group model is `claude-opus-4-7` (Opus 4.7).** Seeded by `ensureContainerConfig()` in `src/db/container-configs.ts` and backfilled by migration 017 for any pre-existing rows with NULL/empty `model`. Don't silently downgrade to Sonnet or Haiku — if you want a non-default for a specific group, set it explicitly via `ncl groups config update --id <agent-group> --model <model-id>`.
+2. **Scheduled task prompts must point at `groups/<folder>/tasks/<slug>.md`, not contain the body inline.** When `scheduling.add_task` is called, the prompt string written to the task row should be a one-line pointer (e.g. `Run task: tasks/job-search-followups.md`); the actual instructions live in the markdown file. This keeps long prompts out of central-DB rows and lets the task body evolve under `git` without DB rewrites.
+3. **New `messaging_groups` rows must set `unknown_sender_policy='public'` explicitly.** The migration default is `'strict'`, which silently drops every message from senders not on the explicit member list. Every `createMessagingGroup` callsite already passes this explicitly; new code/migrations adding rows must too.
+4. **Approval cards prefer same-channel approvers; owner roles are per-channel identity.** Each channel where the operator takes admin actions needs its own `user_roles` row (e.g. `slack:U07ABCD` *and* `whatsapp:447xxx` both granted `owner`). `pickApprover` / `pickApprovalDelivery` in `src/modules/approvals/primitive.ts` prefer routing approval requests to the same channel the originating event came from before falling back to other channels.
+
 ## Container Restart
 
 `ncl groups restart --id <group-id> [--rebuild] [--message <text>]`. Kills running containers; if `--message` is provided, writes an `on_wake` message and respawns via `onExit` callback. Without `--message`, containers come back on the next user message. From inside a container, `--id` is auto-filled and only the calling session is restarted.
@@ -180,7 +189,7 @@ Four types of skills. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full taxono
 - **Channel/provider install skills** — copy the relevant module(s) in from the `channels` or `providers` branch, wire imports, install pinned deps (e.g. `/add-discord`, `/add-slack`, `/add-whatsapp`, `/add-opencode`).
 - **Utility skills** — ship code files alongside `SKILL.md` (e.g. `/claw`).
 - **Operational skills** — instruction-only workflows (`/setup`, `/debug`, `/customize`, `/init-first-agent`, `/manage-channels`, `/init-onecli`, `/update-nanoclaw`).
-- **Container skills** — loaded inside agent containers at runtime (`container/skills/`: `onecli-gateway`, `welcome`, `self-customize`, `agent-browser`, `slack-formatting`).
+- **Container skills** — loaded inside agent containers at runtime (`container/skills/`: `onecli-gateway`, `welcome`, `self-customize`, `agent-browser`, `slack-formatting`, `whatsapp-formatting`, `reactions`, `status`, `capabilities`, `pdf-reader`, `vercel-cli`, `email-sending`, `frontend-engineer`).
 
 | Skill | When to Use |
 |-------|-------------|
