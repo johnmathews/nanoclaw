@@ -106,11 +106,7 @@ Each `/add-<name>` skill is idempotent: `git fetch origin <branch>` → copy mod
 
 ## Self-Modification
 
-One tier of agent self-modification today:
-
-1. **`install_packages` / `add_mcp_server`** — changes to the per-agent-group container config in the DB (apt/npm deps, wire an existing MCP server). Single admin approval per request; on approve, the handler in `src/modules/self-mod/apply.ts` rebuilds the image when needed (`install_packages` only), writes an `on_wake` message, kills the container, and respawns via `onExit` callback. The on-wake message is only picked up by the fresh container's first poll — dying containers can never steal it. `container/agent-runner/src/mcp-tools/self-mod.ts`.
-
-A second tier (direct source-level self-edits via a draft/activate flow) is planned but not yet implemented.
+Agents can request approval-gated changes to their own container config via the `install_packages` and `add_mcp_server` MCP tools — apt/npm deps and wiring an existing MCP server. Single admin approval per request; on approve, the handler in `src/modules/self-mod/apply.ts` rebuilds the image when needed (`install_packages` only), writes an `on_wake` message, kills the container, and respawns via `onExit` callback. The on-wake message is only picked up by the fresh container's first poll — dying containers can never steal it. See `container/agent-runner/src/mcp-tools/self-mod.ts`.
 
 ## Container Config
 

@@ -165,3 +165,18 @@ demand).
   relies on `unknown_sender_policy='public'`. Either fully retire the strict
   model or actually wire it through. Current half-state is a footgun (cf.
   the Ritsya outage).
+
+### Update 2026-05-28 (final-sweep)
+
+- `groups/main/m3/` is the **Money Making Machine** project — algorithmic
+  trading research with capital constraints, broker-fee analysis, and
+  edges-for-retail reasoning. Documented in its own `README.md`. Not
+  unknown; closed.
+- `documentation-summary` task identified: series `task-1778399790530-f2euaw`,
+  daily `3 9 * * *` cron in `slack:C0AMA1R7EPK`, sends a journal-derived
+  summary email; instructions at `groups/main/tasks/documentation-summary.md`.
+  Decision (resume / delete) still pending.
+- `slack_job-search-ritsya` and the membership/role half-state remain
+  open — both depend on external inputs (Ritsya's CV criteria; an
+  architectural decision about the strict-mode path). Not in scope for
+  the final sweep.
