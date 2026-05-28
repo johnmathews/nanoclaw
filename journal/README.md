@@ -4,7 +4,8 @@ A running log of decisions, changes, and learnings for the NanoClaw project.
 
 ## Purpose
 
-Capture the **why** behind changes — motivations, trade-offs, alternatives considered — so that future readers (human or AI) can understand context that isn't obvious from code or git history alone.
+Capture the **why** behind changes — motivations, trade-offs, alternatives considered — so that future readers (human or
+AI) can understand context that isn't obvious from code or git history alone.
 
 ## How to use
 
