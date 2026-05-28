@@ -35,6 +35,12 @@ nanoclaw-v1-archive/
 # OS
 .DS_Store
 
+# Syncthing folder marker
+.stfolder
+
+# Local journal viewer sidecar (e.g. mkdocs-awesome-pages)
+journal/.pages
+
 # IDE
 .idea/
 .vscode/
