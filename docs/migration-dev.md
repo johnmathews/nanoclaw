@@ -116,10 +116,11 @@ python3 -m json.tool logs/setup-migration/handoff.json
 2. Check JSONL exists at the right path: `ls data/v2-sessions/<ag_id>/.claude-shared/projects/-workspace-agent/`
 3. The v1 session JSONL should be copied from `-workspace-group/` to `-workspace-agent/` (v2 container CWD is `/workspace/agent`)
 
-**Service switchover revert didn't work:**
-1. The v2 service name is `nanoclaw-v2-<hash>` — find it: `systemctl --user list-units 'nanoclaw*'`
-2. Manually stop: `systemctl --user stop <unit> && systemctl --user disable <unit>`
-3. Restart v1: `systemctl --user start nanoclaw`
+**v2 service won't start cleanly:**
+1. The v2 service name is `nanoclaw-<install-slug>` (sha1 of the install path, first 8 hex chars — see `src/install-slug.ts`). Find it: `systemctl --user list-units 'nanoclaw*'`.
+2. If the unit is enabled but failing, check `journalctl --user -u <unit> --no-pager -n 100` and `logs/setup-steps/*.log`.
+3. To stop / disable: `systemctl --user stop <unit> && systemctl --user disable <unit>`.
+4. Re-running `bash migrate-v2.sh` against the same install path is idempotent — it re-seeds, re-builds, and re-registers the service. There is no separate "revert to v1" path on a target that has fully migrated: `/migrate-from-v1` deletes the v1 install once `/migrate-from-v1` completes (see `journal/260525-remove-v1-and-drop-v2-suffix.md`). If you need a rollback before that point, restore from the tarball backup that `migrate-v2.sh` writes under `data/migration-backups/`.
 
 ### Step logs
 

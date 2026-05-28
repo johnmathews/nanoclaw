@@ -30,8 +30,8 @@ of files. Claude agents run in their own Linux containers with filesystem isolat
 ## Quick Start
 
 ```bash
-git clone https://github.com/nanocoai/nanoclaw.git nanoclaw-v2
-cd nanoclaw-v2
+git clone https://github.com/nanocoai/nanoclaw.git nanoclaw
+cd nanoclaw
 bash nanoclaw.sh
 ```
 
