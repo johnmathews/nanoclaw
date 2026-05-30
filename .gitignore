@@ -35,6 +35,9 @@ nanoclaw-v1-archive/
 # OS
 .DS_Store
 
+# Local screenshots (scratch, not repo content)
+screenshots/
+
 # Syncthing folder marker
 .stfolder
 

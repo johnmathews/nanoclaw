@@ -50,6 +50,29 @@ describe('send_message MCP tool — in_reply_to plumbing', () => {
   });
 });
 
+describe('send_message MCP tool — <internal> stripping', () => {
+  it('strips <internal> blocks from the delivered body', async () => {
+    await sendMessage.handler({ to: 'peer', text: 'Done.<internal>secret reasoning</internal>' });
+
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    expect(JSON.parse(out[0].content).text).toBe('Done.');
+  });
+
+  it('sends nothing when the body is entirely <internal>', async () => {
+    const result = await sendMessage.handler({
+      to: 'peer',
+      text: '<internal>Report sent successfully via email. No Slack message needed.</internal>',
+    });
+
+    // Nothing written to the outbound queue.
+    expect(getUndeliveredMessages()).toHaveLength(0);
+    // And the tool reports back without erroring, so the agent doesn't retry.
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('Nothing sent');
+  });
+});
+
 function insertReactionRow(
   id: string,
   timestamp: string,
