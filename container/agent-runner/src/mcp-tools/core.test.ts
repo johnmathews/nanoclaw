@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { initTestSessionDb, closeSessionDb, getInboundDb } from '../db/connection.js';
 import { getUndeliveredMessages } from '../db/messages-out.js';
 import { setCurrentInReplyTo, clearCurrentInReplyTo } from '../current-batch.js';
-import { sendMessage } from './core.js';
+import { sendMessage, editMessage } from './core.js';
 import { queryReactions } from './reactions.js';
 
 beforeEach(() => {
@@ -70,6 +70,40 @@ describe('send_message MCP tool — <internal> stripping', () => {
     // And the tool reports back without erroring, so the agent doesn't retry.
     expect(result.isError).toBeUndefined();
     expect(result.content[0].text).toContain('Nothing sent');
+  });
+});
+
+describe('edit_message MCP tool — <internal> stripping', () => {
+  beforeEach(() => {
+    // Seed an inbound message to target by seq (getMessageIdBySeq / getRoutingBySeq read this).
+    getInboundDb()
+      .prepare(
+        `INSERT INTO messages_in (id, seq, kind, timestamp, status, platform_id, channel_type, content)
+         VALUES ('orig-msg', 5, 'chat', datetime('now'), 'done', 'chan-1', 'discord', '{}')`,
+      )
+      .run();
+  });
+
+  it('strips <internal> blocks from the edited body', async () => {
+    await editMessage.handler({ messageId: 5, text: 'Corrected.<internal>why I changed it</internal>' });
+
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    const content = JSON.parse(out[0].content);
+    expect(content.operation).toBe('edit');
+    expect(content.text).toBe('Corrected.');
+  });
+
+  it('skips the edit when the new body is entirely <internal>', async () => {
+    const result = await editMessage.handler({
+      messageId: 5,
+      text: '<internal>nothing user-facing to say here</internal>',
+    });
+
+    // No edit queued — refuse rather than blank the message.
+    expect(getUndeliveredMessages()).toHaveLength(0);
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0].text).toContain('Nothing edited');
   });
 });
 

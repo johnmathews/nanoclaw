@@ -533,8 +533,19 @@ function dispatchResultText(text: string, routing: RoutingContext): { sent: numb
       scratchpadParts.push(text.slice(lastIndex, match.index));
     }
     const toName = match[1];
-    const body = match[2].trim();
+    // Strip <internal>...</internal> from the body the same way the bare
+    // scratchpad path below does. Without this, an agent that wraps a
+    // scratchpad note inside a <message to="..."> block (e.g.
+    // "<message to=\"main\"><internal>report sent</internal></message>")
+    // leaks the raw tags to the channel. If the block is entirely internal,
+    // send nothing — the agent intended no outbound message.
+    const body = stripInternalTags(match[2]);
     lastIndex = MESSAGE_RE.lastIndex;
+
+    if (!body) {
+      log(`<message to="${toName}"> body empty after stripping <internal> — nothing sent`);
+      continue;
+    }
 
     const dest = findByName(toName);
     if (!dest) {

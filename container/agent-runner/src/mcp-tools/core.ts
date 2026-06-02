@@ -208,6 +208,15 @@ export const editMessage: McpToolDefinition = {
     const text = args.text as string;
     if (!seq || !text) return err('messageId and text are required');
 
+    // Strip <internal>...</internal> just like send_message — the new body is
+    // agent free text and must not leak scratchpad to the channel. An edit to
+    // an entirely-internal body would blank the message, so refuse instead.
+    const body = stripInternalTags(text);
+    if (!body) {
+      log('edit_message: body empty after stripping <internal> — edit skipped');
+      return ok('Nothing edited — the new body was entirely <internal> scratchpad.');
+    }
+
     const platformId = getMessageIdBySeq(seq);
     if (!platformId) return err(`Message #${seq} not found`);
 
@@ -223,7 +232,7 @@ export const editMessage: McpToolDefinition = {
       platform_id: routing.platform_id,
       channel_type: routing.channel_type,
       thread_id: routing.thread_id,
-      content: JSON.stringify({ operation: 'edit', messageId: platformId, text }),
+      content: JSON.stringify({ operation: 'edit', messageId: platformId, text: body }),
     });
 
     log(`edit_message: #${seq} → ${platformId}`);
