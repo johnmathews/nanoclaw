@@ -545,11 +545,13 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
         const matched = render?.options.find((o) => o.value === selectedOption);
         const selectedLabel = matched?.selectedLabel ?? selectedOption ?? '(clicked)';
 
-        // Update the card to show the selected answer and remove buttons
+        // Update the card to show the selected answer, who acted, and remove buttons
+        const actorName = event.user?.userName || event.user?.fullName || '';
+        const byLine = actorName ? ` — ${actorName}` : '';
         try {
           const tid = event.threadId;
           await adapter.editMessage(tid, event.messageId, {
-            markdown: `${title}\n\n${selectedLabel}`,
+            markdown: `${title}\n\n${selectedLabel}${byLine}`,
           });
         } catch (err) {
           log.warn('Failed to update card after action', { err });
