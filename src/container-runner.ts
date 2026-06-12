@@ -27,6 +27,7 @@ import { composeGroupClaudeMd } from './claude-md-compose.js';
 import { getAgentGroup } from './db/agent-groups.js';
 import { getDb, hasTable } from './db/connection.js';
 import { initGroupFilesystem } from './group-init.js';
+import { toOneCliIdentifier } from './onecli-identifier.js';
 import { stopTypingRefresh } from './modules/typing/index.js';
 import { log } from './log.js';
 import { validateAdditionalMounts } from './modules/mount-security/index.js';
@@ -133,9 +134,10 @@ async function spawnContainer(session: Session): Promise<void> {
 
   const mounts = buildMounts(agentGroup, session, containerConfig, contribution);
   const containerName = `nanoclaw-${agentGroup.folder}-${Date.now()}`;
-  // OneCLI agent identifier is always the agent group id — stable across
-  // sessions and reversible via getAgentGroup() for approval routing.
-  const agentIdentifier = agentGroup.id;
+  // OneCLI agent identifier is derived from the agent group id — stable across
+  // sessions and reversible via getAgentGroup() for approval routing. The
+  // sanitization makes digit-leading group ids OneCLI-valid (see onecli-identifier.ts).
+  const agentIdentifier = toOneCliIdentifier(agentGroup.id);
   const args = await buildContainerArgs(
     mounts,
     containerName,
