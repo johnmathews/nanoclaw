@@ -30,7 +30,7 @@ CREATE TABLE messaging_groups (
   is_group              INTEGER DEFAULT 0,
   unknown_sender_policy TEXT NOT NULL DEFAULT 'strict',
                         -- 'strict' | 'request_approval' | 'public'
-  reply_mode            TEXT NOT NULL DEFAULT 'thread',
+  reply_mode            TEXT NOT NULL DEFAULT 'channel',
                         -- 'thread' | 'channel' — Slack only; ignored elsewhere
   created_at            TEXT NOT NULL,
   UNIQUE(channel_type, platform_id)

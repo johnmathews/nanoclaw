@@ -49,9 +49,9 @@ registerResource({
       name: 'reply_mode',
       type: 'string',
       description:
-        'Where the agent posts replies on threaded platforms (Slack). "thread" replies in the originating thread (default). "channel" replies in the channel root, regardless of where the inbound message landed. Ignored on non-threaded adapters.',
+        'Where the agent posts replies on threaded platforms (Slack). "channel" replies in the channel root, regardless of where the inbound message landed (default). "thread" replies in the originating thread. Ignored on non-threaded adapters.',
       enum: ['thread', 'channel'],
-      default: 'thread',
+      default: 'channel',
       updatable: true,
     },
     {

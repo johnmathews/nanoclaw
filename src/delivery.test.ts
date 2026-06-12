@@ -222,7 +222,7 @@ describe('deliverSessionMessages — retry and permanent failure', () => {
 });
 
 describe('deliverSessionMessages — reply_mode', () => {
-  it("preserves thread_id when reply_mode is the default 'thread'", async () => {
+  it("preserves thread_id when reply_mode is explicitly 'thread'", async () => {
     seedAgentAndChannel();
     createMessagingGroupAgent({
       id: 'mga-1',
@@ -236,6 +236,8 @@ describe('deliverSessionMessages — reply_mode', () => {
       priority: 0,
       created_at: now(),
     });
+    // Default is 'channel' (migration 018); threaded replies are opt-in.
+    getDb().prepare("UPDATE messaging_groups SET reply_mode = 'thread' WHERE id = ?").run('mg-1');
     const { session } = resolveSession('ag-1', 'mg-1', 'telegram:123:thread-abc', 'shared');
 
     const db = new Database(outboundDbPath('ag-1', session.id));
@@ -257,7 +259,7 @@ describe('deliverSessionMessages — reply_mode', () => {
     expect(seenThreadId).toBe('telegram:123:thread-abc');
   });
 
-  it("clears thread_id when reply_mode is 'channel'", async () => {
+  it("clears thread_id when reply_mode is the default 'channel'", async () => {
     seedAgentAndChannel();
     createMessagingGroupAgent({
       id: 'mga-1',
@@ -271,9 +273,6 @@ describe('deliverSessionMessages — reply_mode', () => {
       priority: 0,
       created_at: now(),
     });
-    // Flip the messaging group to channel reply mode
-    getDb().prepare("UPDATE messaging_groups SET reply_mode = 'channel' WHERE id = ?").run('mg-1');
-
     const { session } = resolveSession('ag-1', 'mg-1', 'telegram:123:thread-abc', 'shared');
 
     const db = new Database(outboundDbPath('ag-1', session.id));

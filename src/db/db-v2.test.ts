@@ -150,6 +150,16 @@ describe('messaging groups', () => {
     deleteMessagingGroup('mg-1');
     expect(getMessagingGroup('mg-1')).toBeUndefined();
   });
+
+  it('defaults reply_mode to channel when not provided', () => {
+    createMessagingGroup(mg());
+    expect(getMessagingGroup('mg-1')!.reply_mode).toBe('channel');
+  });
+
+  it('honors an explicit reply_mode', () => {
+    createMessagingGroup({ ...mg(), reply_mode: 'thread' });
+    expect(getMessagingGroup('mg-1')!.reply_mode).toBe('thread');
+  });
 });
 
 // ── Messaging Group Agents ──

@@ -21,10 +21,13 @@ import { getDb, hasTable } from './connection.js';
 export function createMessagingGroup(group: MessagingGroup): void {
   getDb()
     .prepare(
-      `INSERT INTO messaging_groups (id, channel_type, platform_id, name, is_group, unknown_sender_policy, created_at)
-       VALUES (@id, @channel_type, @platform_id, @name, @is_group, @unknown_sender_policy, @created_at)`,
+      `INSERT INTO messaging_groups (id, channel_type, platform_id, name, is_group, unknown_sender_policy, reply_mode, created_at)
+       VALUES (@id, @channel_type, @platform_id, @name, @is_group, @unknown_sender_policy, @reply_mode, @created_at)`,
     )
-    .run(group);
+    // Default reply_mode is 'channel' — replies land in the channel, not a
+    // thread (operator preference, 2026-06-12). Callers that want threaded
+    // replies must pass reply_mode explicitly.
+    .run({ ...group, reply_mode: group.reply_mode ?? 'channel' });
 }
 
 export function getMessagingGroup(id: string): MessagingGroup | undefined {
