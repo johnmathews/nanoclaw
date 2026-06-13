@@ -1,8 +1,20 @@
 # Implementation Plan: Learning & Memory Layer
 
-**Status:** plan (not implemented)
+**Status:** in progress — Features 3 & 1 BUILT (committed, not yet live); Features 2, 4, 5 pending
 **Date:** 2026-06-13
 **Companion to:** [proposal-learning-and-memory.md](proposal-learning-and-memory.md)
+
+## Progress
+
+| # | Feature | State | Commit |
+|---|---------|-------|--------|
+| 3 | Task outcome log | ✅ built | `2fd5f4f` |
+| 1 | Budgeted `remember` tool | ✅ built | `7a527c1` |
+| 2 | FTS5 `search_history` | ⏳ next | — |
+| 4 | Self-authored skills | ⏳ pending | — |
+| 5 | Weekly reflection | ⏳ pending | — |
+
+Branch: `feat/learning-memory-task-outcomes`. **Not live** — the service runs compiled `dist/`, so built features are inert until `pnpm run build` + service restart, at which point migrations 020/021 auto-apply (additive, no backfill). Migrations 020 (`task-outcomes`) and 021 (`memory-budgets`) are claimed; 019 was taken by `container-config-env`.
 
 This turns the proposal's five recommendations into a file-level build plan grounded in NanoClaw's actual wiring. Every feature maps onto one of two integration archetypes that already exist:
 
@@ -14,6 +26,8 @@ This turns the proposal's five recommendations into a file-level build plan grou
 ---
 
 ## Feature 3 — Task outcome log *(build first: smallest, fully independent)*
+
+> **✅ As built (`2fd5f4f`):** matches the plan. Records *every* max-retry failure (not just `kind='task'`) and stores a `kind` column so readers can filter; `getMessageForRetry` was extended to also return `kind` + `series_id`. Recording is best-effort (try/catch) so it can never abort the stale-reset path. Files: `src/db/migrations/020-task-outcomes.ts`, `src/db/task-outcomes.ts` (+ test), `src/host-sweep.ts`, `scheduling.instructions.md`.
 
 **Host side.** The retry-exhaustion branch is `src/host-sweep.ts:296-302` (`if (msg.tries >= MAX_TRIES) { markMessageFailed(...); log.warn(... reason ...) }`). `reason` + `msg.id` are in scope. Immediately after `markMessageFailed`, call a new `recordTaskOutcome(getDb(), {...})` that writes to **central `data/v2.db`** (admin-visible, survives restarts → central per `docs/db.md`).
 
@@ -42,6 +56,8 @@ No FK to `messages_in` (that row lives in a session DB). `markMessageFailed` is 
 ---
 
 ## Feature 1 — Budgeted `remember` MCP tool *(build second: establishes the round-trip helper + memory module + compose seam)*
+
+> **✅ As built (`7a527c1`):** matches the plan. Round-trip template was the existing `ask_user_question` tool (in-process `writeMessageOut` + poll `findResponseById` + `markCompleted`), not the standalone `cli/ncl.ts`. Reply id is the deterministic `rem-resp-<requestId>` (exact-id lookup, not LIKE). Memory model = one entry per non-empty line; `replace`/`remove` match a unique substring of a line. Recompose-on-write calls `composeGroupClaudeMd` directly (no restart). Seeding lives at the top of `composeGroupClaudeMd` (`seedMemoryFiles`). Files: `container/agent-runner/src/mcp-tools/remember.ts` (+ `.instructions.md`, + test), `messages-in.ts` (`findResponseById`), `src/modules/memory/{budget,actions,index}.ts` (+ tests), `src/db/migrations/021-memory-budgets.ts`, `src/claude-md-compose.ts` (+ test), `src/cli/resources/groups.ts`, `src/db/container-configs.ts`, `src/types.ts`.
 
 Two targets (`memory`→`MEMORY.md`, `user`→`USER.md`), three ops (`add` / `replace`-by-substring / `remove`-by-substring), **per-group** char budgets (default 2200 / 1375) that **error and return current entries** at capacity. Budget enforcement is **host-side** — the container doesn't hold the authoritative file text — so this is a **round-trip** tool.
 
