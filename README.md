@@ -101,15 +101,18 @@ models. Provider is configurable per agent group.
 
 ## What It Supports
 
-- **Multi-channel messaging** — WhatsApp, Telegram, Discord, Slack, Microsoft Teams, iMessage, Matrix, Google Chat,
-  Webex, Linear, GitHub, WeChat, and email via Resend. Installed on demand with `/add-<channel>` skills. Run one or many
-  at the same time.
+- **Multi-channel messaging** — WhatsApp, Telegram, Discord, Slack, Microsoft Teams, iMessage, Signal, Matrix, Google
+  Chat, Webex, Linear, GitHub, WeChat, DeltaChat, and email via Resend. Installed on demand with `/add-<channel>` skills.
+  Run one or many at the same time.
 - **Flexible isolation** — connect each channel to its own agent for full privacy, share one agent across many channels
   for unified memory with separate conversations, or fold multiple channels into a single shared session so one
   conversation spans many surfaces. Pick per channel via `/manage-channels`. See
   [docs/isolation-model.md](docs/isolation-model.md).
 - **Per-agent workspace** — each agent group has its own `CLAUDE.md`, its own memory, its own container, and only the
   mounts you allow. Nothing crosses the boundary unless you wire it to.
+- **Persistent memory & learning** — your assistant remembers durable facts about you, recalls past conversations, writes
+  down procedures it works out, and runs a weekly self-reflection to consolidate what it learned. See
+  [How It Learns](#how-it-learns).
 - **Scheduled tasks** — recurring jobs that run Claude and can message you back
 - **Web access** — search and fetch content from the web
 - **Container isolation** — agents are sandboxed in Docker (macOS/Linux/WSL2), with optional
@@ -135,6 +138,27 @@ From a channel you own or administer, you can manage groups and tasks:
 @Andy pause the Monday briefing task
 @Andy join the Family Chat group
 ```
+
+## How It Learns
+
+NanoClaw doesn't start every conversation from a blank slate. Each agent group builds up its own memory over time — and
+you stay in control of what it keeps.
+
+- **Persistent memory.** Tell your assistant something durable — a preference, a fact about you, an "always do X" or
+  "never do Y" — and it records it. Facts about you live in `USER.md`; operational lessons and conventions live in
+  `MEMORY.md`. Both are loaded into every future session, so the assistant starts each conversation already knowing
+  them. Memory is scoped per agent group and held to a budget, so it stays tight rather than sprawling.
+- **Searchable history.** It can search across past conversations to recall what you discussed before, instead of asking
+  you to repeat yourself.
+- **Self-authored skills.** When the assistant works out a reliable multi-step procedure — a deploy recipe, a scraping
+  workflow, an error-and-fix — it can write it down as a reusable skill so it doesn't have to rediscover it next time.
+- **Weekly reflection.** Once a week the assistant quietly reviews the week's conversations, search patterns, and task
+  outcomes, folds the lessons into memory, and prunes anything that's gone stale. It sends no message — the only result
+  is sharper memory next week.
+
+Everything it knows is yours to inspect and edit. Just ask ("what do you remember about me?", "forget that I prefer
+X"), or open the plain-Markdown `MEMORY.md` / `USER.md` in the agent group's workspace. Design notes live in
+[docs/proposal-learning-and-memory.md](docs/proposal-learning-and-memory.md).
 
 ## Customizing
 
@@ -162,11 +186,8 @@ for and nothing else.
 
 ### RFS (Request for Skills)
 
-Skills we'd like to see:
-
-**Communication Channels**
-
-- `/add-signal` — Add Signal as a channel
+Have an idea for a channel or provider skill you'd like to see? [Open it on the Discord](https://discord.gg/VDdww8qS42)
+or send a PR to the `channels` / `providers` branch.
 
 ## Requirements
 
