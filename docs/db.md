@@ -1,25 +1,28 @@
 # NanoClaw Database Architecture — Overview
 
-Orientation for the data model: the three databases, how they fit together, and the invariants that hold across them. For table-level schemas, follow the links below.
+Orientation for the data model: the databases, how they fit together, and the invariants that hold across them. Three sit in the message path (central + the two per-session files); a fourth, the host-only conversation search index, sits beside them. For table-level schemas, follow the links below.
 
-- **[db-central.md](db-central.md)** — every table in `data/v2.db` (identity, wiring, approvals, Chat SDK state) plus the migration system.
+- **[db-central.md](db-central.md)** — every table in `data/v2.db` (identity, wiring, approvals, Chat SDK state, task outcomes) plus the migration system.
 - **[db-session.md](db-session.md)** — the per-session `inbound.db` + `outbound.db` pair, seq parity, and session folder layout.
 
 Related: [architecture.md](architecture.md) for the high-level design; [api-details.md](api-details.md) for inbound/outbound message content shapes; [isolation-model.md](isolation-model.md) for channel-to-agent wiring modes.
 
 ---
 
-## 1. The three databases
+## 1. The databases
 
-NanoClaw uses **three kinds of SQLite database**, all on the host filesystem:
+NanoClaw uses **four kinds of SQLite database**, all on the host filesystem. Three are in the message path; the fourth is a host-only full-text index that never crosses the mount:
 
 | DB | Location | Writer | Readers | Purpose |
 |----|----------|--------|---------|---------|
-| **Central** | `data/v2.db` | host | host | Identity, permissions, routing, wiring — the admin plane |
+| **Central** | `data/v2.db` | host | host | Identity, permissions, routing, wiring, task outcomes — the admin plane |
 | **Session inbound** | `data/v2-sessions/<agent_group_id>/<session_id>/inbound.db` | host | host (sync), container (read-only) | Host → container messages + routing projections |
 | **Session outbound** | `data/v2-sessions/<agent_group_id>/<session_id>/outbound.db` | container | host (poll), container | Container → host messages + processing status |
+| **Search index** | `data/v2-index.db` | host | host | FTS5 index of conversation history for the `search_history` tool; scoped by `agent_group_id`. Host-only — see note below |
 
-**Single-writer rule.** Every SQLite file has exactly one writer. Host writes the central DB and every `inbound.db`; container writes only its own `outbound.db`. This eliminates write contention across the Docker/Apple Container mount boundary — SQLite locking across that boundary is unreliable.
+**Single-writer rule.** Every SQLite file has exactly one writer. Host writes the central DB, the search index, and every `inbound.db`; container writes only its own `outbound.db`. This eliminates write contention across the Docker/Apple Container mount boundary — SQLite locking across that boundary is unreliable.
+
+**Search index is host-only and round-trip.** `data/v2-index.db` is gitignored, has no central migration (its schema is created on demand by `createSearchIndexSchema` in `src/db/search-index-db.ts`), and is populated incrementally in the 60s host sweep (`src/search-index.ts`). The container can **never** open it — it only mounts its own session dir, and a host-written WAL DB would hit the cross-mount mmap-coherency issue (§4). `search_history` is therefore a round-trip tool: the container asks via `outbound.db`, the host queries the index and writes the reply back to `inbound.db`. Every read goes through the single chokepoint `searchHistory(db, groupId, …)`, which ANDs `agent_group_id = ?` onto the FTS MATCH so one group can never see another's history (cross-group regression test in `search-index-db.test.ts`).
 
 **Everything is a message.** There is no IPC, stdin piping, or file watcher between host and container. The two session DBs are the sole IO surface. Heartbeat is a file `touch(2)` on `.heartbeat`, not a DB write.
 
@@ -32,6 +35,7 @@ NanoClaw uses **three kinds of SQLite database**, all on the host filesystem:
 ```
 data/
   v2.db                                   ← CENTRAL (host ↔ host)
+  v2-index.db                             ← SEARCH INDEX (host-only, FTS5; never mounted)
   v2-sessions/
     <agent_group_id>/
       .claude-shared/                     ← shared Claude state for the agent group
@@ -109,7 +113,9 @@ These rules are enforced by convention in `src/session-manager.ts` and `containe
 | `pending_approvals` | central | `src/db/sessions.ts`, `src/onecli-approvals.ts` | admin-card delivery, sweep |
 | `unregistered_senders` | central | `src/db/dropped-messages.ts` | ops tooling |
 | `chat_sdk_*` | central | `src/state-sqlite.ts` | Chat SDK bridge |
+| `task_outcomes` | central | `src/db/task-outcomes.ts` (from `src/host-sweep.ts`) | agent reflection, operators |
 | `schema_version` | central | `src/db/migrations/index.ts` | migration runner |
+| `messages_fts` + cursors | index (`v2-index.db`) | `src/search-index.ts` (sweep) | `searchHistory()` ← `search_history` round-trip |
 | `messages_in` | inbound | `src/db/session-db.ts` | `container/agent-runner/src/db/messages-in.ts` |
 | `delivered` | inbound | `src/db/session-db.ts` (`markDelivered`) | container edit/reaction targeting |
 | `destinations` | inbound | `writeDestinations()` in `src/session-manager.ts` | container routing / ACL |

@@ -719,6 +719,41 @@ Register a new agent group (admin only).
 
 Implementation: write a `messages_out` row with `kind: 'system'`, `action: 'register_agent_group'`. The host reads, validates admin permission, creates the entity rows in the central DB, and writes a `system` messages_in response.
 
+#### remember
+
+Curate the agent's persistent memory (learning & memory layer, feature #1). Two budgeted files are injected into every composed `CLAUDE.md`: `MEMORY.md` (operational lessons, conventions, how-to knowledge) and `USER.md` (durable facts about the user — preferences, identity, goals).
+
+```typescript
+{
+  name: 'remember',
+  params: {
+    target: 'memory' | 'user',          // which file
+    op: 'add' | 'replace' | 'remove',
+    text?: string,                       // op=add: the new one-line entry
+    match?: string,                      // op=replace|remove: a substring uniquely identifying one existing entry
+    replacement?: string,                // op=replace: the new entry text
+  }
+}
+```
+
+Implementation: round-trip system action (reuses the `ask_user_question` machinery). The tool writes a `messages_out` row with a deterministic reply id (`rem-resp-<requestId>`), then polls `messages_in` for the host's reply. Host-side, `src/modules/memory/` applies the op (one entry per non-empty line; `replace`/`remove` match a unique substring), enforces the per-group char budget (`memory_budget_chars` / `user_budget_chars` on `container_configs`), and recomposes `CLAUDE.md` directly — **no container restart** (the writing session already holds the fact; the snapshot only matters for future sessions). At capacity the tool returns the current entries so the agent consolidates before adding. Seeding from a migrated `CLAUDE.local.md` happens once at first compose (`seedMemoryFiles` in `src/claude-md-compose.ts`).
+
+#### search_history
+
+Full-text search over the agent group's own conversation history (learning & memory layer, feature #2).
+
+```typescript
+{
+  name: 'search_history',
+  params: {
+    query: string,     // words, FTS5 'OR', or "exact phrase"
+    limit?: number,    // default 10, max 50
+  }
+}
+```
+
+Implementation: round-trip system action. The container can't open the search index (`data/v2-index.db` is host-only — see [db.md §1](db.md#1-the-databases)), so the tool writes a `messages_out` request and polls for the reply. Host-side, `searchHistory(db, groupId, query, limit)` always ANDs `agent_group_id = ?` onto the FTS MATCH, so results are scoped to the calling group — an agent can never see another group's conversations. The index is built incrementally by the 60s sweep (`src/search-index.ts`) from user messages, agent replies, and archived `conversations/*.md`.
+
 ### Media Handling
 
 Source of truth: `container/agent-runner/src/multimodal.ts` (image blocks); `src/transcription.ts` + `src/pdf-extract.ts`

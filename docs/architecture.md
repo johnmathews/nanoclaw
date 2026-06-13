@@ -858,6 +858,13 @@ MCP tools write directly to the session DB.
 | `send_to_agent` | Write `messages_out` with `channel_type: 'agent'`, `platform_id: '{target}'` |
 | `send_card` | Write `messages_out` with card structure |
 
+**Memory & learning tools** (round-trip system actions — request via `messages_out`, host applies and replies on `messages_in`):
+
+| Tool | What it does |
+|------|-------------|
+| `remember` | Curate persistent `MEMORY.md` / `USER.md` (add/replace/remove entries). Host enforces a per-group char budget and recomposes `CLAUDE.md` — no restart. |
+| `search_history` | Full-text search the group's own conversation history via the host-only FTS5 index (`data/v2-index.db`); results scoped to the calling agent group. |
+
 See [agent-runner-details.md](agent-runner-details.md) for full MCP tool parameter definitions.
 
 ### Cards

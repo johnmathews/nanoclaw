@@ -321,6 +321,9 @@ CREATE TABLE container_configs (
   packages_npm           TEXT NOT NULL DEFAULT '[]',
   additional_mounts      TEXT NOT NULL DEFAULT '[]',
   cli_scope              TEXT NOT NULL DEFAULT 'group',   -- disabled | group | global
+  env                    TEXT NOT NULL DEFAULT '{}',      -- extra container env (migration 019); reserved keys filtered at spawn
+  memory_budget_chars    INTEGER NOT NULL DEFAULT 2200,   -- MEMORY.md hard char cap (migration 021)
+  user_budget_chars      INTEGER NOT NULL DEFAULT 1375,   -- USER.md hard char cap (migration 021)
   updated_at             TEXT NOT NULL
 );
 ```
@@ -328,6 +331,8 @@ CREATE TABLE container_configs (
 - **Readers:** `src/container-config.ts`, `src/container-runner.ts`, `src/cli/dispatch.ts` (scope enforcement), `src/claude-md-compose.ts`
 - **Writers:** `src/db/container-configs.ts`, `src/modules/self-mod/apply.ts`, `src/backfill-container-configs.ts`
 - **Default model:** `ensureContainerConfig()` seeds `model = 'claude-opus-4-7'` for new rows via `DEFAULT_MODEL` in `src/db/container-configs.ts`. NULL/empty `model` values are normalized to the default by migration 017. The agent-runner passes whatever's in `model` straight to the Claude Agent SDK — if you intentionally want SDK auto-selection, omit the field rather than leaving it blank in the DB.
+- **`env`** (migration 019): a JSON object of extra `KEY=value` pairs injected as `docker run -e` flags at spawn. Reserved keys (`TZ`, `HOME`, proxy/cert vars) are rejected at set time and filtered by the runner so per-group env can never reroute API traffic around the OneCLI proxy — see `containerEnvArgs` / `isReservedContainerEnv` in `src/container-config.ts`. Managed via `ncl groups config set-env/unset-env`.
+- **`memory_budget_chars` / `user_budget_chars`** (migration 021): hard character caps the `remember` tool enforces on `MEMORY.md` / `USER.md` (the learning & memory layer's curated files, injected into the composed `CLAUDE.md`). At capacity the tool errors and returns the current entries, forcing consolidation rather than unbounded growth. New groups inherit the defaults (2200 / 1375, the Hermes-proven sizes); migrated groups are seeded-to-fit from their old `CLAUDE.local.md` at first compose. Editable via `ncl groups config update --memory-budget/--user-budget`.
 
 ### 1.16 `pending_sender_approvals`
 
@@ -373,6 +378,29 @@ CREATE TABLE pending_channel_approvals (
 - `agent_group_id` is the wiring target picked at request time (currently: earliest `agent_groups` row by `created_at`).
 - Introduced by migration 012 (`channel-registration`); `title`/`options_json` added in migration 013.
 
+### 1.18 `task_outcomes`
+
+Task outcome log (learning & memory layer, feature #3). When a message exhausts its retries in the host sweep (`resetStuckProcessingRows` in `src/host-sweep.ts`), the host marks it `failed` and persists the failure *reason* + context here. Historically the reason only reached `log.warn` and was lost; this table lets the agent's weekly reflection pass (and operators) see what went wrong over time. Lives in the central DB — not a session DB — so it's admin-visible, survives restarts, and is queryable across sessions.
+
+```sql
+CREATE TABLE task_outcomes (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent_group_id  TEXT NOT NULL,
+  session_id      TEXT NOT NULL,
+  message_id      TEXT NOT NULL,
+  series_id       TEXT,                              -- ties recurring-task failures together
+  kind            TEXT,                              -- distinguishes scheduled-task failures from chat ones
+  reason          TEXT NOT NULL,
+  status          TEXT NOT NULL DEFAULT 'failed',
+  recorded_at     TEXT NOT NULL
+);
+CREATE INDEX idx_task_outcomes_group ON task_outcomes(agent_group_id);
+```
+
+- No FK to `messages_in` — that row lives in a per-session DB, not here.
+- **Writer:** `src/db/task-outcomes.ts` (called from `src/host-sweep.ts`; recording is best-effort/try-catch so it can never abort the stale-reset path). **Readers:** the agent (per-task `tasks/<slug>.outcomes.md` convention + reflection), operators.
+- Introduced by migration 020 (`task-outcomes`).
+
 ---
 
 ## 2. Migration system
@@ -400,6 +428,10 @@ Migrations live in `src/db/migrations/`, one file per migration. Runner: `runMig
 | 015 | `015-cli-scope.ts` | `cli-scope` | `ALTER TABLE container_configs ADD COLUMN cli_scope` |
 | 016 | `016-reply-mode.ts` | `reply-mode` | `ALTER TABLE messaging_groups ADD COLUMN reply_mode` (`thread`/`channel`; Slack-only effect) |
 | 017 | `017-default-model-opus.ts` | `default-model-opus` | Backfills `container_configs.model` from NULL/empty to `claude-opus-4-7` (new default) |
+| 018 | `018-reply-mode-channel-default.ts` | `reply-mode-channel-default` | Flips existing `messaging_groups.reply_mode` to `channel` (operator preference; column default also updated in code) |
+| 019 | `019-container-config-env.ts` | `container-config-env` | `ALTER TABLE container_configs ADD COLUMN env` (per-group container env map; reserved keys filtered at spawn) |
+| 020 | `020-task-outcomes.ts` | `task-outcomes` | `task_outcomes` — persisted task/chat failure reasons (learning & memory layer, feature #3) |
+| 021 | `021-memory-budgets.ts` | `memory-budgets` | `ALTER TABLE container_configs ADD COLUMN memory_budget_chars / user_budget_chars` (defaults 2200 / 1375; learning & memory layer, feature #1) |
 
 Numbers 005 and 006 are intentionally absent — migrations were renumbered during early development. The three module migrations (`module-*.ts`, originally 003 / 004 / 007) keep their historical `name` values in `schema_version`; the `module-` filename prefix is a code-hygiene rename for install-skill discoverability and is invisible to the migration runner (uniqueness is keyed on `name`, not version number — see `src/db/migrations/index.ts`).
 
