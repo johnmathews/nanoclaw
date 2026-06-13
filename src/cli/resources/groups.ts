@@ -375,7 +375,7 @@ registerResource({
       description:
         'Set environment variables injected into the container at spawn time. Requires `ncl groups restart` to take effect. ' +
         'Use --id <group-id> and either --key <NAME> --value <VAL> (single var) or --json <object> (merge multiple). ' +
-        'Reserved keys (TZ, HOME, *PROXY*, cert vars) are rejected — those are owned by the host and OneCLI gateway.',
+        'Reserved keys are rejected (owned by host + OneCLI gateway): TZ, HOME, the container-network proxy vars (HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY/FTP_PROXY) and cert-bundle vars. Namespaced tool vars like AGENT_BROWSER_PROXY are allowed.',
       handler: async (args) => {
         const id = args.id as string;
         if (!id) throw new Error('--id is required');

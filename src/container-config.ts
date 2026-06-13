@@ -58,8 +58,25 @@ export interface ContainerConfig {
  * agent's API calls around the credential proxy. Matched case-insensitively,
  * with prefix matching for the proxy family.
  */
-const RESERVED_ENV_EXACT = new Set(['TZ', 'HOME', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'SSL_CERT_DIR']);
-const RESERVED_ENV_SUBSTRINGS = ['PROXY', 'CURL_CA', 'REQUESTS_CA'];
+// The proxy/cert vars node + curl read to route the container's *own* network
+// + TLS trust. Overriding these could send the agent's API traffic around the
+// OneCLI credential proxy, so they're rejected. Matched by exact name — NOT by
+// substring — so namespaced tool vars like AGENT_BROWSER_PROXY (which only
+// proxies the in-tool browser, e.g. to route research browsing through a VPN)
+// remain settable.
+const RESERVED_ENV_EXACT = new Set([
+  'TZ',
+  'HOME',
+  'NODE_EXTRA_CA_CERTS',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'NO_PROXY',
+  'FTP_PROXY',
+]);
+const RESERVED_ENV_SUBSTRINGS = ['CURL_CA', 'REQUESTS_CA'];
 
 export function isReservedContainerEnv(key: string): boolean {
   const upper = key.toUpperCase();

@@ -122,7 +122,7 @@ Per-agent-group container runtime config (provider, model, packages, MCP servers
 
 Key files: `src/db/container-configs.ts`, `src/container-config.ts`, `src/cli/dispatch.ts` (scope enforcement), `src/claude-md-compose.ts` (instructions exclusion).
 
-**Per-group `env`** — the `env` JSON column (migration 019) holds extra environment variables injected into the container as `docker run -e` flags at spawn. Managed via `ncl groups config set-env/unset-env`. Reserved keys (`TZ`, `HOME`, `*PROXY*`, cert vars) are rejected at set time and filtered by the runner (`containerEnvArgs` / `isReservedContainerEnv` in `src/container-config.ts`) so per-group env can never reroute API traffic around the OneCLI credential proxy. Example use: paywall-bypass browsing — see [docs/research-paywall-browser.md](docs/research-paywall-browser.md).
+**Per-group `env`** — the `env` JSON column (migration 019) holds extra environment variables injected into the container as `docker run -e` flags at spawn. Managed via `ncl groups config set-env/unset-env`. Reserved keys are rejected at set time and filtered by the runner (`containerEnvArgs` / `isReservedContainerEnv` in `src/container-config.ts`) so per-group env can never reroute API traffic around the OneCLI credential proxy: `TZ`, `HOME`, the container-network proxy vars (`HTTP_PROXY`/`HTTPS_PROXY`/`ALL_PROXY`/`NO_PROXY`/`FTP_PROXY`), and cert-bundle vars (`NODE_EXTRA_CA_CERTS`, `*CURL_CA*`, `*REQUESTS_CA*`, `SSL_CERT_*`). Matched by exact name (not substring) so namespaced tool vars like `AGENT_BROWSER_PROXY` (proxy the in-tool browser through a VPN) stay settable. Example use: paywall-bypass browsing — see [docs/research-paywall-browser.md](docs/research-paywall-browser.md).
 
 ## Defaults & Conventions
 

@@ -9,8 +9,8 @@ describe('isReservedContainerEnv', () => {
     }
   });
 
-  it('flags the whole proxy family by substring', () => {
-    for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'ALL_PROXY', 'no_proxy']) {
+  it('flags the container-network proxy family by exact name (case-insensitive)', () => {
+    for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'ALL_PROXY', 'no_proxy', 'FTP_PROXY']) {
       expect(isReservedContainerEnv(key)).toBe(true);
     }
   });
@@ -24,6 +24,14 @@ describe('isReservedContainerEnv', () => {
     for (const key of ['AGENT_BROWSER_EXTENSIONS', 'AGENT_BROWSER_PROFILE', 'AGENT_BROWSER_ARGS', 'MY_FLAG']) {
       expect(isReservedContainerEnv(key)).toBe(false);
     }
+  });
+
+  it('allows namespaced tool proxy vars (only the container-network proxy is reserved)', () => {
+    // AGENT_BROWSER_PROXY routes the in-tool browser (e.g. through a VPN) and
+    // must NOT be caught by the proxy guard — that guard is for the container's
+    // own HTTP(S)_PROXY which fronts the OneCLI credential gateway.
+    expect(isReservedContainerEnv('AGENT_BROWSER_PROXY')).toBe(false);
+    expect(isReservedContainerEnv('AGENT_BROWSER_PROXY_BYPASS')).toBe(false);
   });
 });
 
