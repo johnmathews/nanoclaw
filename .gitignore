@@ -11,7 +11,13 @@ store/
 data/
 logs/
 
-# Groups - per-installation state, not tracked
+# Groups - per-installation state, not tracked.
+# CONFIDENTIALITY: per-group content (agent memory, scraped/archived article
+# text, conversation transcripts) must NEVER be committed or pushed. The
+# #financial-times agent stores full FT article text under
+# groups/slack_financial-times/notes/articles/ — local-only by policy; it must
+# not leave this machine via git. Do not loosen these rules or `git add -f`
+# anything under groups/, data/, or logs/.
 groups/*
 
 # Composer-managed CLAUDE.md artifacts (regenerated every spawn) and
