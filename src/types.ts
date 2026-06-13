@@ -26,6 +26,8 @@ export interface ContainerConfigRow {
   additional_mounts: string; // JSON: AdditionalMountConfig[]
   env: string; // JSON: Record<string, string> — extra container env (-e flags)
   cli_scope: string; // 'disabled' | 'group' | 'global'
+  memory_budget_chars: number; // hard char cap on MEMORY.md (remember tool)
+  user_budget_chars: number; // hard char cap on USER.md (remember tool)
   updated_at: string;
 }
 

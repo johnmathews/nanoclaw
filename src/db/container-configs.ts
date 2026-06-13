@@ -10,6 +10,10 @@ import { getDb } from './connection.js';
  */
 export const DEFAULT_MODEL = 'claude-opus-4-7';
 
+/** Default per-group memory budgets (chars). Hermes-proven; mirror migration 021. */
+export const DEFAULT_MEMORY_BUDGET = 2200;
+export const DEFAULT_USER_BUDGET = 1375;
+
 const SCALAR_COLUMNS = new Set([
   'provider',
   'model',
@@ -18,6 +22,8 @@ const SCALAR_COLUMNS = new Set([
   'assistant_name',
   'max_messages_per_prompt',
   'cli_scope',
+  'memory_budget_chars',
+  'user_budget_chars',
 ]);
 const JSON_COLUMNS = new Set(['skills', 'mcp_servers', 'packages_apt', 'packages_npm', 'additional_mounts', 'env']);
 
@@ -38,11 +44,11 @@ export function createContainerConfig(config: ContainerConfigRow): void {
       `INSERT INTO container_configs (
         agent_group_id, provider, model, effort, image_tag, assistant_name,
         max_messages_per_prompt, skills, mcp_servers, packages_apt, packages_npm,
-        additional_mounts, env, updated_at
+        additional_mounts, env, memory_budget_chars, user_budget_chars, updated_at
       ) VALUES (
         @agent_group_id, @provider, @model, @effort, @image_tag, @assistant_name,
         @max_messages_per_prompt, @skills, @mcp_servers, @packages_apt, @packages_npm,
-        @additional_mounts, @env, @updated_at
+        @additional_mounts, @env, @memory_budget_chars, @user_budget_chars, @updated_at
       )`,
     )
     .run(config);
@@ -64,7 +70,15 @@ export function updateContainerConfigScalars(
   updates: Partial<
     Pick<
       ContainerConfigRow,
-      'provider' | 'model' | 'effort' | 'image_tag' | 'assistant_name' | 'max_messages_per_prompt' | 'cli_scope'
+      | 'provider'
+      | 'model'
+      | 'effort'
+      | 'image_tag'
+      | 'assistant_name'
+      | 'max_messages_per_prompt'
+      | 'cli_scope'
+      | 'memory_budget_chars'
+      | 'user_budget_chars'
     >
   >,
 ): void {

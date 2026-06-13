@@ -72,6 +72,8 @@ describe('container-configs default model', () => {
       additional_mounts: '[]',
       env: '{}',
       cli_scope: 'group',
+      memory_budget_chars: 2200,
+      user_budget_chars: 1375,
       updated_at: new Date().toISOString(),
     });
 

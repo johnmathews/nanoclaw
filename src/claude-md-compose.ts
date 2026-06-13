@@ -19,9 +19,17 @@ import path from 'path';
 
 import { GROUPS_DIR } from './config.js';
 import type { McpServerConfig } from './container-config.js';
-import { getContainerConfig } from './db/container-configs.js';
+import { getContainerConfig, updateContainerConfigScalars } from './db/container-configs.js';
 import { log } from './log.js';
 import type { AgentGroup } from './types.js';
+
+const MEMORY_FILE = 'MEMORY.md';
+const USER_FILE = 'USER.md';
+const MEMORY_FLOOR = 2200;
+const SEED_HEADROOM = 1.25;
+const LOCAL_MIGRATED_NOTE =
+  '<!-- Operational memory now lives in MEMORY.md, curated by the `remember` tool. ' +
+  'This file is intentionally left blank to avoid loading the same content twice. -->\n';
 
 // Symlink targets are container paths — dangling on host (hence the readlink
 // dance instead of existsSync), valid inside the container via RO mounts.
@@ -45,6 +53,8 @@ export function composeGroupClaudeMd(group: AgentGroup): void {
   if (!fs.existsSync(groupDir)) {
     fs.mkdirSync(groupDir, { recursive: true });
   }
+
+  seedMemoryFiles(groupDir, group.id);
 
   const sharedLink = path.join(groupDir, '.claude-shared.md');
   syncSymlink(sharedLink, SHARED_CLAUDE_MD_CONTAINER_PATH);
@@ -112,6 +122,21 @@ export function composeGroupClaudeMd(group: AgentGroup): void {
         content: mcp.instructions,
       });
     }
+  }
+
+  // Curated memory fragments — MEMORY.md / USER.md injected as a frozen
+  // per-session snapshot (Hermes-style, prompt-cache friendly). Inline (not
+  // symlink) because the content must be the literal text at compose time, and
+  // it lives in the RO-overlaid .claude-fragments so the agent can't edit the
+  // live snapshot in place — edits go through the `remember` round-trip.
+  for (const [file, fragName, heading] of [
+    [MEMORY_FILE, 'memory.md', 'Operational memory (MEMORY.md)'],
+    [USER_FILE, 'user.md', 'User profile (USER.md)'],
+  ] as const) {
+    const p = path.join(groupDir, file);
+    if (!fs.existsSync(p)) continue;
+    const text = fs.readFileSync(p, 'utf8').trim();
+    if (text) desired.set(fragName, { type: 'inline', content: `## ${heading}\n\n${text}\n` });
   }
 
   // Reconcile: drop stale, write desired.
@@ -193,6 +218,42 @@ export function migrateGroupsToClaudeLocal(): void {
 
   if (actions.length > 0) {
     log.info('Migrated groups to CLAUDE.local.md model', { actions });
+  }
+}
+
+/**
+ * One-time seed of the curated-memory files (learning & memory feature #1).
+ * Keyed on MEMORY.md absence so it runs exactly once per group, on the first
+ * compose after the feature ships. If the group already carries per-group
+ * memory in CLAUDE.local.md, MOVE it into MEMORY.md (operational bucket), size
+ * the budget to fit, and blank CLAUDE.local.md so the same text isn't loaded
+ * twice (Claude Code auto-loads CLAUDE.local.md separately from the injected
+ * fragment). Cost-neutral: that content already loads today.
+ *
+ * Best-effort — a seeding failure must never break composition.
+ */
+function seedMemoryFiles(groupDir: string, agentGroupId: string): void {
+  const memoryFile = path.join(groupDir, MEMORY_FILE);
+  if (fs.existsSync(memoryFile)) return; // already seeded
+
+  try {
+    const localFile = path.join(groupDir, 'CLAUDE.local.md');
+    const local = fs.existsSync(localFile) ? fs.readFileSync(localFile, 'utf8').trim() : '';
+
+    if (local) {
+      writeAtomic(memoryFile, `${local}\n`);
+      const budget = Math.max(MEMORY_FLOOR, Math.ceil(local.length * SEED_HEADROOM));
+      updateContainerConfigScalars(agentGroupId, { memory_budget_chars: budget });
+      writeAtomic(localFile, LOCAL_MIGRATED_NOTE);
+      log.info('Seeded MEMORY.md from CLAUDE.local.md', { group: agentGroupId, chars: local.length, budget });
+    } else {
+      writeAtomic(memoryFile, '');
+    }
+
+    const userFile = path.join(groupDir, USER_FILE);
+    if (!fs.existsSync(userFile)) writeAtomic(userFile, '');
+  } catch (err) {
+    log.warn('Memory seed failed', { group: agentGroupId, error: String(err) });
   }
 }
 

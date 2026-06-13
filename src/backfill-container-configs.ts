@@ -11,7 +11,12 @@ import path from 'path';
 import { GROUPS_DIR } from './config.js';
 import type { McpServerConfig, AdditionalMountConfig } from './container-config.js';
 import { getAllAgentGroups } from './db/agent-groups.js';
-import { getContainerConfig, createContainerConfig } from './db/container-configs.js';
+import {
+  getContainerConfig,
+  createContainerConfig,
+  DEFAULT_MEMORY_BUDGET,
+  DEFAULT_USER_BUDGET,
+} from './db/container-configs.js';
 import { log } from './log.js';
 import type { ContainerConfigRow } from './types.js';
 
@@ -66,6 +71,8 @@ export function backfillContainerConfigs(): void {
       additional_mounts: JSON.stringify(legacy.additionalMounts ?? []),
       env: '{}', // legacy container.json predates per-group env (migration 019)
       cli_scope: 'group',
+      memory_budget_chars: DEFAULT_MEMORY_BUDGET,
+      user_budget_chars: DEFAULT_USER_BUDGET,
       updated_at: new Date().toISOString(),
     };
 

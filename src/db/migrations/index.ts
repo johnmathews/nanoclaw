@@ -17,6 +17,7 @@ import { migration017 } from './017-default-model-opus.js';
 import { migration018 } from './018-reply-mode-channel-default.js';
 import { migration019 } from './019-container-config-env.js';
 import { migration020 } from './020-task-outcomes.js';
+import { migration021 } from './021-memory-budgets.js';
 import { moduleApprovalsPendingApprovals } from './module-approvals-pending-approvals.js';
 import { moduleApprovalsTitleOptions } from './module-approvals-title-options.js';
 
@@ -45,6 +46,7 @@ const migrations: Migration[] = [
   migration018,
   migration019,
   migration020,
+  migration021,
 ];
 
 export function runMigrations(db: Database.Database): void {
