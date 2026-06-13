@@ -19,7 +19,7 @@ import {
   ONECLI_URL,
   TIMEZONE,
 } from './config.js';
-import { materializeContainerJson } from './container-config.js';
+import { containerEnvArgs, materializeContainerJson } from './container-config.js';
 import { getContainerConfig } from './db/container-configs.js';
 import { updateContainerConfigScalars, updateContainerConfigJson } from './db/container-configs.js';
 import { CONTAINER_RUNTIME_BIN, hostGatewayArgs, readonlyMountArgs, stopContainer } from './container-runtime.js';
@@ -423,6 +423,19 @@ async function buildContainerArgs(
   if (providerContribution.env) {
     for (const [key, value] of Object.entries(providerContribution.env)) {
       args.push('-e', `${key}=${value}`);
+    }
+  }
+
+  // Per-group operator env (container.json `env`). Reserved keys are filtered
+  // so this can never clobber the host/OneCLI proxy + cert wiring applied
+  // below. Pushed before OneCLI/host-gateway/user-mapping so that on any
+  // residual key collision the later (privileged) `-e` wins under docker's
+  // last-value-wins semantics.
+  {
+    const { args: envArgs, skipped } = containerEnvArgs(containerConfig.env);
+    args.push(...envArgs);
+    if (skipped.length > 0) {
+      log.warn('Skipped reserved container env keys', { containerName, skipped });
     }
   }
 

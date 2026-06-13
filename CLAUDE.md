@@ -81,7 +81,7 @@ ncl help
 
 | Resource | Verbs | What it is |
 |----------|-------|------------|
-| groups | list, get, create, update, delete, restart, config get/update, config add-mcp-server/remove-mcp-server, config add-package/remove-package | Agent groups (workspace, personality, container config) |
+| groups | list, get, create, update, delete, restart, config get/update, config add-mcp-server/remove-mcp-server, config add-package/remove-package, config set-env/unset-env | Agent groups (workspace, personality, container config) |
 | messaging-groups | list, get, create, update, delete | A single chat/channel on one platform |
 | wirings | list, get, create, update, delete | Links a messaging group to an agent group (session mode, triggers) |
 | users | list, get, create, update | Platform identities (`<channel>:<handle>`) |
@@ -121,6 +121,8 @@ Per-agent-group container runtime config (provider, model, packages, MCP servers
 | `global` | Unrestricted. Set automatically for owner agent groups via `init-first-agent`. |
 
 Key files: `src/db/container-configs.ts`, `src/container-config.ts`, `src/cli/dispatch.ts` (scope enforcement), `src/claude-md-compose.ts` (instructions exclusion).
+
+**Per-group `env`** — the `env` JSON column (migration 019) holds extra environment variables injected into the container as `docker run -e` flags at spawn. Managed via `ncl groups config set-env/unset-env`. Reserved keys (`TZ`, `HOME`, `*PROXY*`, cert vars) are rejected at set time and filtered by the runner (`containerEnvArgs` / `isReservedContainerEnv` in `src/container-config.ts`) so per-group env can never reroute API traffic around the OneCLI credential proxy. Example use: paywall-bypass browsing — see [docs/research-paywall-browser.md](docs/research-paywall-browser.md).
 
 ## Defaults & Conventions
 

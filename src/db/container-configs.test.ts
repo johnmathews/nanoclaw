@@ -6,8 +6,10 @@ import {
   createContainerConfig,
   ensureContainerConfig,
   getContainerConfig,
+  updateContainerConfigJson,
   updateContainerConfigScalars,
 } from './container-configs.js';
+import { configFromDb } from '../container-config.js';
 import { createAgentGroup } from './agent-groups.js';
 import { runMigrations } from './migrations/index.js';
 import type { AgentGroup } from '../types.js';
@@ -68,6 +70,7 @@ describe('container-configs default model', () => {
       packages_apt: '[]',
       packages_npm: '[]',
       additional_mounts: '[]',
+      env: '{}',
       cli_scope: 'group',
       updated_at: new Date().toISOString(),
     });
@@ -90,5 +93,40 @@ describe('container-configs default model', () => {
     getDb().prepare("UPDATE container_configs SET model = 'claude-opus-4-7' WHERE model IS NULL OR model = ''").run();
 
     expect(getContainerConfig('ag-empty')?.model).toBe(DEFAULT_MODEL);
+  });
+});
+
+describe('container-configs env (migration 019)', () => {
+  it('migration 019 adds env column defaulting to empty object', () => {
+    createAgentGroup(makeAgentGroup('ag-env-default'));
+    ensureContainerConfig('ag-env-default');
+
+    const row = getContainerConfig('ag-env-default');
+    expect(row?.env).toBe('{}');
+  });
+
+  it('round-trips an env map through updateContainerConfigJson + configFromDb', () => {
+    createAgentGroup(makeAgentGroup('ag-env'));
+    ensureContainerConfig('ag-env');
+
+    updateContainerConfigJson('ag-env', 'env', {
+      AGENT_BROWSER_EXTENSIONS: '/workspace/extra/bpc',
+      AGENT_BROWSER_PROFILE: '/workspace/agent/.bpc-profile',
+      AGENT_BROWSER_ARGS: '--no-sandbox,--headless=new',
+    });
+
+    const row = getContainerConfig('ag-env')!;
+    expect(JSON.parse(row.env)).toEqual({
+      AGENT_BROWSER_EXTENSIONS: '/workspace/extra/bpc',
+      AGENT_BROWSER_PROFILE: '/workspace/agent/.bpc-profile',
+      AGENT_BROWSER_ARGS: '--no-sandbox,--headless=new',
+    });
+
+    const config = configFromDb(row, makeAgentGroup('ag-env'));
+    expect(config.env).toEqual({
+      AGENT_BROWSER_EXTENSIONS: '/workspace/extra/bpc',
+      AGENT_BROWSER_PROFILE: '/workspace/agent/.bpc-profile',
+      AGENT_BROWSER_ARGS: '--no-sandbox,--headless=new',
+    });
   });
 });

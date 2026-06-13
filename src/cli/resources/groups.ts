@@ -1,4 +1,4 @@
-import type { McpServerConfig } from '../../container-config.js';
+import { isReservedContainerEnv, type McpServerConfig } from '../../container-config.js';
 import { buildAgentGroupImage, killContainer, wakeContainer } from '../../container-runner.js';
 import { restartAgentGroupContainers } from '../../container-restart.js';
 import { getDb, hasTable } from '../../db/connection.js';
@@ -27,6 +27,7 @@ function presentConfig(row: ContainerConfigRow): Record<string, unknown> {
     packages_apt: JSON.parse(row.packages_apt),
     packages_npm: JSON.parse(row.packages_npm),
     additional_mounts: JSON.parse(row.additional_mounts),
+    env: JSON.parse(row.env ?? '{}'),
     cli_scope: row.cli_scope,
     updated_at: row.updated_at,
   };
@@ -367,6 +368,66 @@ registerResource({
           removed: { apt: apt || null, npm: npm || null },
           note: 'Image rebuild required for package changes to take effect.',
         };
+      },
+    },
+    'config set-env': {
+      access: 'approval',
+      description:
+        'Set environment variables injected into the container at spawn time. Requires `ncl groups restart` to take effect. ' +
+        'Use --id <group-id> and either --key <NAME> --value <VAL> (single var) or --json <object> (merge multiple). ' +
+        'Reserved keys (TZ, HOME, *PROXY*, cert vars) are rejected — those are owned by the host and OneCLI gateway.',
+      handler: async (args) => {
+        const id = args.id as string;
+        if (!id) throw new Error('--id is required');
+
+        const row = getContainerConfig(id);
+        if (!row) throw new Error(`No container config for group: ${id}`);
+
+        const env = JSON.parse(row.env ?? '{}') as Record<string, string>;
+
+        const incoming: Record<string, string> = {};
+        if (args.json !== undefined) {
+          const parsed = JSON.parse(args.json as string) as Record<string, unknown>;
+          for (const [k, v] of Object.entries(parsed)) incoming[k] = String(v);
+        } else if (args.key !== undefined) {
+          if (args.value === undefined) throw new Error('--value is required when using --key');
+          incoming[args.key as string] = String(args.value);
+        } else {
+          throw new Error('Provide --key <NAME> --value <VAL> or --json <object>');
+        }
+
+        const rejected = Object.keys(incoming).filter((k) => isReservedContainerEnv(k));
+        if (rejected.length > 0) {
+          throw new Error(
+            `Reserved env keys cannot be set (owned by host/OneCLI): ${rejected.join(', ')}`,
+          );
+        }
+
+        Object.assign(env, incoming);
+        updateContainerConfigJson(id, 'env', env);
+
+        return { set: Object.keys(incoming), env, note: 'Run `ncl groups restart` to apply.' };
+      },
+    },
+    'config unset-env': {
+      access: 'approval',
+      description:
+        'Remove an environment variable from a group. Requires `ncl groups restart` to take effect. Use --id <group-id> --key <NAME>.',
+      handler: async (args) => {
+        const id = args.id as string;
+        if (!id) throw new Error('--id is required');
+        const key = args.key as string;
+        if (!key) throw new Error('--key is required');
+
+        const row = getContainerConfig(id);
+        if (!row) throw new Error(`No container config for group: ${id}`);
+
+        const env = JSON.parse(row.env ?? '{}') as Record<string, string>;
+        if (!(key in env)) throw new Error(`Env var "${key}" not set`);
+        delete env[key];
+        updateContainerConfigJson(id, 'env', env);
+
+        return { removed: key, env, note: 'Run `ncl groups restart` to apply.' };
       },
     },
   },
