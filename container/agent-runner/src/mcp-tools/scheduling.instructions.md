@@ -19,6 +19,17 @@ This pattern exists so the human user can read and edit task instructions outsid
 
 When editing an existing task, if you find its prompt still contains the body inline, migrate it: write a `tasks/<slug>.md` file and replace the prompt with the pointer in one `update_task` call.
 
+### Keep a per-task outcome log
+
+Each scheduled task carries a running outcome log next to its body: `/workspace/agent/tasks/<slug>.outcomes.md`. Treat it as the task's memory of how previous runs went.
+
+1. **Read it first.** At the start of every run, read `tasks/<slug>.outcomes.md` (if it exists) before doing the work. Past entries tell you what went wrong last time and what to do differently — honour them.
+2. **Append one line at the end.** When the run finishes, append a single dated line: the outcome (`ok` / `failed`), what went wrong if anything, and what to change next time. Keep it terse — one line per run, newest at the bottom. Example:
+
+   > 2026-06-13 ok — sent digest; source feed was slow, consider caching headlines next time
+
+This is your own feedback loop and complements the host-side failure log (the host records hard retry-exhaustion failures automatically; this file is for the softer "it worked but..." signal only you can see). Don't let the file grow without bound — when it gets long, consolidate repeated lessons into a short "Standing notes" block at the top and prune the dated lines below it.
+
 Frequent recurring scheduled tasks — more than a few times a day — consume API credits and can risk account restrictions. You can add a `script` that runs first, and you will only be called when the check passes.
 
 ### How it works

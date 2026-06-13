@@ -31,6 +31,8 @@ import fs from 'fs';
 
 import { getActiveSessions } from './db/sessions.js';
 import { getAgentGroup } from './db/agent-groups.js';
+import { getDb } from './db/connection.js';
+import { recordTaskOutcome } from './db/task-outcomes.js';
 import {
   countDueMessages,
   deleteOrphanProcessingClaims,
@@ -300,6 +302,22 @@ function resetStuckProcessingRows(
         sessionId: session.id,
         reason,
       });
+      // Persist the failure reason to the central task-outcome log so the
+      // agent's reflection pass can learn from it. Best-effort: a recording
+      // failure must never abort the stale-reset path, which has already done
+      // the load-bearing work (markMessageFailed + claim cleanup below).
+      try {
+        recordTaskOutcome(getDb(), {
+          agentGroupId: session.agent_group_id,
+          sessionId: session.id,
+          messageId: msg.id,
+          seriesId: msg.seriesId,
+          kind: msg.kind,
+          reason,
+        });
+      } catch (err) {
+        log.warn('Failed to record task outcome', { messageId: msg.id, error: String(err) });
+      }
     } else {
       const backoffMs = BACKOFF_BASE_MS * Math.pow(2, msg.tries);
       const backoffSec = Math.floor(backoffMs / 1000);

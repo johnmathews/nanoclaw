@@ -12,7 +12,7 @@ NanoClaw has a memory **data layer** but no **active layer** — nothing recalls
 |--------|--------|
 | Per-group `CLAUDE.local.md` (static, never consolidated) | Any automatic memory write/consolidation |
 | Transcript archiving to `groups/<folder>/conversations/*.md` via the Claude provider's PreCompact hook | Any way to *search* those transcripts |
-| Scheduled tasks with recurrence + retry (`src/host-sweep.ts`) | Failure-reason logging — tasks end as a bare `status='failed'` |
+| Scheduled tasks with recurrence + retry (`src/host-sweep.ts`) | Persisted failure reasons — on retry-exhaustion the reason is emitted to logs (`host-sweep.ts:298`) but never written to the DB; the task row ends as a bare `status='failed'` |
 | Per-group skills mount (`groups/<folder>/skills/`, `src/group-init.ts`) | Any trigger for agents to author/patch their own skills |
 | Health snapshot (`src/health-snapshot.ts`) | Per-group usage analytics, answer-usefulness signals |
 | Optional `/add-mnemon`, `/add-karpathy-llm-wiki` skills | Anything memory-related shipped by default |
@@ -35,7 +35,7 @@ Hermes Agent (distinct from the Hermes LLM finetunes) markets itself as "the onl
 
 Add a `remember` tool in `container/agent-runner/src/mcp-tools/` with two targets (`memory` → `MEMORY.md`, `user` → `USER.md`) and three actions (`add`, `replace`-by-substring, `remove`-by-substring), each file under a hard character budget that errors-and-returns-entries at capacity.
 
-Because `groups/<folder>/` is mounted read-only into the container, the tool writes a **system action to `outbound.db`** and the host applies the edit — same pattern as `schedule`/approvals in `src/delivery.ts`. This fits "everything is a message" exactly.
+The group folder (`/workspace/agent`) is actually mounted **read-write** (`container-runner.ts:273`), so the container *could* write the files directly — but two things make the system-action route the right call anyway. First, the composed `CLAUDE.md` is overlaid **read-only** (`container-runner.ts:291`), so the agent can't edit the live snapshot in place; edits must go to a source file that the host recomposes. Second, NanoClaw's core discipline is "exactly one writer per file" + "everything is a message." So the tool writes a **system action to `outbound.db`** and the host applies the edit and recomposes — same pattern as `schedule`/approvals in `src/delivery.ts`. The justification is single-writer consistency and recomposition, not a missing write permission.
 
 `src/claude-md-compose.ts` injects both files into the composed CLAUDE.md, making them a frozen per-session snapshot (Hermes-style, prompt-cache friendly). Tool description carries the "don't store" rules.
 
@@ -56,7 +56,7 @@ This is the per-task feedback loop and composes with existing recurrence machine
 
 ### 4. Self-authored skills as procedural memory
 
-A container skill (or extension to `self-customize`) teaching Hermes's trigger rules — *5+ tool calls and succeeded*, *error → fix found*, *user correction revealed better workflow* — and a required `SKILL.md` format with **Pitfalls** and **Verification** sections, written to the already-mounted `groups/<folder>/skills/`. Agents patch skills in place when usage proves them wrong. Mostly prompt work, not code.
+A container skill (or extension to `self-customize`) teaching Hermes's trigger rules — *5+ tool calls and succeeded*, *error → fix found*, *user correction revealed better workflow* — and a required `SKILL.md` format with **Pitfalls** and **Verification** sections. Per-group skills are not at `groups/<folder>/skills/`; they live at `data/v2-sessions/<group.id>/.claude-shared/skills/`, mounted read-write into the container at `/home/node/.claude/skills/` (`group-init.ts:90`, `container-runner.ts:313`). That directory is per-agent-group and reused across sessions, so a self-authored `SKILL.md` written there persists and is picked up on the next spawn — but note the *existing* entries in it are symlinks into the read-only `/app/skills` source, so agents author **new** files rather than editing symlinked ones in place. Agents patch their own authored skills when usage proves them wrong. Mostly prompt work, not code.
 
 ### 5. Weekly reflection as a recurring scheduled task
 
