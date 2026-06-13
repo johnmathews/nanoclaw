@@ -12,6 +12,7 @@ import { DATA_DIR } from './config.js';
 import { enforceStartupBackoff, resetCircuitBreaker } from './circuit-breaker.js';
 import { migrateGroupsToClaudeLocal } from './claude-md-compose.js';
 import { initDb } from './db/connection.js';
+import { initSearchIndexDb } from './db/search-index-db.js';
 import { runMigrations } from './db/migrations/index.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
 import { startActiveDeliveryPoll, startSweepDeliveryPoll, setDeliveryAdapter, stopDeliveryPolls } from './delivery.js';
@@ -84,6 +85,15 @@ async function main(): Promise<void> {
   const db = initDb(dbPath);
   runMigrations(db);
   log.info('Central DB ready', { path: dbPath });
+
+  // 1a. Host-owned conversation search index (learning & memory feature #2).
+  // Separate file, never mounted into a container. Guarded: a failure here is
+  // non-fatal — search_history degrades to "unavailable" but the host runs.
+  try {
+    initSearchIndexDb(path.join(DATA_DIR, 'v2-index.db'));
+  } catch (err) {
+    log.error('Failed to init search index DB — search_history disabled', { err });
+  }
 
   // 1b. Backfill container_configs from legacy container.json files.
   // Idempotent — skips groups that already have a config row.

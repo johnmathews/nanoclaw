@@ -1,6 +1,6 @@
 # Implementation Plan: Learning & Memory Layer
 
-**Status:** in progress — Features 3 & 1 BUILT (committed, not yet live); Features 2, 4, 5 pending
+**Status:** in progress — Features 3, 1 & 2 BUILT (committed, not yet live); Features 4, 5 pending
 **Date:** 2026-06-13
 **Companion to:** [proposal-learning-and-memory.md](proposal-learning-and-memory.md)
 
@@ -10,7 +10,7 @@
 |---|---------|-------|--------|
 | 3 | Task outcome log | ✅ built | `2fd5f4f` |
 | 1 | Budgeted `remember` tool | ✅ built | `7a527c1` |
-| 2 | FTS5 `search_history` | ⏳ next | — |
+| 2 | FTS5 `search_history` | ✅ built | _(this branch)_ |
 | 4 | Self-authored skills | ⏳ pending | — |
 | 5 | Weekly reflection | ⏳ pending | — |
 
@@ -103,6 +103,8 @@ Host reply (host → inbound.db, `kind='system'`, `trigger=0`, id `rem-resp-<req
 ---
 
 ## Feature 2 — FTS5 search over conversation history *(build third: reuses #1's round-trip + #3's sweep slot)*
+
+> **✅ As built:** matches the plan. **No central migration** — the index lives in its own host-only file `data/v2-index.db` (gitignored), opened at boot in `src/index.ts` (`initSearchIndexDb`, guarded — a failure disables search but doesn't stop the host). FTS5 schema = `messages_fts(agent_group_id UNINDEXED, source UNINDEXED, ref UNINDEXED, ts UNINDEXED, body)` + an `index_cursors` bookkeeping table (per-scope `seq` for messages, `mtime` for files). The single chokepoint `searchHistory(db, groupId, query, limit)` always ANDs `agent_group_id = ?` (an UNINDEXED column no MATCH expression can reference) onto the query; it tries the raw query first (FTS operators work) and falls back to a sanitized quoted-token form on a syntax error so a malformed query can never throw. Population (`src/search-index.ts` `indexSession`) runs in the 60s sweep — incremental by seq for `messages_in`/`messages_out` (skips `kind='system'` and any payload without string `text`), incremental by mtime for `conversations/*.md` (delete-by-ref + re-insert on change, no duplicates), capped 500 msgs / 25 files per session per tick, fully guarded. Round-trip reply id is `search-resp-<requestId>` (`trigger=0`). Files: `src/db/search-index-db.ts` (+ test), `src/search-index.ts` (+ test), `src/modules/search/{index,handler}.ts` (+ handler test), `src/host-sweep.ts`, `src/index.ts`, `src/modules/index.ts`, `container/agent-runner/src/mcp-tools/search_history.ts` (+ `.instructions.md`, + test), `mcp-tools/index.ts`.
 
 **Index — shared file, scoped by column (decision Q3).** One host-only `data/v2-index.db` (better-sqlite3, host sole writer; FTS5 confirmed available in the bundled build, SQLite 3.49.2):
 ```sql

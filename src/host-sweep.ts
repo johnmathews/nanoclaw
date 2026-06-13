@@ -28,11 +28,15 @@
  */
 import type Database from 'better-sqlite3';
 import fs from 'fs';
+import path from 'path';
 
+import { GROUPS_DIR } from './config.js';
 import { getActiveSessions } from './db/sessions.js';
 import { getAgentGroup } from './db/agent-groups.js';
 import { getDb } from './db/connection.js';
+import { getSearchIndexDb } from './db/search-index-db.js';
 import { recordTaskOutcome } from './db/task-outcomes.js';
+import { indexSession } from './search-index.js';
 import {
   countDueMessages,
   deleteOrphanProcessingClaims,
@@ -212,6 +216,26 @@ async function sweepSession(session: Session): Promise<void> {
     const { handleRecurrence } = await import('./modules/scheduling/recurrence.js');
     await handleRecurrence(inDb, session);
     // MODULE-HOOK:scheduling-recurrence:end
+
+    // 6. Incrementally index this session's history for search_history.
+    // Best-effort and non-load-bearing: a failure (or an uninitialized index
+    // DB) must never abort the sweep's primary maintenance work above. Caps
+    // per-tick work so a backlog drains over several sweeps.
+    const indexDb = getSearchIndexDb();
+    if (indexDb) {
+      try {
+        indexSession({
+          indexDb,
+          inDb,
+          outDb,
+          agentGroupId: agentGroup.id,
+          sessionId: session.id,
+          conversationsDir: path.join(GROUPS_DIR, agentGroup.folder, 'conversations'),
+        });
+      } catch (err) {
+        log.warn('Conversation indexing failed', { sessionId: session.id, err });
+      }
+    }
   } finally {
     inDb.close();
     outDb?.close();
