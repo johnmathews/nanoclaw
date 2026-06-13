@@ -1,6 +1,6 @@
 # Implementation Plan: Learning & Memory Layer
 
-**Status:** in progress — Features 3, 1 & 2 BUILT (committed, not yet live); Features 4, 5 pending
+**Status:** in progress — all five features BUILT (committed, not yet live)
 **Date:** 2026-06-13
 **Companion to:** [proposal-learning-and-memory.md](proposal-learning-and-memory.md)
 
@@ -10,9 +10,9 @@
 |---|---------|-------|--------|
 | 3 | Task outcome log | ✅ built | `2fd5f4f` |
 | 1 | Budgeted `remember` tool | ✅ built | `7a527c1` |
-| 2 | FTS5 `search_history` | ✅ built | _(this branch)_ |
-| 4 | Self-authored skills | ⏳ pending | — |
-| 5 | Weekly reflection | ⏳ pending | — |
+| 2 | FTS5 `search_history` | ✅ built | `1d0172d` |
+| 4 | Self-authored skills | ✅ built | _(this branch)_ |
+| 5 | Weekly reflection | ✅ built | _(this branch)_ |
 
 Branch: `feat/learning-memory-task-outcomes`. **Not live** — the service runs compiled `dist/`, so built features are inert until `pnpm run build` + service restart, at which point migrations 020/021 auto-apply (additive, no backfill). Migrations 020 (`task-outcomes`) and 021 (`memory-budgets`) are claimed; 019 was taken by `container-config-env`.
 
@@ -127,6 +127,8 @@ Plus a bookkeeping table (last-indexed seq per session, last-indexed mtime per c
 
 ## Feature 4 — Self-authored skills as procedural memory *(prompt-only, anytime)*
 
+> **✅ As built (this branch):** matches the plan. New container skill `container/skills/learn-skill/SKILL.md` (auto-wired, no registration code) teaches the three Hermes triggers, the load-bearing "author a uniquely-named NEW dir under `/home/node/.claude/skills/<name>/`, never edit a symlinked shared skill in place" rule (a colliding name is `rmSync`'d at `container-runner.ts:398`), required `## Pitfalls` + `## Verification` sections, and patch-on-disproof. The only code change is a test seam: `syncSkillSymlinks` is still private, exposed via `export function _syncSkillSymlinksForTesting(...)` (mirrors the `_resetStuckProcessingRowsForTesting` convention in `host-sweep.ts:295`). Regression tests in `src/container-runner.test.ts` lock the invariant: a non-symlink unique-named dir survives both reconcile loops with contents intact; a stale symlink not in `desired` is removed; a real dir colliding with a desired name IS clobbered (documents the caveat); plus a skill-presence test asserting the SKILL.md carries the two required headers. Files: `container/skills/learn-skill/SKILL.md`, `src/container-runner.ts` (test-seam export only), `src/container-runner.test.ts`.
+
 **Correctness verified.** `syncSkillSymlinks` (`src/container-runner.ts:344-404`) is **safe** for agent-authored skills: the removal loop only `unlinkSync`s entries that are *symlinks AND not in the desired set* (`:371`), and the clobber-replace only iterates the shared `desired` names (`:389-404`). A real directory the agent authors under `/home/node/.claude/skills/<name>/` (host: `data/v2-sessions/<group.id>/.claude-shared/skills/`) is not a symlink and not in `desired`, so it **survives the next spawn**. *Caveat:* the agent must author a uniquely-named new directory — a name colliding with a shared skill would be `rmSync`'d at `:397`.
 
 **Deliverable** — new `container/skills/<self-authoring>/SKILL.md` teaching the three Hermes triggers (5+ tool calls & succeeded; error → fix found; user correction revealed better workflow), required **Pitfalls** + **Verification** sections, the "author a uniquely-named new dir, never edit symlinked shared skills in place" rule, and patch-on-disproof. No code change; auto-wired by existing skill machinery.
@@ -136,6 +138,8 @@ Plus a bookkeeping table (last-indexed seq per session, last-indexed mtime per c
 ---
 
 ## Feature 5 — Weekly reflection recurring task *(build last: only pays off once 1–3 exist)*
+
+> **✅ As built (this branch):** matches the plan — no new code. Seed template at `docs/templates/weekly-reflection.md`. The body is the task instructions; the leading HTML comment documents how to enable it for a group (copy into `groups/<folder>/tasks/weekly-reflection.md`, then schedule a recurring task whose `prompt` is the one-line pointer `Run task: tasks/weekly-reflection.md` with `recurrence: "0 9 * * 1"`). The body walks the agent through: gather signal (read recent `conversations/`, `search_history` for repeated topics, read every `tasks/*.outcomes.md`) → consolidate via `remember` (fold repeats with `replace`, prune stale with `remove`, respect the budget) → optionally author procedural memory per `learn-skill` → finish **silently** (no chat/email, output only via tool calls). Composes Features 1/2/3/4. **Seeded into the `main` group** (per the 2026-06-13 decision): the body was copied to `groups/main/tasks/weekly-reflection.md` and a recurring task (`0 9 * * 1` — Mondays 09:00 Europe/Amsterdam, first run `2026-06-15T07:00:00Z`) was inserted into main's base session `inbound.db` (`sess-1779373704233-eu40dq`, the one already holding morning-report/documentation-summary), routed `slack:C0AMA1R7EPK`/`slack`/empty-thread to match the existing recurring tasks. The row was created with a one-off script reusing the host's own `insertTask` + `cron-parser`+`TIMEZONE` (so seq parity, `series_id`, and first `process_after` are computed identically to the round-trip path); the script was deleted after running. Note: the task body's `remember`/`search_history` tools only exist once Features 1/2 are live (`pnpm run build` + restart); a fire before then degrades gracefully (silent, uses `conversations/` + outcomes files only). Files: `docs/templates/weekly-reflection.md`, `groups/main/tasks/weekly-reflection.md`.
 
 **No new code.** A recurring task via the existing scheduling path (`schedule_task({ prompt:"<pointer>", recurrence:"0 9 * * 1" })`), body at `groups/<folder>/tasks/weekly-reflection.md` per the pointer convention. The body instructs the agent to review the week's `conversations/`, run `search_history` (#2) for recurring questions, read `tasks/*.outcomes.md` (#3), and consolidate into `MEMORY.md`/`USER.md` via `remember` (#1) — folding repeats in, pruning stale entries. Composes for free with `handleRecurrence` (`host-sweep.ts:210`). Only deliverable is the seed template.
 

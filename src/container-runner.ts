@@ -404,6 +404,13 @@ function syncSkillSymlinks(claudeDir: string, containerConfig: import('./contain
   }
 }
 
+export function _syncSkillSymlinksForTesting(
+  claudeDir: string,
+  containerConfig: import('./container-config.js').ContainerConfig,
+): void {
+  syncSkillSymlinks(claudeDir, containerConfig);
+}
+
 async function buildContainerArgs(
   mounts: VolumeMount[],
   containerName: string,
