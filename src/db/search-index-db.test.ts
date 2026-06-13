@@ -94,10 +94,7 @@ describe('searchHistory — malformed query safety', () => {
   });
 
   it('supports valid FTS operators on the raw path', () => {
-    indexRows(db, [
-      row({ ref: 'r1', body: 'apple pie recipe' }),
-      row({ ref: 'r2', body: 'banana bread recipe' }),
-    ]);
+    indexRows(db, [row({ ref: 'r1', body: 'apple pie recipe' }), row({ ref: 'r2', body: 'banana bread recipe' })]);
     expect(searchHistory(db, 'ag-A', 'apple OR banana')).toHaveLength(2);
   });
 });

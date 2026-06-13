@@ -160,7 +160,9 @@ export function getMessageForRetry(
   db: Database.Database,
   messageId: string,
   status: string,
-): { id: string; tries: number; processAfter: string | null; kind: string | null; seriesId: string | null } | undefined {
+):
+  | { id: string; tries: number; processAfter: string | null; kind: string | null; seriesId: string | null }
+  | undefined {
   return db
     .prepare(
       'SELECT id, tries, process_after as processAfter, kind, series_id as seriesId FROM messages_in WHERE id = ? AND status = ?',

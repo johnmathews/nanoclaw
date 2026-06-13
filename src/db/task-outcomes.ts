@@ -56,8 +56,6 @@ export function recordTaskOutcome(db: Database.Database, outcome: TaskOutcomeInp
 export function listTaskOutcomes(db: Database.Database, agentGroupId: string, limit = 50): TaskOutcomeRow[] {
   if (!hasTable(db, 'task_outcomes')) return [];
   return db
-    .prepare(
-      `SELECT * FROM task_outcomes WHERE agent_group_id = ? ORDER BY recorded_at DESC, id DESC LIMIT ?`,
-    )
+    .prepare(`SELECT * FROM task_outcomes WHERE agent_group_id = ? ORDER BY recorded_at DESC, id DESC LIMIT ?`)
     .all(agentGroupId, limit) as TaskOutcomeRow[];
 }

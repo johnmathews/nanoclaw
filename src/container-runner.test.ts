@@ -5,10 +5,7 @@ import path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { ContainerConfig } from './container-config.js';
-import {
-  _syncSkillSymlinksForTesting,
-  resolveProviderName,
-} from './container-runner.js';
+import { _syncSkillSymlinksForTesting, resolveProviderName } from './container-runner.js';
 
 function makeConfig(skills: string[] | 'all'): ContainerConfig {
   return {
@@ -72,16 +69,10 @@ describe('syncSkillSymlinks — agent-authored skill survival', () => {
     // Authored dir survives both loops, contents intact.
     expect(fs.existsSync(authored)).toBe(true);
     expect(fs.lstatSync(authored).isSymbolicLink()).toBe(false);
-    expect(fs.readFileSync(path.join(authored, 'SKILL.md'), 'utf8')).toBe(
-      '# authored',
-    );
+    expect(fs.readFileSync(path.join(authored, 'SKILL.md'), 'utf8')).toBe('# authored');
     // Desired shared skills are symlinked in alongside it.
-    expect(fs.lstatSync(path.join(skillsDir, 'welcome')).isSymbolicLink()).toBe(
-      true,
-    );
-    expect(fs.lstatSync(path.join(skillsDir, 'status')).isSymbolicLink()).toBe(
-      true,
-    );
+    expect(fs.lstatSync(path.join(skillsDir, 'welcome')).isSymbolicLink()).toBe(true);
+    expect(fs.lstatSync(path.join(skillsDir, 'status')).isSymbolicLink()).toBe(true);
   });
 
   it('removes a stale symlink no longer in the desired set', () => {
@@ -91,9 +82,7 @@ describe('syncSkillSymlinks — agent-authored skill survival', () => {
     _syncSkillSymlinksForTesting(claudeDir, makeConfig(['welcome']));
 
     expect(fs.existsSync(path.join(skillsDir, 'reactions'))).toBe(false);
-    expect(fs.lstatSync(path.join(skillsDir, 'welcome')).isSymbolicLink()).toBe(
-      true,
-    );
+    expect(fs.lstatSync(path.join(skillsDir, 'welcome')).isSymbolicLink()).toBe(true);
   });
 
   it('clobbers a real dir ONLY when its name collides with a desired skill', () => {
@@ -111,13 +100,7 @@ describe('syncSkillSymlinks — agent-authored skill survival', () => {
 
 describe('learn-skill SKILL.md presence', () => {
   it('exists and declares the required Pitfalls + Verification sections', () => {
-    const skillPath = path.join(
-      process.cwd(),
-      'container',
-      'skills',
-      'learn-skill',
-      'SKILL.md',
-    );
+    const skillPath = path.join(process.cwd(), 'container', 'skills', 'learn-skill', 'SKILL.md');
     expect(fs.existsSync(skillPath)).toBe(true);
     const body = fs.readFileSync(skillPath, 'utf8');
     expect(body).toMatch(/^## Pitfalls$/m);

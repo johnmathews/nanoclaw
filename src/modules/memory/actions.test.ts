@@ -78,7 +78,11 @@ afterEach(() => {
 
 describe('handleRemember — happy paths', () => {
   it('add writes MEMORY.md and replies ok', async () => {
-    await handleRemember({ requestId: 'r1', target: 'memory', op: 'add', text: 'prefers metric units' }, session(), inDb);
+    await handleRemember(
+      { requestId: 'r1', target: 'memory', op: 'add', text: 'prefers metric units' },
+      session(),
+      inDb,
+    );
 
     expect(fs.readFileSync(path.join(groupDir, 'MEMORY.md'), 'utf8')).toBe('prefers metric units');
     expect(replyFrame('r1')).toMatchObject({ ok: true, target: 'memory', op: 'add' });

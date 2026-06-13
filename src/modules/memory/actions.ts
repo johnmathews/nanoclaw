@@ -84,8 +84,8 @@ export async function handleRemember(
   const cfg = getContainerConfig(session.agent_group_id);
   const budget =
     target === 'user'
-      ? cfg?.user_budget_chars ?? DEFAULT_USER_BUDGET
-      : cfg?.memory_budget_chars ?? DEFAULT_MEMORY_BUDGET;
+      ? (cfg?.user_budget_chars ?? DEFAULT_USER_BUDGET)
+      : (cfg?.memory_budget_chars ?? DEFAULT_MEMORY_BUDGET);
 
   const result = applyMemoryOp(
     current,

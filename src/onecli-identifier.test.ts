@@ -3,22 +3,14 @@ import { toOneCliIdentifier, fromOneCliIdentifier } from './onecli-identifier.js
 
 describe('toOneCliIdentifier', () => {
   it('leaves a letter-leading id unchanged', () => {
-    expect(toOneCliIdentifier('a8a98f3a-3dca-4fb6-b872-3a46161e73a9')).toBe(
-      'a8a98f3a-3dca-4fb6-b872-3a46161e73a9',
-    );
+    expect(toOneCliIdentifier('a8a98f3a-3dca-4fb6-b872-3a46161e73a9')).toBe('a8a98f3a-3dca-4fb6-b872-3a46161e73a9');
     expect(toOneCliIdentifier('ag-1779790222913-5fp7xo')).toBe('ag-1779790222913-5fp7xo');
-    expect(toOneCliIdentifier('eed83246-277b-41ec-8430-793480b7633f')).toBe(
-      'eed83246-277b-41ec-8430-793480b7633f',
-    );
+    expect(toOneCliIdentifier('eed83246-277b-41ec-8430-793480b7633f')).toBe('eed83246-277b-41ec-8430-793480b7633f');
   });
 
   it('prefixes a digit-leading id so OneCLI accepts it', () => {
-    expect(toOneCliIdentifier('15ba74f8-3193-4ab5-83dd-1ab8b83bab5e')).toBe(
-      'oc-15ba74f8-3193-4ab5-83dd-1ab8b83bab5e',
-    );
-    expect(toOneCliIdentifier('0a58d857-6de8-44d4-9646-9f12c807da8e')).toBe(
-      'oc-0a58d857-6de8-44d4-9646-9f12c807da8e',
-    );
+    expect(toOneCliIdentifier('15ba74f8-3193-4ab5-83dd-1ab8b83bab5e')).toBe('oc-15ba74f8-3193-4ab5-83dd-1ab8b83bab5e');
+    expect(toOneCliIdentifier('0a58d857-6de8-44d4-9646-9f12c807da8e')).toBe('oc-0a58d857-6de8-44d4-9646-9f12c807da8e');
   });
 
   it('keeps the identifier within OneCLI bounds (<=50 chars, [a-z0-9-], letter-leading)', () => {

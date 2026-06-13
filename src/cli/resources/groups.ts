@@ -421,9 +421,7 @@ registerResource({
 
         const rejected = Object.keys(incoming).filter((k) => isReservedContainerEnv(k));
         if (rejected.length > 0) {
-          throw new Error(
-            `Reserved env keys cannot be set (owned by host/OneCLI): ${rejected.join(', ')}`,
-          );
+          throw new Error(`Reserved env keys cannot be set (owned by host/OneCLI): ${rejected.join(', ')}`);
         }
 
         Object.assign(env, incoming);

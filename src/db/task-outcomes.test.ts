@@ -13,9 +13,7 @@ describe('task_outcomes migration', () => {
   afterEach(() => closeDb());
 
   it('creates the task_outcomes table and group index', () => {
-    const table = getDb()
-      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='task_outcomes'")
-      .get();
+    const table = getDb().prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='task_outcomes'").get();
     expect(table).toBeTruthy();
     const index = getDb()
       .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_task_outcomes_group'")
@@ -82,7 +80,9 @@ describe('recordTaskOutcome / listTaskOutcomes', () => {
 
   it('degrades to a no-op when the table is absent (pre-migration safety)', () => {
     const bare = new Database(':memory:');
-    expect(() => recordTaskOutcome(bare, { agentGroupId: 'x', sessionId: 's', messageId: 'm', reason: 'r' })).not.toThrow();
+    expect(() =>
+      recordTaskOutcome(bare, { agentGroupId: 'x', sessionId: 's', messageId: 'm', reason: 'r' }),
+    ).not.toThrow();
     expect(listTaskOutcomes(bare, 'x')).toEqual([]);
     bare.close();
   });

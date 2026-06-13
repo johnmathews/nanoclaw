@@ -69,12 +69,7 @@ function succeed(content: string, budget: number): MemoryOpResult {
   return { ok: true, content, chars: content.length, budget };
 }
 
-export function applyMemoryOp(
-  current: string,
-  op: MemoryOp,
-  params: MemoryOpParams,
-  budget: number,
-): MemoryOpResult {
+export function applyMemoryOp(current: string, op: MemoryOp, params: MemoryOpParams, budget: number): MemoryOpResult {
   const lines = current.split('\n');
 
   if (op === 'add') {

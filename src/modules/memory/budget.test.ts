@@ -74,7 +74,12 @@ describe('applyMemoryOp — remove', () => {
 
 describe('applyMemoryOp — replace', () => {
   it('replaces the uniquely matching entry by substring', () => {
-    const r = applyMemoryOp('likes tea\ndislikes noise', 'replace', { match: 'tea', replacement: 'likes coffee now' }, 2200);
+    const r = applyMemoryOp(
+      'likes tea\ndislikes noise',
+      'replace',
+      { match: 'tea', replacement: 'likes coffee now' },
+      2200,
+    );
     expect(r.ok).toBe(true);
     expect(r.content).toBe('likes coffee now\ndislikes noise');
   });
