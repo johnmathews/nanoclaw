@@ -313,12 +313,19 @@ function setupSystemd(
     systemctlPrefix = 'systemctl --user';
   }
 
+  // Type=notify + NotifyAccess=all + WatchdogSec=30s enable src/watchdog.ts
+  // to send READY=1 on boot and WATCHDOG=1 every 2s; systemd restarts the
+  // unit if 15 consecutive heartbeats are missed. Without these flags
+  // NOTIFY_SOCKET is unset, watchdog.ts silently no-ops, and a deadlocked
+  // process is never restarted.
   const unit = `[Unit]
 Description=NanoClaw Personal Assistant
 After=network.target
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=all
+WatchdogSec=30s
 ExecStart=${nodePath} ${projectRoot}/dist/index.js
 WorkingDirectory=${projectRoot}
 Restart=always

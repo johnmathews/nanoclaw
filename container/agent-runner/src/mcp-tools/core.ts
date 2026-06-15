@@ -11,6 +11,7 @@ import path from 'path';
 
 import { getCurrentInReplyTo } from '../current-batch.js';
 import { findByName, getAllDestinations } from '../destinations.js';
+import { stripInternalTags } from '../formatter.js';
 import { getMessageIdBySeq, getRoutingBySeq, writeMessageOut } from '../db/messages-out.js';
 import { getSessionRouting } from '../db/session-routing.js';
 import { registerTools } from './server.js';
@@ -112,6 +113,17 @@ export const sendMessage: McpToolDefinition = {
     const text = args.text as string;
     if (!text) return err('text is required');
 
+    // Honor <internal>...</internal> here the same way the final result-text
+    // path does (see dispatchResultText in poll-loop.ts). The agent is told
+    // these tags mark scratchpad that is "logged but not sent"; without this
+    // strip, a body sent through send_message leaks the raw tags to the
+    // channel. If the whole body is internal, nothing should go out at all.
+    const body = stripInternalTags(text);
+    if (!body) {
+      log('send_message: body empty after stripping <internal> — nothing sent');
+      return ok('Nothing sent — the message body was entirely <internal> scratchpad.');
+    }
+
     const routing = resolveRouting(args.to as string | undefined);
     if ('error' in routing) return err(routing.error);
 
@@ -123,7 +135,7 @@ export const sendMessage: McpToolDefinition = {
       platform_id: routing.platform_id,
       channel_type: routing.channel_type,
       thread_id: routing.thread_id,
-      content: JSON.stringify({ text }),
+      content: JSON.stringify({ text: body }),
     });
 
     log(`send_message: #${seq} → ${routing.resolvedName}`);
@@ -170,7 +182,7 @@ export const sendFile: McpToolDefinition = {
       platform_id: routing.platform_id,
       channel_type: routing.channel_type,
       thread_id: routing.thread_id,
-      content: JSON.stringify({ text: (args.text as string) || '', files: [filename] }),
+      content: JSON.stringify({ text: stripInternalTags((args.text as string) || ''), files: [filename] }),
     });
 
     log(`send_file: ${id} → ${routing.resolvedName} (${filename})`);
@@ -196,6 +208,15 @@ export const editMessage: McpToolDefinition = {
     const text = args.text as string;
     if (!seq || !text) return err('messageId and text are required');
 
+    // Strip <internal>...</internal> just like send_message — the new body is
+    // agent free text and must not leak scratchpad to the channel. An edit to
+    // an entirely-internal body would blank the message, so refuse instead.
+    const body = stripInternalTags(text);
+    if (!body) {
+      log('edit_message: body empty after stripping <internal> — edit skipped');
+      return ok('Nothing edited — the new body was entirely <internal> scratchpad.');
+    }
+
     const platformId = getMessageIdBySeq(seq);
     if (!platformId) return err(`Message #${seq} not found`);
 
@@ -211,7 +232,7 @@ export const editMessage: McpToolDefinition = {
       platform_id: routing.platform_id,
       channel_type: routing.channel_type,
       thread_id: routing.thread_id,
-      content: JSON.stringify({ operation: 'edit', messageId: platformId, text }),
+      content: JSON.stringify({ operation: 'edit', messageId: platformId, text: body }),
     });
 
     log(`edit_message: #${seq} → ${platformId}`);

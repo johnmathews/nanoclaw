@@ -166,4 +166,61 @@ export const sendCard: McpToolDefinition = {
   },
 };
 
-registerTools([askUserQuestion, sendCard]);
+export const sendBlocks: McpToolDefinition = {
+  tool: {
+    name: 'send_blocks',
+    description:
+      'Send a Slack-specific raw Block Kit message to the current conversation. Use this when you need Block Kit features that send_card cannot express (checkboxes, multi-select, datepickers, accessory layouts). On non-Slack channels the fallbackText is posted instead. Button action_ids must start with "ncv2:" to be routed back to the agent — anything else is silently dropped by the bridge.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        blocks: {
+          description:
+            'Slack Block Kit blocks — either an array of block objects, or a JSON string encoding that array.',
+        },
+        fallbackText: {
+          type: 'string',
+          description: 'Plain-text fallback for notifications and non-Slack channels. Required.',
+        },
+      },
+      required: ['blocks', 'fallbackText'],
+    },
+  },
+  async handler(args) {
+    const rawBlocks = args.blocks;
+    const fallbackText = (args.fallbackText as string) || '';
+    if (!rawBlocks) return err('blocks is required');
+    if (!fallbackText) return err('fallbackText is required');
+
+    let blocks: unknown[];
+    if (typeof rawBlocks === 'string') {
+      try {
+        blocks = JSON.parse(rawBlocks);
+      } catch (e) {
+        return err(`blocks JSON parse failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    } else if (Array.isArray(rawBlocks)) {
+      blocks = rawBlocks;
+    } else {
+      return err('blocks must be an array or a JSON string encoding one');
+    }
+    if (!Array.isArray(blocks)) return err('blocks must decode to an array');
+
+    const id = generateId();
+    const r = routing();
+
+    writeMessageOut({
+      id,
+      kind: 'chat-sdk',
+      platform_id: r.platform_id,
+      channel_type: r.channel_type,
+      thread_id: r.thread_id,
+      content: JSON.stringify({ type: 'blocks', blocks, fallbackText }),
+    });
+
+    log(`send_blocks: ${id} (${blocks.length} blocks)`);
+    return ok(`Blocks sent (id: ${id})`);
+  },
+};
+
+registerTools([askUserQuestion, sendCard, sendBlocks]);

@@ -24,7 +24,10 @@ export interface ContainerConfigRow {
   packages_apt: string; // JSON: string[]
   packages_npm: string; // JSON: string[]
   additional_mounts: string; // JSON: AdditionalMountConfig[]
+  env: string; // JSON: Record<string, string> — extra container env (-e flags)
   cli_scope: string; // 'disabled' | 'group' | 'global'
+  memory_budget_chars: number; // hard char cap on MEMORY.md (remember tool)
+  user_budget_chars: number; // hard char cap on USER.md (remember tool)
   updated_at: string;
 }
 
@@ -55,8 +58,23 @@ export interface MessagingGroup {
    * the column itself defaults to NULL in SQLite.
    */
   denied_at?: string | null;
+  /**
+   * Reply behavior on threaded platforms (currently Slack only).
+   *
+   * - `'thread'` (default): reply in the originating thread.
+   * - `'channel'`: reply in the channel root regardless of where the inbound
+   *   message landed. Delivery strips the per-message thread_id and the
+   *   bridge falls back to the messaging_group's platform_id.
+   *
+   * Optional on the TS type so pre-migration-016 callers that build
+   * MessagingGroup objects in code (fixtures, etc.) don't need to update;
+   * the column itself defaults to `'thread'` in SQLite.
+   */
+  reply_mode?: ReplyMode;
   created_at: string;
 }
+
+export type ReplyMode = 'thread' | 'channel';
 
 // ── Identity & privilege ──
 

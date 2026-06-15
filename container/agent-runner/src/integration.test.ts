@@ -271,6 +271,45 @@ describe('poll loop integration', () => {
     await loopPromise.catch(() => {});
   });
 
+  it('strips internal tags inside a message block from the delivered body', async () => {
+    insertMessage('m1i', { sender: 'Alice', text: 'hi' }, { platformId: 'chan-1', channelType: 'discord' });
+
+    const provider = new MockProvider(
+      {},
+      () => '<message to="discord-test">Done.<internal>secret reasoning</internal></message>',
+    );
+    const controller = new AbortController();
+    const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 2000);
+
+    await waitFor(() => getUndeliveredMessages().length > 0, 2000);
+    controller.abort();
+
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    expect(JSON.parse(out[0].content).text).toBe('Done.');
+
+    await loopPromise.catch(() => {});
+  });
+
+  it('sends nothing when a message block is entirely internal scratchpad', async () => {
+    insertMessage('m1e', { sender: 'Alice', text: 'hi' }, { platformId: 'chan-1', channelType: 'discord' });
+
+    const provider = new MockProvider(
+      {},
+      () => '<message to="discord-test"><internal>Report sent via email. No Slack message needed.</internal></message>',
+    );
+    const controller = new AbortController();
+    const loopPromise = runPollLoopWithTimeout(provider, controller.signal, 1500);
+
+    // Give the loop a window to run; nothing should ever be queued.
+    await sleep(800);
+    controller.abort();
+
+    expect(getUndeliveredMessages()).toHaveLength(0);
+
+    await loopPromise.catch(() => {});
+  });
+
   it('handles mixed task + chat batch with correct origin metadata', async () => {
     // Seed destination for routing lookup
     insertMessage('m-chat', { sender: 'Alice', text: 'check this' }, { platformId: 'chan-1', channelType: 'discord' });

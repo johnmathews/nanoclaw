@@ -456,6 +456,46 @@ async function deliverToAgent(
       log.info('Admin command denied by gate', { command: gate.command, userId, agentGroupId: agent.agent_group_id });
       return;
     }
+    if (gate.action === 'respond') {
+      // Render off the hot path so a slow Anthropic call doesn't block the
+      // next inbound message. Failures fall back to a brief inline error so
+      // the operator still gets feedback in the channel.
+      gate
+        .render()
+        .then((text) => {
+          writeOutboundDirect(session.agent_group_id, session.id, {
+            id: `respond-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            kind: 'chat',
+            platformId: deliveryAddr.platformId,
+            channelType: deliveryAddr.channelType,
+            threadId: deliveryAddr.threadId,
+            content: JSON.stringify({ text }),
+          });
+          log.info('Host responder fulfilled', {
+            command: gate.command,
+            userId,
+            agentGroupId: agent.agent_group_id,
+          });
+        })
+        .catch((err) => {
+          log.error('Host responder failed', {
+            command: gate.command,
+            agentGroupId: agent.agent_group_id,
+            err,
+          });
+          writeOutboundDirect(session.agent_group_id, session.id, {
+            id: `respond-err-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            kind: 'chat',
+            platformId: deliveryAddr.platformId,
+            channelType: deliveryAddr.channelType,
+            threadId: deliveryAddr.threadId,
+            content: JSON.stringify({
+              text: `*${gate.command} failed:* ${err instanceof Error ? err.message : String(err)}`,
+            }),
+          });
+        });
+      return;
+    }
   }
 
   writeSessionMessage(session.agent_group_id, session.id, {

@@ -28,10 +28,16 @@
  */
 import type Database from 'better-sqlite3';
 import fs from 'fs';
+import path from 'path';
 
 import { ensureEgressNetwork } from './egress-lockdown.js';
+import { GROUPS_DIR } from './config.js';
 import { getActiveSessions } from './db/sessions.js';
 import { getAgentGroup } from './db/agent-groups.js';
+import { getDb } from './db/connection.js';
+import { getSearchIndexDb } from './db/search-index-db.js';
+import { recordTaskOutcome } from './db/task-outcomes.js';
+import { indexSession } from './search-index.js';
 import {
   countDueMessages,
   deleteOrphanProcessingClaims,
@@ -130,6 +136,11 @@ export function stopHostSweep(): void {
   running = false;
 }
 
+/** Whether the host sweep loop is currently enabled. Read by the health snapshot. */
+export function isHostSweepRunning(): boolean {
+  return running;
+}
+
 async function sweep(): Promise<void> {
   if (!running) return;
 
@@ -222,6 +233,26 @@ async function sweepSession(session: Session): Promise<void> {
     const { handleRecurrence } = await import('./modules/scheduling/recurrence.js');
     await handleRecurrence(inDb, session);
     // MODULE-HOOK:scheduling-recurrence:end
+
+    // 6. Incrementally index this session's history for search_history.
+    // Best-effort and non-load-bearing: a failure (or an uninitialized index
+    // DB) must never abort the sweep's primary maintenance work above. Caps
+    // per-tick work so a backlog drains over several sweeps.
+    const indexDb = getSearchIndexDb();
+    if (indexDb) {
+      try {
+        indexSession({
+          indexDb,
+          inDb,
+          outDb,
+          agentGroupId: agentGroup.id,
+          sessionId: session.id,
+          conversationsDir: path.join(GROUPS_DIR, agentGroup.folder, 'conversations'),
+        });
+      } catch (err) {
+        log.warn('Conversation indexing failed', { sessionId: session.id, err });
+      }
+    }
   } finally {
     inDb.close();
     outDb?.close();
@@ -312,6 +343,22 @@ function resetStuckProcessingRows(
         sessionId: session.id,
         reason,
       });
+      // Persist the failure reason to the central task-outcome log so the
+      // agent's reflection pass can learn from it. Best-effort: a recording
+      // failure must never abort the stale-reset path, which has already done
+      // the load-bearing work (markMessageFailed + claim cleanup below).
+      try {
+        recordTaskOutcome(getDb(), {
+          agentGroupId: session.agent_group_id,
+          sessionId: session.id,
+          messageId: msg.id,
+          seriesId: msg.seriesId,
+          kind: msg.kind,
+          reason,
+        });
+      } catch (err) {
+        log.warn('Failed to record task outcome', { messageId: msg.id, error: String(err) });
+      }
     } else {
       const backoffMs = BACKOFF_BASE_MS * Math.pow(2, msg.tries);
       const backoffSec = Math.floor(backoffMs / 1000);

@@ -14,6 +14,7 @@ import {
   type RoutingContext,
 } from './formatter.js';
 import { isUploadTraceCommand, uploadTrace } from './upload-trace.js';
+import { extractImageBlocks } from './multimodal.js';
 import type { AgentProvider, AgentQuery, ProviderEvent, ProviderExchange } from './providers/types.js';
 
 const POLL_INTERVAL_MS = 1000;
@@ -232,6 +233,17 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
       systemContext: config.systemContext,
     });
 
+    // Deliver image attachments as multimodal content blocks on a separate
+    // user turn (Claude SDK accepts a content-block array on the user
+    // message). Mirrors v1's `pushMultimodal` after the initial text prompt.
+    if (config.provider.supportsMultimodalContent) {
+      const initialBlocks = extractImageBlocks(keep);
+      if (initialBlocks.length > 0) {
+        log(`Pushing ${initialBlocks.length} initial image block(s) to the active query`);
+        query.pushBlocks?.(initialBlocks);
+      }
+    }
+
     // Process the query while concurrently polling for new messages
     const skippedSet = new Set(skipped);
     const processingIds = ids.filter((id) => !commandIds.includes(id) && !skippedSet.has(id));
@@ -247,6 +259,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
         config.provider.onExchangeComplete?.bind(config.provider),
         prompt,
         continuation,
+        config.provider.supportsMultimodalContent ?? false,
       );
       if (result.continuation && result.continuation !== continuation) {
         continuation = result.continuation;
@@ -331,6 +344,7 @@ async function processQuery(
   onExchangeComplete: ((exchange: ProviderExchange) => void) | undefined,
   initialPrompt: string,
   initialContinuation: string | undefined,
+  supportsMultimodal: boolean,
 ): Promise<QueryResult> {
   let queryContinuation: string | undefined;
   let done = false;
@@ -420,6 +434,16 @@ async function processQuery(
         unwrappedNudged = false;
         query.push(prompt);
         archivePrompts.push(prompt);
+        // Follow-up images: same pattern as the initial batch — separate
+        // user-turn message with the content-block array. Guarded by the
+        // provider capability flag so non-multimodal providers no-op.
+        if (supportsMultimodal) {
+          const followUpBlocks = extractImageBlocks(keep);
+          if (followUpBlocks.length > 0) {
+            log(`Pushing ${followUpBlocks.length} follow-up image block(s) into active query`);
+            query.pushBlocks?.(followUpBlocks);
+          }
+        }
         markCompleted(keptIds);
       } catch (err) {
         // Without this catch the rejection escapes the void IIFE and Node
@@ -578,8 +602,19 @@ function dispatchResultText(text: string, routing: RoutingContext): { sent: numb
       scratchpadParts.push(text.slice(lastIndex, match.index));
     }
     const toName = match[1];
-    const body = match[2].trim();
+    // Strip <internal>...</internal> from the body the same way the bare
+    // scratchpad path below does. Without this, an agent that wraps a
+    // scratchpad note inside a <message to="..."> block (e.g.
+    // "<message to=\"main\"><internal>report sent</internal></message>")
+    // leaks the raw tags to the channel. If the block is entirely internal,
+    // send nothing — the agent intended no outbound message.
+    const body = stripInternalTags(match[2]);
     lastIndex = MESSAGE_RE.lastIndex;
+
+    if (!body) {
+      log(`<message to="${toName}"> body empty after stripping <internal> — nothing sent`);
+      continue;
+    }
 
     const dest = findByName(toName);
     if (!dest) {

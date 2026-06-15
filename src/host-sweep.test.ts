@@ -4,8 +4,10 @@
  * don't have to mock the filesystem or the container runner.
  */
 import Database from 'better-sqlite3';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { closeDb, getDb, initTestDb } from './db/connection.js';
+import { runMigrations } from './db/migrations/index.js';
 import { deleteOrphanProcessingClaims, getProcessingClaims } from './db/session-db.js';
 import {
   ABSOLUTE_CEILING_MS,
@@ -291,6 +293,75 @@ describe('resetStuckProcessingRows — orphan claim cleanup', () => {
     expect(getProcessingClaims(outDb)).toEqual([]);
     const row = inDb.prepare('SELECT tries FROM messages_in WHERE id = ?').get('m-2') as { tries: number };
     expect(row.tries).toBe(1); // not bumped, the skip path held
+  });
+});
+
+describe('resetStuckProcessingRows — task outcome recording', () => {
+  // These exercise the max-retries failure branch, which writes to the central
+  // DB via recordTaskOutcome(getDb()). The orphan-cleanup tests above never
+  // reach that branch (they go through retry/skip paths), so they need no
+  // central DB; these do.
+  beforeEach(() => {
+    const db = initTestDb();
+    runMigrations(db);
+  });
+  afterEach(() => closeDb());
+
+  function insertStuckClaim(
+    inDb: Database.Database,
+    outDb: Database.Database,
+    id: string,
+    tries: number,
+    extraCols = '',
+    extraVals: unknown[] = [],
+  ): void {
+    const old = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(); // 2h ago
+    inDb
+      .prepare(
+        `INSERT INTO messages_in (id, seq, kind, timestamp, status, tries, content${extraCols}) VALUES (?, 1, 'task', ?, 'pending', ?, '{}'${extraVals.map(() => ', ?').join('')})`,
+      )
+      .run(id, old, tries, ...extraVals);
+    outDb.prepare('INSERT INTO processing_ack VALUES (?, ?, ?)').run(id, 'processing', old);
+  }
+
+  it('records a task_outcome when a message exhausts retries', () => {
+    const { inDb, outDb } = makeSessionDbs();
+    insertStuckClaim(inDb, outDb, 't-1', 5, ', series_id', ['s-1']);
+
+    _resetStuckProcessingRowsForTesting(inDb, outDb, fakeSession(), 'claim-stuck');
+
+    // The message itself is marked failed (existing behavior preserved).
+    const row = inDb.prepare("SELECT status FROM messages_in WHERE id = 't-1'").get() as { status: string };
+    expect(row.status).toBe('failed');
+
+    // And the outcome is persisted with full context.
+    const outcomes = getDb().prepare('SELECT * FROM task_outcomes').all() as Array<Record<string, unknown>>;
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({
+      agent_group_id: 'ag-test',
+      session_id: 'sess-test',
+      message_id: 't-1',
+      series_id: 's-1',
+      kind: 'task',
+      reason: 'claim-stuck',
+      status: 'failed',
+    });
+    expect(outcomes[0].recorded_at).toBeTruthy();
+  });
+
+  it('does NOT record an outcome on a normal retry (tries below max)', () => {
+    const { inDb, outDb } = makeSessionDbs();
+    insertStuckClaim(inDb, outDb, 't-2', 1);
+
+    _resetStuckProcessingRowsForTesting(inDb, outDb, fakeSession(), 'claim-stuck');
+
+    const row = inDb.prepare("SELECT status, tries FROM messages_in WHERE id = 't-2'").get() as {
+      status: string;
+      tries: number;
+    };
+    expect(row.status).toBe('pending');
+    expect(row.tries).toBe(2);
+    expect((getDb().prepare('SELECT COUNT(*) AS c FROM task_outcomes').get() as { c: number }).c).toBe(0);
   });
 });
 

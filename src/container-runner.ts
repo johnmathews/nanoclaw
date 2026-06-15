@@ -19,7 +19,7 @@ import {
   ONECLI_URL,
   TIMEZONE,
 } from './config.js';
-import { materializeContainerJson } from './container-config.js';
+import { containerEnvArgs, materializeContainerJson } from './container-config.js';
 import { getContainerConfig } from './db/container-configs.js';
 import { updateContainerConfigScalars } from './db/container-configs.js';
 import { CONTAINER_RUNTIME_BIN, hostGatewayArgs, readonlyMountArgs, stopContainer } from './container-runtime.js';
@@ -28,6 +28,7 @@ import { composeGroupClaudeMd } from './claude-md-compose.js';
 import { getAgentGroup } from './db/agent-groups.js';
 import { getDb, hasTable } from './db/connection.js';
 import { initGroupFilesystem } from './group-init.js';
+import { toOneCliIdentifier } from './onecli-identifier.js';
 import { stopTypingRefresh } from './modules/typing/index.js';
 import { log } from './log.js';
 import { validateAdditionalMounts } from './modules/mount-security/index.js';
@@ -141,10 +142,11 @@ async function spawnContainer(session: Session): Promise<void> {
   const { provider, contribution } = resolveProviderContribution(session, agentGroup, containerConfig);
 
   const mounts = buildMounts(agentGroup, session, containerConfig, provider, contribution);
-  const containerName = `nanoclaw-v2-${agentGroup.folder}-${Date.now()}`;
-  // OneCLI agent identifier is always the agent group id — stable across
-  // sessions and reversible via getAgentGroup() for approval routing.
-  const agentIdentifier = agentGroup.id;
+  const containerName = `nanoclaw-${agentGroup.folder}-${Date.now()}`;
+  // OneCLI agent identifier is derived from the agent group id — stable across
+  // sessions and reversible via getAgentGroup() for approval routing. The
+  // sanitization makes digit-leading group ids OneCLI-valid (see onecli-identifier.ts).
+  const agentIdentifier = toOneCliIdentifier(agentGroup.id);
   const args = await buildContainerArgs(
     mounts,
     containerName,
@@ -389,17 +391,23 @@ function syncSkillSymlinks(claudeDir: string, containerConfig: import('./contain
     }
   }
 
-  // Create symlinks for desired skills (container path targets)
+  // Create symlinks for desired skills (container path targets).
+  // If a real file/directory shadows the symlink target (legacy copies from
+  // pre-symlink installs), replace it — otherwise edits to the shared skill
+  // source under container/skills/ silently never reach the agent.
   for (const skill of desired) {
     const linkPath = path.join(skillsDir, skill);
-    let exists = false;
+    let stat: fs.Stats | null = null;
     try {
-      fs.lstatSync(linkPath);
-      exists = true;
+      stat = fs.lstatSync(linkPath);
     } catch {
       /* missing */
     }
-    if (!exists) {
+    if (stat && !stat.isSymbolicLink()) {
+      fs.rmSync(linkPath, { recursive: true, force: true });
+      stat = null;
+    }
+    if (!stat) {
       fs.symlinkSync(`/app/skills/${skill}`, linkPath);
     }
   }
@@ -421,6 +429,13 @@ function selectedSkillNames(containerConfig: import('./container-config.js').Con
         }
       })
     : [];
+}
+
+export function _syncSkillSymlinksForTesting(
+  claudeDir: string,
+  containerConfig: import('./container-config.js').ContainerConfig,
+): void {
+  syncSkillSymlinks(claudeDir, containerConfig);
 }
 
 async function buildContainerArgs(
@@ -445,8 +460,22 @@ async function buildContainerArgs(
     }
   }
 
+  // Per-group operator env (container.json `env`). Reserved keys are filtered
+  // so this can never clobber the host/OneCLI proxy + cert wiring applied after
+  // the volume mounts. Pushed before the networking decision so that on any
+  // residual key collision the later (privileged) `-e` wins under docker's
+  // last-value-wins semantics.
+  {
+    const { args: envArgs, skipped } = containerEnvArgs(containerConfig.env);
+    args.push(...envArgs);
+    if (skipped.length > 0) {
+      log.warn('Skipped reserved container env keys', { containerName, skipped });
+    }
+  }
+
   // Egress lockdown when enabled — throws if it can't be established, aborting
   // the spawn rather than running with open egress. Otherwise the host gateway.
+  // (OneCLI gateway proper is applied after the volume mounts below.)
   if (ensureEgressNetwork()) {
     args.push(...egressNetworkArgs());
     log.info('Egress lockdown active', { containerName, network: EGRESS_NETWORK });

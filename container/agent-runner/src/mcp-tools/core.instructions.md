@@ -24,4 +24,6 @@ Use `mcp__nanoclaw__add_reaction({ messageId, emoji })` to react to a specific i
 
 ### Internal thoughts
 
-Wrap reasoning in `<internal>...</internal>` tags to mark it as scratchpad — logged but not sent.
+Wrap reasoning in `<internal>...</internal>` tags to mark it as scratchpad — logged but not sent. This applies everywhere a body is delivered to a channel: bare text in your final output, the inside of a `<message to="...">` block, and the `text` you pass to `send_message` / `send_file` / `edit_message`. `<internal>` blocks are stripped before delivery, and if a body is *entirely* `<internal>`, nothing is sent (and an `edit_message` is skipped rather than blanking the message).
+
+**Don't send a status message just to confirm an action.** If a task says to deliver a report by email only (or otherwise tells you not to post to a channel), simply do the work and send nothing to the channel — do not post a "report sent successfully" confirmation. Wrapping that confirmation in `<internal>` is unnecessary; just omit it.

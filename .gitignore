@@ -11,7 +11,13 @@ store/
 data/
 logs/
 
-# Groups - per-installation state, not tracked
+# Groups - per-installation state, not tracked.
+# CONFIDENTIALITY: per-group content (agent memory, scraped/archived article
+# text, conversation transcripts) must NEVER be committed or pushed. The
+# #financial-times agent stores full FT article text under
+# groups/slack_financial-times/notes/articles/ — local-only by policy; it must
+# not leave this machine via git. Do not loosen these rules or `git add -f`
+# anything under groups/, data/, or logs/.
 groups/*
 
 # Composer-managed CLAUDE.md artifacts (regenerated every spawn) and
@@ -28,8 +34,21 @@ groups/*
 # Temp files
 .tmp-*
 
+# Local backup archives (not tracked)
+nanoclaw-v1-backup-*.tar.gz
+nanoclaw-v1-archive/
+
 # OS
 .DS_Store
+
+# Local screenshots (scratch, not repo content)
+screenshots/
+
+# Syncthing folder marker
+.stfolder
+
+# Local journal viewer sidecar (e.g. mkdocs-awesome-pages)
+journal/.pages
 
 # IDE
 .idea/
@@ -37,6 +56,9 @@ groups/*
 
 # Skills system (local per-installation state)
 .nanoclaw/
+
+# engineering-team skill working dir (audit reports, improvement plans, intermediate notes)
+.engineering-team/
 
 agents-sdk-docs
 .agents

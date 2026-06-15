@@ -1,4 +1,4 @@
-import type { McpServerConfig } from '../../container-config.js';
+import { isReservedContainerEnv, type McpServerConfig } from '../../container-config.js';
 import { buildAgentGroupImage, killContainer, wakeContainer } from '../../container-runner.js';
 import { restartAgentGroupContainers } from '../../container-restart.js';
 import { getDb, hasTable } from '../../db/connection.js';
@@ -27,7 +27,10 @@ function presentConfig(row: ContainerConfigRow): Record<string, unknown> {
     packages_apt: JSON.parse(row.packages_apt),
     packages_npm: JSON.parse(row.packages_npm),
     additional_mounts: JSON.parse(row.additional_mounts),
+    env: JSON.parse(row.env ?? '{}'),
     cli_scope: row.cli_scope,
+    memory_budget_chars: row.memory_budget_chars,
+    user_budget_chars: row.user_budget_chars,
     updated_at: row.updated_at,
   };
 }
@@ -213,7 +216,8 @@ registerResource({
       access: 'approval',
       description:
         'Update container config scalar fields. Changes are saved but do NOT take effect until you run `ncl groups restart`. ' +
-        'Use --id <group-id> and any of: --provider, --model, --effort, --image-tag, --assistant-name, --max-messages-per-prompt, --cli-scope.',
+        'Use --id <group-id> and any of: --provider, --model, --effort, --image-tag, --assistant-name, --max-messages-per-prompt, --cli-scope, --memory-budget, --user-budget. ' +
+        '(--memory-budget / --user-budget are char caps for the remember tool and apply on the next session without a restart.)',
       handler: async (args) => {
         const id = args.id as string;
         if (!id) throw new Error('--id is required');
@@ -223,7 +227,15 @@ registerResource({
         const updates: Partial<
           Pick<
             ContainerConfigRow,
-            'provider' | 'model' | 'effort' | 'image_tag' | 'assistant_name' | 'max_messages_per_prompt' | 'cli_scope'
+            | 'provider'
+            | 'model'
+            | 'effort'
+            | 'image_tag'
+            | 'assistant_name'
+            | 'max_messages_per_prompt'
+            | 'cli_scope'
+            | 'memory_budget_chars'
+            | 'user_budget_chars'
           >
         > = {};
         if (args.provider !== undefined) updates.provider = args.provider as string;
@@ -240,10 +252,22 @@ registerResource({
           }
           updates.cli_scope = scope;
         }
+        const memBudget = args['memory-budget'] ?? args.memory_budget;
+        if (memBudget !== undefined) {
+          const n = Number(memBudget);
+          if (!Number.isInteger(n) || n <= 0) throw new Error('--memory-budget must be a positive integer (chars)');
+          updates.memory_budget_chars = n;
+        }
+        const userBudget = args['user-budget'] ?? args.user_budget;
+        if (userBudget !== undefined) {
+          const n = Number(userBudget);
+          if (!Number.isInteger(n) || n <= 0) throw new Error('--user-budget must be a positive integer (chars)');
+          updates.user_budget_chars = n;
+        }
 
         if (Object.keys(updates).length === 0) {
           throw new Error(
-            'Nothing to update — provide at least one of: --provider, --model, --effort, --image-tag, --assistant-name, --max-messages-per-prompt, --cli-scope',
+            'Nothing to update — provide at least one of: --provider, --model, --effort, --image-tag, --assistant-name, --max-messages-per-prompt, --cli-scope, --memory-budget, --user-budget',
           );
         }
 
@@ -367,6 +391,64 @@ registerResource({
           removed: { apt: apt || null, npm: npm || null },
           note: 'Image rebuild required for package changes to take effect.',
         };
+      },
+    },
+    'config set-env': {
+      access: 'approval',
+      description:
+        'Set environment variables injected into the container at spawn time. Requires `ncl groups restart` to take effect. ' +
+        'Use --id <group-id> and either --key <NAME> --value <VAL> (single var) or --json <object> (merge multiple). ' +
+        'Reserved keys are rejected (owned by host + OneCLI gateway): TZ, HOME, the container-network proxy vars (HTTP_PROXY/HTTPS_PROXY/ALL_PROXY/NO_PROXY/FTP_PROXY) and cert-bundle vars. Namespaced tool vars like AGENT_BROWSER_PROXY are allowed.',
+      handler: async (args) => {
+        const id = args.id as string;
+        if (!id) throw new Error('--id is required');
+
+        const row = getContainerConfig(id);
+        if (!row) throw new Error(`No container config for group: ${id}`);
+
+        const env = JSON.parse(row.env ?? '{}') as Record<string, string>;
+
+        const incoming: Record<string, string> = {};
+        if (args.json !== undefined) {
+          const parsed = JSON.parse(args.json as string) as Record<string, unknown>;
+          for (const [k, v] of Object.entries(parsed)) incoming[k] = String(v);
+        } else if (args.key !== undefined) {
+          if (args.value === undefined) throw new Error('--value is required when using --key');
+          incoming[args.key as string] = String(args.value);
+        } else {
+          throw new Error('Provide --key <NAME> --value <VAL> or --json <object>');
+        }
+
+        const rejected = Object.keys(incoming).filter((k) => isReservedContainerEnv(k));
+        if (rejected.length > 0) {
+          throw new Error(`Reserved env keys cannot be set (owned by host/OneCLI): ${rejected.join(', ')}`);
+        }
+
+        Object.assign(env, incoming);
+        updateContainerConfigJson(id, 'env', env);
+
+        return { set: Object.keys(incoming), env, note: 'Run `ncl groups restart` to apply.' };
+      },
+    },
+    'config unset-env': {
+      access: 'approval',
+      description:
+        'Remove an environment variable from a group. Requires `ncl groups restart` to take effect. Use --id <group-id> --key <NAME>.',
+      handler: async (args) => {
+        const id = args.id as string;
+        if (!id) throw new Error('--id is required');
+        const key = args.key as string;
+        if (!key) throw new Error('--key is required');
+
+        const row = getContainerConfig(id);
+        if (!row) throw new Error(`No container config for group: ${id}`);
+
+        const env = JSON.parse(row.env ?? '{}') as Record<string, string>;
+        if (!(key in env)) throw new Error(`Env var "${key}" not set`);
+        delete env[key];
+        updateContainerConfigJson(id, 'env', env);
+
+        return { removed: key, env, note: 'Run `ncl groups restart` to apply.' };
       },
     },
   },

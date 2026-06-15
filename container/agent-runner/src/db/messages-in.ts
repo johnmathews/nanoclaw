@@ -164,3 +164,29 @@ export function findQuestionResponse(questionId: string): MessageInRow | undefin
   }
 }
 
+/**
+ * Find a pending host reply by its exact row id (the round-trip pattern for
+ * in-process tools whose host handler writes a deterministically-named reply,
+ * e.g. `rem-resp-<requestId>` for the remember tool). Skips already-acked rows.
+ * Fresh read-only connection for cross-mount visibility of host writes.
+ */
+export function findResponseById(id: string): MessageInRow | undefined {
+  const inbound = openInboundDb();
+  const outbound = getOutboundDb();
+
+  try {
+    const response = inbound
+      .prepare("SELECT * FROM messages_in WHERE id = ? AND status = 'pending'")
+      .get(id) as MessageInRow | undefined;
+
+    if (!response) return undefined;
+
+    const acked = outbound.prepare('SELECT 1 FROM processing_ack WHERE message_id = ?').get(response.id);
+    if (acked) return undefined;
+
+    return response;
+  } finally {
+    inbound.close();
+  }
+}
+

@@ -25,6 +25,14 @@ export interface AgentProvider {
    */
   onExchangeComplete?(exchange: ProviderExchange): void;
 
+  /**
+   * True if this provider can accept image / multimodal content blocks via
+   * `AgentQuery.pushBlocks`. Omitted/false: the poll-loop falls back to
+   * text-only attachment rendering and skips block extraction. Optional so
+   * a non-multimodal provider needs no boilerplate to declare the negative.
+   */
+  readonly supportsMultimodalContent?: boolean;
+
   /** Start a new query. Returns a handle for streaming input and output. */
   query(input: QueryInput): AgentQuery;
 
@@ -59,6 +67,29 @@ export interface ProviderExchange {
   continuation?: string;
   status: 'completed' | 'undelivered' | 'error';
 }
+
+/**
+ * Anthropic Messages-API-shaped content block. We only generate the two
+ * variants the agent-runner actually constructs (text + base64 image) — the
+ * SDK happily accepts a richer union, but adding the rest unused would just
+ * widen our test surface.
+ */
+/**
+ * Anthropic Messages API base64-image source. The SDK narrows `media_type`
+ * to this fixed union; mirroring it here lets the Claude provider hand the
+ * block straight to the SDK without a structural cast.
+ */
+export type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+
+export interface ImageContentBlock {
+  type: 'image';
+  source: { type: 'base64'; media_type: ImageMediaType; data: string };
+}
+export interface TextContentBlock {
+  type: 'text';
+  text: string;
+}
+export type ContentBlock = ImageContentBlock | TextContentBlock;
 
 /**
  * Options passed to provider constructors. Fields are common to most
@@ -110,8 +141,22 @@ export interface McpServerConfig {
 }
 
 export interface AgentQuery {
-  /** Push a follow-up message into the active query. */
+  /** Push a follow-up text message into the active query. */
   push(message: string): void;
+
+  /**
+   * Push a multimodal user message (content-block array) into the active
+   * query. Used to deliver image attachments alongside the text prompt. The
+   * SDK treats this as a separate user-turn message; senders are expected to
+   * call `push()` for the text turn first and then `pushBlocks()` for the
+   * image turn, mirroring v1's pattern.
+   *
+   * Optional method: providers that don't support multimodal input omit it.
+   * Callers must guard with `AgentProvider.supportsMultimodalContent` (or
+   * with `?.()` optional-chaining) so a non-multimodal provider needs no
+   * matching stub.
+   */
+  pushBlocks?(blocks: ContentBlock[]): void;
 
   /** Signal that no more input will be sent. */
   end(): void;

@@ -160,10 +160,16 @@ export function getMessageForRetry(
   db: Database.Database,
   messageId: string,
   status: string,
-): { id: string; tries: number; processAfter: string | null } | undefined {
+):
+  | { id: string; tries: number; processAfter: string | null; kind: string | null; seriesId: string | null }
+  | undefined {
   return db
-    .prepare('SELECT id, tries, process_after as processAfter FROM messages_in WHERE id = ? AND status = ?')
-    .get(messageId, status) as { id: string; tries: number; processAfter: string | null } | undefined;
+    .prepare(
+      'SELECT id, tries, process_after as processAfter, kind, series_id as seriesId FROM messages_in WHERE id = ? AND status = ?',
+    )
+    .get(messageId, status) as
+    | { id: string; tries: number; processAfter: string | null; kind: string | null; seriesId: string | null }
+    | undefined;
 }
 
 export function syncProcessingAcks(inDb: Database.Database, outDb: Database.Database): void {

@@ -118,7 +118,7 @@ describe('scanInstall service artifacts', () => {
   it('captures container ids and image when docker is up', () => {
     const inv = scanInstall(deps({ runCommand: dockerUp(['abc123', 'def456'], true) }));
     expect(inv.service.containerIds).toEqual(['abc123', 'def456']);
-    expect(inv.service.image).toMatch(/^nanoclaw-agent-v2-[0-9a-f]{8}:latest$/);
+    expect(inv.service.image).toMatch(/^nanoclaw-agent-[0-9a-f]{8}:latest$/);
     expect(inv.notes).toEqual([]);
   });
 

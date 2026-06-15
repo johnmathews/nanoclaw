@@ -4,6 +4,7 @@
  * Thin orchestrator: init DB, run migrations, start channel adapters,
  * start delivery polls, start sweep, handle shutdown.
  */
+import http from 'http';
 import path from 'path';
 
 import { backfillContainerConfigs } from './backfill-container-configs.js';
@@ -11,6 +12,7 @@ import { DATA_DIR } from './config.js';
 import { enforceStartupBackoff, resetCircuitBreaker } from './circuit-breaker.js';
 import { migrateGroupsToClaudeLocal } from './claude-md-compose.js';
 import { initDb } from './db/connection.js';
+import { initSearchIndexDb } from './db/search-index-db.js';
 import { runMigrations } from './db/migrations/index.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
 import { startActiveDeliveryPoll, startSweepDeliveryPoll, setDeliveryAdapter, stopDeliveryPolls } from './delivery.js';
@@ -18,6 +20,9 @@ import { startHostSweep, stopHostSweep } from './host-sweep.js';
 import { routeInbound } from './router.js';
 import { log } from './log.js';
 import { enforceUpgradeTripwire } from './upgrade-state.js';
+import { snapshotHealth } from './health-snapshot.js';
+import { startHealthServer } from './health-server.js';
+import { initWatchdog, type Watchdog } from './watchdog.js';
 
 // Response + shutdown registries live in response-registry.ts to break the
 // circular import cycle: src/index.ts imports src/modules/index.js for side
@@ -46,6 +51,12 @@ async function dispatchResponse(payload: ResponsePayload): Promise<void> {
   }
   log.warn('Unclaimed response', { questionId: payload.questionId, value: payload.value });
 }
+
+let healthServer: http.Server | null = null;
+let watchdog: Watchdog | null = null;
+let watchdogTimer: NodeJS.Timeout | null = null;
+const WATCHDOG_TICK_MS = 2000;
+const DEFAULT_HEALTH_PORT = 3002;
 
 // Channel barrel — each enabled channel self-registers on import.
 // Channel skills uncomment lines in channels/index.ts to enable them.
@@ -83,6 +94,15 @@ async function main(): Promise<void> {
   const db = initDb(dbPath);
   runMigrations(db);
   log.info('Central DB ready', { path: dbPath });
+
+  // 1a. Host-owned conversation search index (learning & memory feature #2).
+  // Separate file, never mounted into a container. Guarded: a failure here is
+  // non-fatal — search_history degrades to "unavailable" but the host runs.
+  try {
+    initSearchIndexDb(path.join(DATA_DIR, 'v2-index.db'));
+  } catch (err) {
+    log.error('Failed to init search index DB — search_history disabled', { err });
+  }
 
   // 1b. Backfill container_configs from legacy container.json files.
   // Idempotent — skips groups that already have a config row.
@@ -171,12 +191,35 @@ async function main(): Promise<void> {
   // 7. Start the `ncl` CLI socket server (data/ncl.sock).
   await startCliServer();
 
+  // 8. Start the /health HTTP endpoint (loopback only).
+  const healthPort = parseInt(process.env.HEALTH_PORT || String(DEFAULT_HEALTH_PORT), 10);
+  healthServer = startHealthServer(healthPort, snapshotHealth);
+
+  // 9. systemd watchdog — sd_notify READY=1 + 2s WATCHDOG ticks.
+  // Returns null when NOTIFY_SOCKET is absent (Type=simple unit, dev mode);
+  // code path is a no-op in that case.
+  watchdog = initWatchdog();
+  if (watchdog) {
+    const wd = watchdog;
+    watchdogTimer = setInterval(() => wd.tick(), WATCHDOG_TICK_MS);
+    watchdogTimer.unref();
+  }
+
   log.info('NanoClaw running');
 }
 
 /** Graceful shutdown. */
 async function shutdown(signal: string): Promise<void> {
   log.info('Shutdown signal received', { signal });
+  if (watchdogTimer) {
+    clearInterval(watchdogTimer);
+    watchdogTimer = null;
+  }
+  watchdog?.close();
+  if (healthServer) {
+    await new Promise<void>((resolve) => healthServer!.close(() => resolve()));
+    healthServer = null;
+  }
   for (const cb of getShutdownCallbacks()) {
     try {
       await cb();

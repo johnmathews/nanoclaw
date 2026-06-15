@@ -2,7 +2,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Adapter, AdapterPostableMessage, RawMessage } from 'chat';
 
-import { createChatSdkBridge, splitForLimit } from './chat-sdk-bridge.js';
+// Stub readEnvFile so the production .env's OPENAI_API_KEY doesn't leak
+// into the maybeTranscribe "no-key" branch tests below.
+vi.mock('../env.js', () => ({
+  readEnvFile: vi.fn(() => ({})),
+}));
+
+import {
+  buildNcv2Inbound,
+  buildReactionInbound,
+  createChatSdkBridge,
+  maybePdfExtract,
+  maybeTranscribe,
+  splitForLimit,
+} from './chat-sdk-bridge.js';
+import { resetTranscriptionCacheForTests } from '../transcription.js';
+
+const ORIGINAL_OPENAI_KEY = process.env.OPENAI_API_KEY;
 
 vi.mock('../webhook-server.js', () => ({
   registerWebhookAdapter: vi.fn(),
@@ -348,5 +364,310 @@ describe('createChatSdkBridge.deliver — display cards (send_card)', () => {
     expect(calls).toHaveLength(1);
     const msg = calls[0].message as { markdown?: string };
     expect(msg.markdown).toBe('plain hello');
+  });
+});
+
+describe('buildNcv2Inbound', () => {
+  // The bridge's chat.onAction handler synthesises an inbound row from
+  // ncv2:-prefixed action events. The shape must satisfy: (a) text the
+  // formatter can render verbatim into the agent prompt, (b) structured
+  // metadata under content.action so the agent can extract the actionId and
+  // value programmatically, and (c) isMention=true so a mention-mode wiring
+  // still treats the click as agent-addressed.
+
+  const baseInput = {
+    actionId: 'confirm_delete',
+    value: '',
+    userId: 'U01HJOHN',
+    userName: 'John',
+    messageId: '1700000000.000300',
+    now: () => new Date('2026-05-22T12:34:56Z'),
+    idGen: () => 'act-test-1',
+  } as const;
+
+  it('produces a chat-sdk message with isMention=true and isGroup=true', () => {
+    const inbound = buildNcv2Inbound({ ...baseInput });
+    expect(inbound.kind).toBe('chat-sdk');
+    expect(inbound.isMention).toBe(true);
+    expect(inbound.isGroup).toBe(true);
+    expect(inbound.id).toBe('act-test-1');
+    expect(inbound.timestamp).toBe('2026-05-22T12:34:56.000Z');
+  });
+
+  it('builds a no-value text line for button clicks', () => {
+    const inbound = buildNcv2Inbound({ ...baseInput, value: '' });
+    const content = inbound.content as { text: string };
+    expect(content.text).toBe('(button clicked) action_id="confirm_delete" by John');
+  });
+
+  it('includes value in the text line for select/checkbox clicks', () => {
+    const inbound = buildNcv2Inbound({ ...baseInput, value: 'branch-a,branch-b' });
+    const content = inbound.content as { text: string };
+    expect(content.text).toBe('(button clicked) action_id="confirm_delete" value="branch-a,branch-b" by John');
+  });
+
+  it('embeds the structured action under content.action', () => {
+    const inbound = buildNcv2Inbound({ ...baseInput, value: 'x' });
+    const content = inbound.content as {
+      action: { actionId: string; value: string; userId: string; messageId: string };
+      senderId: string;
+      sender: string;
+    };
+    expect(content.action.actionId).toBe('confirm_delete');
+    expect(content.action.value).toBe('x');
+    expect(content.action.userId).toBe('U01HJOHN');
+    expect(content.action.messageId).toBe('1700000000.000300');
+    expect(content.sender).toBe('John');
+    expect(content.senderId).toBe('U01HJOHN');
+  });
+});
+
+describe('buildReactionInbound', () => {
+  // Reactions are routed via chat.onReaction → buildReactionInbound →
+  // setupConfig.onInbound. The inbound shape must: (a) produce a
+  // human-readable `text` so the formatter renders verbatim, (b) preserve
+  // the structured reaction payload so a future query_reactions tool can
+  // filter on targetMessageId/added, and (c) carry isMention=false so
+  // mention-required channels store-as-context without waking the agent.
+
+  const base = {
+    emoji: '👍',
+    rawEmoji: '+1',
+    added: true,
+    targetMessageId: '1700000000.000300',
+    threadId: 'C-CHAN-1',
+    userId: 'U01HJOHN',
+    userName: 'John',
+    now: () => new Date('2026-05-22T12:34:56Z'),
+    idGen: () => 'rxn-test-1',
+  } as const;
+
+  it('produces a chat-sdk message with isMention=false and isGroup=true', () => {
+    const inbound = buildReactionInbound({ ...base });
+    expect(inbound.kind).toBe('chat-sdk');
+    expect(inbound.isMention).toBe(false);
+    expect(inbound.isGroup).toBe(true);
+    expect(inbound.id).toBe('rxn-test-1');
+    expect(inbound.timestamp).toBe('2026-05-22T12:34:56.000Z');
+  });
+
+  it('renders the added text with the emoji, reactor, and target id', () => {
+    const inbound = buildReactionInbound({ ...base });
+    const content = inbound.content as { text: string };
+    expect(content.text).toBe('[John reacted 👍 on message 1700000000.000300]');
+  });
+
+  it('renders the removed text when added=false', () => {
+    const inbound = buildReactionInbound({ ...base, added: false });
+    const content = inbound.content as { text: string };
+    expect(content.text).toBe('[John removed reaction 👍 on message 1700000000.000300]');
+  });
+
+  it('embeds the structured reaction payload under content.reaction', () => {
+    const inbound = buildReactionInbound({ ...base });
+    const content = inbound.content as {
+      reaction: {
+        emoji: string;
+        rawEmoji: string;
+        added: boolean;
+        targetMessageId: string;
+        threadId: string;
+        userId: string;
+      };
+      sender: string;
+      senderId: string;
+    };
+    expect(content.reaction.emoji).toBe('👍');
+    expect(content.reaction.rawEmoji).toBe('+1');
+    expect(content.reaction.added).toBe(true);
+    expect(content.reaction.targetMessageId).toBe('1700000000.000300');
+    expect(content.reaction.threadId).toBe('C-CHAN-1');
+    expect(content.reaction.userId).toBe('U01HJOHN');
+    expect(content.sender).toBe('John');
+    expect(content.senderId).toBe('U01HJOHN');
+  });
+});
+
+describe('createChatSdkBridge.deliver — raw Slack Block Kit (send_blocks)', () => {
+  // send_blocks writes outbound rows shaped `{ type: 'blocks', blocks, fallbackText }`.
+  // Slack supplies a `postBlocks` to the bridge config — other channels don't,
+  // and the bridge falls back to posting the fallbackText so the message isn't lost.
+
+  it('routes content.type=blocks through config.postBlocks when present', async () => {
+    const { calls, postMessage } = makePostCapture();
+    const blockCalls: Array<{ threadId: string; blocks: unknown[]; fallbackText: string }> = [];
+    const bridge = createChatSdkBridge({
+      adapter: stubAdapter({ postMessage }),
+      supportsThreads: true,
+      postBlocks: async (threadId, blocks, fallbackText) => {
+        blockCalls.push({ threadId, blocks, fallbackText });
+        return { id: 'slack-ts-99' };
+      },
+    });
+
+    const blocks = [
+      { type: 'header', text: { type: 'plain_text', text: 'hi' } },
+      {
+        type: 'actions',
+        elements: [{ type: 'button', text: { type: 'plain_text', text: 'go' }, action_id: 'ncv2:confirm_delete' }],
+      },
+    ];
+    const id = await bridge.deliver('slack:C12345', 'slack:C12345:1700.0001', {
+      kind: 'chat-sdk',
+      content: { type: 'blocks', blocks, fallbackText: 'hi (fallback)' },
+    });
+
+    expect(id).toBe('slack-ts-99');
+    expect(blockCalls).toHaveLength(1);
+    expect(blockCalls[0].threadId).toBe('slack:C12345:1700.0001');
+    expect(blockCalls[0].blocks).toEqual(blocks);
+    expect(blockCalls[0].fallbackText).toBe('hi (fallback)');
+    // Adapter.postMessage must NOT have been called — the blocks took the direct path.
+    expect(calls).toHaveLength(0);
+  });
+
+  it('falls back to posting fallbackText via the adapter when postBlocks is absent', async () => {
+    const { calls, postMessage } = makePostCapture();
+    const bridge = createChatSdkBridge({
+      adapter: stubAdapter({ postMessage }),
+      supportsThreads: true,
+      // postBlocks omitted — simulates a non-Slack channel
+    });
+
+    const id = await bridge.deliver('telegram:42', null, {
+      kind: 'chat-sdk',
+      content: {
+        type: 'blocks',
+        blocks: [{ type: 'section', text: { type: 'mrkdwn', text: 'x' } }],
+        fallbackText: 'plain summary',
+      },
+    });
+
+    expect(id).toBe('msg-stub');
+    expect(calls).toHaveLength(1);
+    const msg = calls[0].message as { markdown?: string };
+    expect(msg.markdown).toBe('plain summary');
+  });
+
+  it('falls back to fallbackText when postBlocks throws (preserves agent intent)', async () => {
+    const { calls, postMessage } = makePostCapture();
+    const bridge = createChatSdkBridge({
+      adapter: stubAdapter({ postMessage }),
+      supportsThreads: true,
+      postBlocks: async () => {
+        throw new Error('WebClient: invalid_blocks');
+      },
+    });
+
+    await bridge.deliver('slack:C12345', 'slack:C12345:1700.0001', {
+      kind: 'chat-sdk',
+      content: {
+        type: 'blocks',
+        blocks: [{ type: 'section', text: { type: 'mrkdwn', text: 'x' } }],
+        fallbackText: 'plain summary',
+      },
+    });
+    expect(calls).toHaveLength(1);
+    const msg = calls[0].message as { markdown?: string };
+    expect(msg.markdown).toBe('plain summary');
+  });
+
+  it('skips delivery (no crash) when blocks payload has empty fallbackText and no postBlocks', async () => {
+    const { calls, postMessage } = makePostCapture();
+    const bridge = createChatSdkBridge({
+      adapter: stubAdapter({ postMessage }),
+      supportsThreads: true,
+    });
+    const id = await bridge.deliver('telegram:42', null, {
+      kind: 'chat-sdk',
+      content: { type: 'blocks', blocks: [{ type: 'section' }], fallbackText: '' },
+    });
+    expect(id).toBeUndefined();
+    expect(calls).toHaveLength(0);
+  });
+
+  it('falls through to the text branch when blocks is not an array (defensive)', async () => {
+    const { calls, postMessage } = makePostCapture();
+    const bridge = createChatSdkBridge({
+      adapter: stubAdapter({ postMessage }),
+      supportsThreads: true,
+    });
+    // `blocks: 'not an array'` is not what send_blocks would write, but if a future
+    // tool emits a malformed row, the bridge should treat it as a normal text msg
+    // (falls through to the bottom text branch) rather than entering the blocks path.
+    await bridge.deliver('telegram:42', null, {
+      kind: 'chat-sdk',
+      content: { type: 'blocks', blocks: 'not an array', text: 'fallthrough text' },
+    });
+    expect(calls).toHaveLength(1);
+    const msg = calls[0].message as { markdown?: string };
+    expect(msg.markdown).toBe('fallthrough text');
+  });
+});
+
+describe('maybeTranscribe', () => {
+  // maybeTranscribe is the wrapper messageToInbound calls per attachment
+  // after fetchData(). Verifies the wrapper's mime guard, error capture,
+  // and entry mutation contract. The underlying Whisper call is exercised
+  // exhaustively by src/transcription.test.ts; here we just sanity-check
+  // the branching.
+
+  beforeEach(() => {
+    delete process.env.OPENAI_API_KEY;
+    resetTranscriptionCacheForTests();
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_OPENAI_KEY === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = ORIGINAL_OPENAI_KEY;
+    resetTranscriptionCacheForTests();
+  });
+
+  it('is a no-op for non-audio mime types', async () => {
+    const entry = { mimeType: 'image/png', name: 'pic.png' } as Record<string, unknown>;
+    await maybeTranscribe(entry, Buffer.from('not audio'));
+    expect(entry.transcription).toBeUndefined();
+    expect(entry.transcriptionError).toBeUndefined();
+  });
+
+  it('is a no-op when mimeType is missing', async () => {
+    const entry = { name: 'unknown' } as Record<string, unknown>;
+    await maybeTranscribe(entry, Buffer.from('audio'));
+    expect(entry.transcription).toBeUndefined();
+    expect(entry.transcriptionError).toBeUndefined();
+  });
+
+  it('captures transcriptionError when OPENAI_API_KEY is missing', async () => {
+    const entry = { mimeType: 'audio/ogg', name: 'v.ogg' } as Record<string, unknown>;
+    await maybeTranscribe(entry, Buffer.from('audio'));
+    expect(entry.transcriptionError).toContain('OPENAI_API_KEY not set');
+    expect(entry.transcription).toBeUndefined();
+  });
+});
+
+describe('maybePdfExtract', () => {
+  // Same shape as maybeTranscribe: thin wrapper, mime guard, error capture.
+  // The underlying pdftotext spawn is exercised by src/pdf-extract.test.ts;
+  // here we sanity-check the wrapper.
+
+  it('is a no-op for non-PDF mime types', async () => {
+    const entry = { mimeType: 'image/png', name: 'pic.png' } as Record<string, unknown>;
+    await maybePdfExtract(entry, Buffer.from('not pdf'));
+    expect(entry.extractedText).toBeUndefined();
+    expect(entry.pdfExtractionError).toBeUndefined();
+  });
+
+  it('is a no-op when mimeType is missing', async () => {
+    const entry = { name: 'unknown' } as Record<string, unknown>;
+    await maybePdfExtract(entry, Buffer.from('something'));
+    expect(entry.extractedText).toBeUndefined();
+    expect(entry.pdfExtractionError).toBeUndefined();
+  });
+
+  it('captures pdfExtractionError for an empty PDF buffer', async () => {
+    const entry = { mimeType: 'application/pdf', name: 'broken.pdf' } as Record<string, unknown>;
+    await maybePdfExtract(entry, Buffer.alloc(0));
+    expect(entry.pdfExtractionError).toContain('Empty PDF buffer');
+    expect(entry.extractedText).toBeUndefined();
   });
 });

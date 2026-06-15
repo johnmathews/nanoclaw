@@ -12,7 +12,13 @@ import { migration012 } from './012-channel-registration.js';
 import { migration013 } from './013-approval-render-metadata.js';
 import { migration014 } from './014-container-configs.js';
 import { migration015 } from './015-cli-scope.js';
-import { migration016 } from './016-messaging-group-instance.js';
+import { migration016 as migrationMessagingGroupInstance } from './016-messaging-group-instance.js';
+import { migration016 as migrationReplyMode } from './016-reply-mode.js';
+import { migration017 } from './017-default-model-opus.js';
+import { migration018 } from './018-reply-mode-channel-default.js';
+import { migration019 } from './019-container-config-env.js';
+import { migration020 } from './020-task-outcomes.js';
+import { migration021 } from './021-memory-budgets.js';
 import { moduleApprovalsPendingApprovals } from './module-approvals-pending-approvals.js';
 import { moduleApprovalsTitleOptions } from './module-approvals-title-options.js';
 
@@ -45,7 +51,16 @@ export const migrations: Migration[] = [
   migration013,
   migration014,
   migration015,
-  migration016,
+  migrationReplyMode,
+  migration017,
+  migration018,
+  migration019,
+  migration020,
+  migration021,
+  // messaging-group-instance recreates the messaging_groups table; it MUST run
+  // after reply-mode (017→migrationReplyMode chain) so the recreate carries the
+  // reply_mode column forward instead of dropping it. See the migration file.
+  migrationMessagingGroupInstance,
 ];
 
 /** Row shape of PRAGMA foreign_key_check. Child rowids are stable across a

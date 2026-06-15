@@ -14,37 +14,62 @@ The boundary: the agent-runner decides **what** to send and **what to do** with 
 
 ## AgentProvider Interface
 
+Authoritative source: `container/agent-runner/src/providers/types.ts`. This section is a high-level mirror; if the two
+diverge, the source wins.
+
 ```typescript
 interface AgentProvider {
+  /**
+   * True if the provider's underlying SDK handles slash commands natively
+   * and wants them passed through as raw text. When false the poll-loop
+   * formats slash commands like any other chat message.
+   */
+  readonly supportsNativeSlashCommands: boolean;
+
+  /**
+   * True if this provider can accept image / multimodal content blocks via
+   * `AgentQuery.pushBlocks`. When false the poll-loop falls back to
+   * text-only attachment rendering and skips block extraction.
+   */
+  readonly supportsMultimodalContent: boolean;
+
   /** Start a new query. Returns a handle for streaming input and output. */
   query(input: QueryInput): AgentQuery;
+
+  /**
+   * True if the given error indicates the stored continuation is invalid
+   * (missing transcript, unknown session, etc.) and should be cleared.
+   */
+  isSessionInvalid(err: unknown): boolean;
 }
 
 interface QueryInput {
-  /** Initial prompt (already formatted by agent-runner).
-   *  String for text-only. ContentBlock[] for multimodal (images, PDFs, audio). */
-  prompt: string | ContentBlock[];
+  /** Initial prompt (already formatted by agent-runner). Text-only —
+   *  multimodal travels via `AgentQuery.pushBlocks` on a separate user turn. */
+  prompt: string;
 
-  /** Session ID to resume, if any */
-  sessionId?: string;
+  /** Opaque continuation token from a previous query. Provider decides
+   *  what this means (session ID, thread ID, nothing at all). */
+  continuation?: string;
 
-  /** Resume from a specific point in the session (provider-specific, may be ignored) */
-  resumeAt?: string;
-
-  /** Working directory inside the container */
+  /** Working directory inside the container. */
   cwd: string;
 
-  /** MCP server configurations (normalized format — provider translates) */
-  mcpServers: Record<string, McpServerConfig>;
+  /** System context to inject. Providers translate this into whatever
+   *  their SDK expects (preset append, full system prompt, per-turn
+   *  injection…). */
+  systemContext?: {
+    instructions?: string;
+  };
+}
 
-  /** System prompt / developer instructions */
-  systemPrompt?: string;
-
-  /** Environment variables for the SDK process */
-  env: Record<string, string | undefined>;
-
-  /** Additional directories the agent can access */
+interface ProviderOptions {
+  assistantName?: string;
+  mcpServers?: Record<string, McpServerConfig>;
+  env?: Record<string, string | undefined>;
   additionalDirectories?: string[];
+  model?: string;
+  effort?: string;
 }
 
 interface McpServerConfig {
@@ -54,24 +79,49 @@ interface McpServerConfig {
 }
 
 interface AgentQuery {
-  /** Push a follow-up message into the active query */
+  /** Push a follow-up text message into the active query. */
   push(message: string): void;
 
-  /** Signal that no more input will be sent */
+  /** Push a multimodal user message (content-block array). Used to deliver
+   *  image attachments alongside the text prompt as a separate user turn.
+   *  Callers must guard with `AgentProvider.supportsMultimodalContent`. */
+  pushBlocks(blocks: ContentBlock[]): void;
+
+  /** Signal that no more input will be sent. */
   end(): void;
 
-  /** Output event stream */
+  /** Output event stream. */
   events: AsyncIterable<ProviderEvent>;
 
-  /** Force-stop the query (e.g., container shutting down) */
+  /** Force-stop the query (e.g., container shutting down). */
   abort(): void;
 }
 
+type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+
+interface ImageContentBlock {
+  type: 'image';
+  source: { type: 'base64'; media_type: ImageMediaType; data: string };
+}
+
+interface TextContentBlock {
+  type: 'text';
+  text: string;
+}
+
+type ContentBlock = ImageContentBlock | TextContentBlock;
+
 type ProviderEvent =
-  | { type: 'init'; sessionId: string }
+  | { type: 'init'; continuation: string }
   | { type: 'result'; text: string | null }
   | { type: 'error'; message: string; retryable: boolean; classification?: string }
-  | { type: 'progress'; message: string };
+  | { type: 'progress'; message: string }
+  /**
+   * Liveness signal. Providers MUST yield this on every underlying SDK
+   * event (tool call, thinking, partial message) so the poll-loop's idle
+   * timer stays honest during long tool runs.
+   */
+  | { type: 'activity' };
 ```
 
 ### What the interface does NOT include
@@ -84,10 +134,15 @@ type ProviderEvent =
 
 ### Provider event semantics
 
-- **`init`** — emitted once per query when the provider establishes or resumes a session. The agent-runner captures `sessionId` for future resume.
-- **`result`** — emitted when the agent produces a complete response. May be emitted multiple times per query (e.g., Claude's multi-turn with subagents). The agent-runner writes each result to messages_out.
-- **`error`** — emitted on failure. `retryable` indicates whether the agent-runner should retry. `classification` is optional detail (e.g., 'quota', 'auth', 'transport').
+- **`init`** — emitted once per query when the provider establishes or resumes a session. The agent-runner captures the
+  opaque `continuation` for future resume.
+- **`result`** — emitted when the agent produces a complete response. May be emitted multiple times per query (e.g.,
+  Claude's multi-turn with subagents). The agent-runner writes each result to messages_out.
+- **`error`** — emitted on failure. `retryable` indicates whether the agent-runner should retry. `classification` is
+  optional detail (e.g., 'quota', 'auth', 'transport').
 - **`progress`** — optional, for logging. The agent-runner logs these but doesn't act on them.
+- **`activity`** — liveness signal. Providers MUST yield this on every underlying SDK event so the poll-loop's idle
+  timer stays honest during long tool runs.
 
 ## Provider Implementations
 
@@ -97,56 +152,73 @@ Only the `claude` provider ships in trunk. The Codex and OpenCode sections below
 
 Wraps `@anthropic-ai/claude-agent-sdk`'s `query()`.
 
+Sketch (the real implementation is in `container/agent-runner/src/providers/claude.ts` — read that for the canonical
+shape):
+
 ```typescript
 class ClaudeProvider implements AgentProvider {
+  readonly supportsNativeSlashCommands = true;
+  readonly supportsMultimodalContent = true;
+
   query(input: QueryInput): AgentQuery {
-    const stream = new MessageStream();  // AsyncIterable<SDKUserMessage>
+    const stream = new MessageStream(); // pushes both text and ContentBlock[] turns
     stream.push(input.prompt);
 
-    const sdkQuery = query({
+    const sdkResult = sdkQuery({
       prompt: stream,
       options: {
         cwd: input.cwd,
-        resume: input.sessionId,
-        resumeSessionAt: input.resumeAt,
-        systemPrompt: input.systemPrompt
-          ? { type: 'preset', preset: 'claude_code', append: input.systemPrompt }
+        resume: input.continuation,
+        systemPrompt: input.systemContext?.instructions
+          ? { type: 'preset', preset: 'claude_code', append: input.systemContext.instructions }
           : undefined,
-        mcpServers: input.mcpServers,  // already the right shape
-        additionalDirectories: input.additionalDirectories,
-        env: input.env,
-        allowedTools: NANOCLAW_TOOL_ALLOWLIST,
+        mcpServers: this.mcpServers,
+        additionalDirectories: this.additionalDirectories,
+        env: this.env,
+        allowedTools: [...TOOL_ALLOWLIST, ...mcpAllowPatterns(this.mcpServers)],
+        disallowedTools: SDK_DISALLOWED_TOOLS,
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
         hooks: {
           PreCompact: [{ hooks: [preCompactHook] }],
-          PreToolUse: [{ matcher: 'Bash', hooks: [sanitizeBashHook] }],
+          PreToolUse: [{ hooks: [preToolUseHook] }],
+          PostToolUse: [{ hooks: [postToolUseHook] }],
+          PostToolUseFailure: [{ hooks: [postToolUseHook] }],
         },
       },
     });
 
     return {
       push: (msg) => stream.push(msg),
+      pushBlocks: (blocks) => stream.pushBlocks(blocks),
       end: () => stream.end(),
-      abort: () => sdkQuery.close(),
-      events: translateClaudeEvents(sdkQuery),
+      abort: () => { /* set aborted flag; stream.end() */ },
+      events: translateClaudeEvents(sdkResult),
     };
   }
+
+  isSessionInvalid(err: unknown): boolean { /* match the SDK's no-conversation / ENOENT.*jsonl text */ }
 }
 ```
 
 `translateClaudeEvents` is an async generator that maps SDK messages to `ProviderEvent`:
-- `message.type === 'system' && message.subtype === 'init'` → `{ type: 'init', sessionId }`
+
+- Every SDK message yields `{ type: 'activity' }` (liveness)
+- `message.type === 'system' && message.subtype === 'init'` → `{ type: 'init', continuation }` (the SDK session id)
 - `message.type === 'result'` → `{ type: 'result', text }`
 - `message.type === 'system' && message.subtype === 'api_retry'` → `{ type: 'error', retryable: true }`
 - `message.type === 'system' && message.subtype === 'rate_limit_event'` → `{ type: 'error', retryable: false, classification: 'quota' }`
+- `message.type === 'system' && message.subtype === 'compact_boundary'` → `{ type: 'result', text: 'Context compacted...' }`
 - `message.type === 'system' && message.subtype === 'task_notification'` → `{ type: 'progress', message }`
 - Everything else → logged, not emitted
 
 **Claude-specific features preserved inside the provider:**
-- `MessageStream` for async iterable input (push-based)
-- `resumeSessionAt` for resume at specific message UUID
-- PreCompact hook for transcript archiving
+
+- `MessageStream` for async iterable input (push-based) — handles both text turns (`push`) and multimodal turns (`pushBlocks`).
+- PreCompact hook for transcript archiving (writes to `/workspace/agent/conversations/<date>-<slug>.md`).
+- PreToolUse / PostToolUse hooks update `container_state.current_tool` so the host sweep widens its stuck tolerance
+  while long-declared Bash scripts are running.
+- `CLAUDE_CODE_AUTO_COMPACT_WINDOW` env override (default 165000) keyed inside the provider, not in the agent-runner.
 - PreToolUse hook for sanitizing bash env vars
 - Full tool allowlist
 - `additionalDirectories` for multi-directory access
@@ -647,37 +719,97 @@ Register a new agent group (admin only).
 
 Implementation: write a `messages_out` row with `kind: 'system'`, `action: 'register_agent_group'`. The host reads, validates admin permission, creates the entity rows in the central DB, and writes a `system` messages_in response.
 
+#### remember
+
+Curate the agent's persistent memory (learning & memory layer, feature #1). Two budgeted files are injected into every composed `CLAUDE.md`: `MEMORY.md` (operational lessons, conventions, how-to knowledge) and `USER.md` (durable facts about the user — preferences, identity, goals).
+
+```typescript
+{
+  name: 'remember',
+  params: {
+    target: 'memory' | 'user',          // which file
+    op: 'add' | 'replace' | 'remove',
+    text?: string,                       // op=add: the new one-line entry
+    match?: string,                      // op=replace|remove: a substring uniquely identifying one existing entry
+    replacement?: string,                // op=replace: the new entry text
+  }
+}
+```
+
+Implementation: round-trip system action (reuses the `ask_user_question` machinery). The tool writes a `messages_out` row with a deterministic reply id (`rem-resp-<requestId>`), then polls `messages_in` for the host's reply. Host-side, `src/modules/memory/` applies the op (one entry per non-empty line; `replace`/`remove` match a unique substring), enforces the per-group char budget (`memory_budget_chars` / `user_budget_chars` on `container_configs`), and recomposes `CLAUDE.md` directly — **no container restart** (the writing session already holds the fact; the snapshot only matters for future sessions). At capacity the tool returns the current entries so the agent consolidates before adding. Seeding from a migrated `CLAUDE.local.md` happens once at first compose (`seedMemoryFiles` in `src/claude-md-compose.ts`).
+
+#### search_history
+
+Full-text search over the agent group's own conversation history (learning & memory layer, feature #2).
+
+```typescript
+{
+  name: 'search_history',
+  params: {
+    query: string,     // words, FTS5 'OR', or "exact phrase"
+    limit?: number,    // default 10, max 50
+  }
+}
+```
+
+Implementation: round-trip system action. The container can't open the search index (`data/v2-index.db` is host-only — see [db.md §1](db.md#1-the-databases)), so the tool writes a `messages_out` request and polls for the reply. Host-side, `searchHistory(db, groupId, query, limit)` always ANDs `agent_group_id = ?` onto the FTS MATCH, so results are scoped to the calling group — an agent can never see another group's conversations. The index is built incrementally by the 60s sweep (`src/search-index.ts`) from user messages, agent replies, and archived `conversations/*.md`.
+
 ### Media Handling
+
+Source of truth: `container/agent-runner/src/multimodal.ts` (image blocks); `src/transcription.ts` + `src/pdf-extract.ts`
+(host-side voice / PDF preprocessing); `container/agent-runner/src/formatter.ts` `formatAttachments` (inline rendering of
+all four kinds). Updated 2026-05-22 by W4.x-multimodal — see `docs/archive/v2-migration/p3-notes.md` §20.
 
 #### Inbound (messages_in → agent prompt)
 
-The agent-runner inspects attachments in chat/chat-sdk messages and handles them based on type and provider capability:
+The host's `chat-sdk-bridge.messageToInbound` downloads every attachment, base64-encodes it, then spills the bytes to
+`<sessionDir>/inbox/<messageId>/<filename>` (host) which the container sees at `/workspace/inbox/<messageId>/<filename>`.
+The base64 `data` field is then stripped from the row; only `localPath` survives in `messages_in.content.attachments[i]`.
 
-**Provider-native content blocks:**
+Per attachment type, additional preprocessing happens on the host inside `messageToInbound` BEFORE the row is written to
+the inbound DB:
 
-| Type | Claude | Codex / OpenCode |
-|------|--------|------------------|
-| Images (JPEG, PNG, GIF, WebP) | Native image content block | Save to disk |
-| PDFs | Native document content block | Save to disk |
-| Audio | Native audio content block | Save to disk |
-| Other files (code, data, video, archives) | Save to disk | Save to disk |
+| Type | Host preprocessing | Container surface to the agent |
+|------|--------------------|--------------------------------|
+| Images (JPEG, PNG, GIF, WebP) | None (binary kept as the spilled file). | Loaded by `extractImageBlocks(messages)` and pushed as a separate user-turn message via `AgentQuery.pushBlocks(ContentBlock[])` IFF the provider's `supportsMultimodalContent` is true. Per-attachment `att.skipMultimodal=true` opts out (still rendered as text). 4 MB hard cap. |
+| Voice (audio/\*, video/mp4, video/webm) | `transcribeAudio()` (OpenAI Whisper). Sets `attachment.transcription` on success or `attachment.transcriptionError` on failure. 24 MB cap (under Whisper's documented 25 MB). |
+| PDF (application/pdf, application/x-pdf) | `extractPdfText()` (pdftotext -layout). Sets `attachment.extractedText` (truncated at 250 KB) or `attachment.pdfExtractionError`. 50 MB input cap; 15 s timeout. |
+| Other files | None — formatter renders `[<type>: <name> — saved to /workspace/inbox/<msgId>/<file>]`. Agent uses `Read`/`Bash` against the localPath. |
 
-**"Save to disk"** means: download to `/workspace/downloads/{messageId}/`, reference in the prompt text:
+The formatter renders the preprocessed text inline:
 
 ```
 <message sender="John" time="10:00">
-  Check this spreadsheet
-  [file available at: /workspace/downloads/msg-123/data.xlsx]
+  [voice: 0001.ogg — saved to /workspace/inbox/msg-x/0001.ogg]
+  Transcription: Hey can you re-run the backup script?
 </message>
 ```
 
-The agent can use tools (Read, Bash) to access saved files.
+```
+<message sender="John" time="10:01">
+  [pdf: spec.pdf — saved to /workspace/inbox/msg-y/spec.pdf]
+  <pdf_text><![CDATA[Chapter 1
+  Introduction
+  ...]]></pdf_text>
+</message>
+```
 
-For channels where direct download isn't possible (e.g., WhatsApp buffered streams), the channel adapter serves the media via a local URL. The agent-runner downloads from that URL.
+Image attachments still get an `[image: name — saved to /workspace/...]` text line, so the agent can `Read` the binary if
+it needs raw bytes; but multimodal-capable providers also receive the image as a native content block on a separate user
+turn (see `container/agent-runner/src/poll-loop.ts` — `extractImageBlocks(keep)` is called right after `provider.query`
+and again for every follow-up batch).
 
-**Content block construction (Claude):** The agent-runner builds multi-part `MessageParam` content: `[{ type: 'image', source: { type: 'base64', media_type, data } }, { type: 'text', text: '...' }]`. The prompt passed to the provider is not a plain string in this case — the `QueryInput.prompt` field needs to support structured content for Claude. The provider's `query()` method handles the format-specific construction.
+Why preprocess voice and PDF on the host rather than in-container:
 
-**Content block construction (Codex/OpenCode):** Everything is text. File references are inlined in the prompt string. The provider receives a plain string prompt.
+- The OpenAI Whisper key (`OPENAI_API_KEY`) is a host secret; running Whisper inside the sandboxed agent would require
+  leaking it to every container.
+- pdftotext is a system binary (poppler). Host-side spawn keeps the container image minimal.
+- Doing the transcription / extraction once on the host (per inbound message) is cheaper than letting each
+  container do it again on resume / compaction.
+
+Failure modes are surfaced to the agent, not hidden: missing OPENAI_API_KEY → `Transcription failed: OPENAI_API_KEY not
+set` inline. Missing pdftotext binary → `PDF extraction failed: pdftotext not installed` inline. The agent can decide
+whether to apologise, fall back to Reading the raw file, or ask the user to resend.
 
 #### Outbound (agent → messages_out)
 

@@ -29,6 +29,7 @@ const TEST_DIR = '/tmp/nanoclaw-test-delivery';
 import {
   initTestDb,
   closeDb,
+  getDb,
   runMigrations,
   createAgentGroup,
   createMessagingGroup,
@@ -220,73 +221,77 @@ describe('deliverSessionMessages — retry and permanent failure', () => {
   });
 });
 
-describe('deliverSessionMessages — instance resolution', () => {
-  it('delivers via the origin session instance when sibling rows share (channel_type, platform_id)', async () => {
-    createAgentGroup({
-      id: 'ag-1',
-      name: 'Test Agent',
-      folder: 'test-agent',
-      agent_provider: null,
+describe('deliverSessionMessages — reply_mode', () => {
+  it("preserves thread_id when reply_mode is explicitly 'thread'", async () => {
+    seedAgentAndChannel();
+    createMessagingGroupAgent({
+      id: 'mga-1',
+      messaging_group_id: 'mg-1',
+      agent_group_id: 'ag-1',
+      engage_mode: 'pattern',
+      engage_pattern: '.',
+      sender_scope: 'all',
+      ignored_message_policy: 'drop',
+      session_mode: 'shared',
+      priority: 0,
       created_at: now(),
     });
-    // Two instances own the same chat address. The named row sorts before
-    // 'slack', so a plain by-platform lookup (default-instance-first) would
-    // pick mg-default — only origin-session preference selects mg-tester.
-    createMessagingGroup({
-      id: 'mg-default',
-      channel_type: 'slack',
-      platform_id: 'slack:C1',
-      name: 'Default',
-      is_group: 1,
-      unknown_sender_policy: 'public',
-      created_at: now(),
-    });
-    createMessagingGroup({
-      id: 'mg-tester',
-      channel_type: 'slack',
-      platform_id: 'slack:C1',
-      instance: 'alpha-tester',
-      name: 'Tester',
-      is_group: 1,
-      unknown_sender_policy: 'public',
-      created_at: now(),
-    });
+    // Default is 'channel' (migration 018); threaded replies are opt-in.
+    getDb().prepare("UPDATE messaging_groups SET reply_mode = 'thread' WHERE id = ?").run('mg-1');
+    const { session } = resolveSession('ag-1', 'mg-1', 'telegram:123:thread-abc', 'shared');
 
-    const { session } = resolveSession('ag-1', 'mg-tester', null, 'shared');
     const db = new Database(outboundDbPath('ag-1', session.id));
     db.prepare(
-      `INSERT INTO messages_out (id, timestamp, kind, platform_id, channel_type, content)
-       VALUES ('out-inst', datetime('now'), 'chat', 'slack:C1', 'slack', ?)`,
-    ).run(JSON.stringify({ text: 'hi' }));
+      `INSERT INTO messages_out (id, timestamp, kind, platform_id, channel_type, thread_id, content)
+       VALUES (?, datetime('now'), 'chat', 'telegram:123', 'telegram', ?, ?)`,
+    ).run('out-thread', 'telegram:123:thread-abc', JSON.stringify({ text: 'hi' }));
     db.close();
 
-    const instances: Array<string | undefined> = [];
+    let seenThreadId: string | null | undefined;
     setDeliveryAdapter({
-      async deliver(_ct, _pid, _tid, _kind, _content, _files, instance) {
-        instances.push(instance);
-        return 'plat-1';
+      async deliver(_ct, _pid, threadId) {
+        seenThreadId = threadId;
+        return 'plat-msg';
       },
     });
 
     await deliverSessionMessages(session);
-    expect(instances).toEqual(['alpha-tester']);
+    expect(seenThreadId).toBe('telegram:123:thread-abc');
   });
 
-  it('default session passes the backfilled default instance (= channel_type)', async () => {
+  it("clears thread_id when reply_mode is the default 'channel'", async () => {
     seedAgentAndChannel();
-    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
-    insertOutbound('ag-1', session.id, 'out-default-inst');
+    createMessagingGroupAgent({
+      id: 'mga-1',
+      messaging_group_id: 'mg-1',
+      agent_group_id: 'ag-1',
+      engage_mode: 'pattern',
+      engage_pattern: '.',
+      sender_scope: 'all',
+      ignored_message_policy: 'drop',
+      session_mode: 'shared',
+      priority: 0,
+      created_at: now(),
+    });
+    const { session } = resolveSession('ag-1', 'mg-1', 'telegram:123:thread-abc', 'shared');
 
-    const instances: Array<string | undefined> = [];
+    const db = new Database(outboundDbPath('ag-1', session.id));
+    db.prepare(
+      `INSERT INTO messages_out (id, timestamp, kind, platform_id, channel_type, thread_id, content)
+       VALUES (?, datetime('now'), 'chat', 'telegram:123', 'telegram', ?, ?)`,
+    ).run('out-chan', 'telegram:123:thread-abc', JSON.stringify({ text: 'hi' }));
+    db.close();
+
+    let seenThreadId: string | null | undefined;
     setDeliveryAdapter({
-      async deliver(_ct, _pid, _tid, _kind, _content, _files, instance) {
-        instances.push(instance);
-        return 'plat-2';
+      async deliver(_ct, _pid, threadId) {
+        seenThreadId = threadId;
+        return 'plat-msg';
       },
     });
 
     await deliverSessionMessages(session);
-    expect(instances).toEqual(['telegram']);
+    expect(seenThreadId).toBeNull();
   });
 });
 

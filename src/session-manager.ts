@@ -376,14 +376,11 @@ export function openOutboundDbRw(agentGroupId: string, sessionId: string): Datab
 
 /**
  * Write a message directly to a session's outbound DB so the host delivery
- * loop picks it up. Used by the command gate to send denial responses
- * without waking a container.
- *
- * Needs the read-write open — the readonly handle the delivery poll uses
- * can't INSERT. This is a host-side write to the container-owned outbound.db,
- * but it's safe even with a container running: both sides open with DELETE
- * journal + busy_timeout, and the even host seq stays out of the container's
- * odd-seq space.
+ * loop picks it up. Used by the command gate to send denial / host-responder
+ * responses without waking a container. Opens RW because the read-only handle
+ * (`openOutboundDb`) is for the delivery loop; the gate is allowed to write
+ * since no container can be processing this inbound row (the gate runs before
+ * `writeSessionMessage`, so the agent was never woken).
  */
 export function writeOutboundDirect(
   agentGroupId: string,

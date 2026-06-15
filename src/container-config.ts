@@ -35,6 +35,12 @@ export interface ContainerConfig {
   packages: { apt: string[]; npm: string[] };
   imageTag?: string;
   additionalMounts: AdditionalMountConfig[];
+  /**
+   * Extra environment variables injected into the container as `-e` flags at
+   * spawn time. Reserved keys (TZ/HOME/proxy/cert) are filtered by the runner
+   * so this can never clobber the OneCLI credential proxy. See migration 019.
+   */
+  env?: Record<string, string>;
   skills: string[] | 'all';
   provider?: string;
   groupName?: string;
@@ -43,6 +49,60 @@ export interface ContainerConfig {
   maxMessagesPerPrompt?: number;
   model?: string;
   effort?: string;
+}
+
+/**
+ * Env keys an operator may NOT set via per-group `config.env`. These are wired
+ * by the host (TZ, HOME) or the OneCLI credential gateway (HTTPS_PROXY + CA
+ * certs); letting a per-group entry override them could silently route the
+ * agent's API calls around the credential proxy. Matched case-insensitively,
+ * with prefix matching for the proxy family.
+ */
+// The proxy/cert vars node + curl read to route the container's *own* network
+// + TLS trust. Overriding these could send the agent's API traffic around the
+// OneCLI credential proxy, so they're rejected. Matched by exact name — NOT by
+// substring — so namespaced tool vars like AGENT_BROWSER_PROXY (which only
+// proxies the in-tool browser, e.g. to route research browsing through a VPN)
+// remain settable.
+const RESERVED_ENV_EXACT = new Set([
+  'TZ',
+  'HOME',
+  'NODE_EXTRA_CA_CERTS',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'NO_PROXY',
+  'FTP_PROXY',
+]);
+const RESERVED_ENV_SUBSTRINGS = ['CURL_CA', 'REQUESTS_CA'];
+
+export function isReservedContainerEnv(key: string): boolean {
+  const upper = key.toUpperCase();
+  if (RESERVED_ENV_EXACT.has(upper)) return true;
+  return RESERVED_ENV_SUBSTRINGS.some((s) => upper.includes(s));
+}
+
+/**
+ * Build `docker run` `-e` flags from a per-group env map, skipping reserved
+ * keys (returned separately so the caller can warn). Pure + side-effect free
+ * so it can be unit-tested without spawning a container.
+ */
+export function containerEnvArgs(env: Record<string, string> | undefined): {
+  args: string[];
+  skipped: string[];
+} {
+  const args: string[] = [];
+  const skipped: string[] = [];
+  for (const [key, value] of Object.entries(env ?? {})) {
+    if (isReservedContainerEnv(key)) {
+      skipped.push(key);
+      continue;
+    }
+    args.push('-e', `${key}=${value}`);
+  }
+  return { args, skipped };
 }
 
 /** Build a `ContainerConfig` from a DB row + agent group identity. */
@@ -55,6 +115,7 @@ export function configFromDb(row: ContainerConfigRow, group: AgentGroup): Contai
     },
     imageTag: row.image_tag ?? undefined,
     additionalMounts: JSON.parse(row.additional_mounts) as AdditionalMountConfig[],
+    env: JSON.parse(row.env ?? '{}') as Record<string, string>,
     skills: JSON.parse(row.skills) as string[] | 'all',
     provider: row.provider ?? undefined,
     groupName: group.name,

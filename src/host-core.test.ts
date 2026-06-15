@@ -21,6 +21,7 @@ import {
   resolveSession,
   writeSessionMessage,
   writeSessionRouting,
+  writeOutboundDirect,
   initSessionFolder,
   sessionDir,
   inboundDbPath,
@@ -354,6 +355,34 @@ describe('session manager', () => {
     expect(written).toHaveLength(1);
     expect(written[0]).not.toContain('/');
     expect(written[0]).not.toContain('..');
+  });
+
+  it('writeOutboundDirect appends to messages_out (regression: was opened read-only)', () => {
+    initSessionFolder('ag-1', 'sess-test');
+
+    writeOutboundDirect('ag-1', 'sess-test', {
+      id: 'deny-1',
+      kind: 'chat',
+      platformId: 'chan-123',
+      channelType: 'discord',
+      threadId: null,
+      content: JSON.stringify({ text: 'Permission denied' }),
+    });
+
+    const outDb = new Database(outboundDbPath('ag-1', 'sess-test'), { readonly: true });
+    try {
+      const rows = outDb.prepare('SELECT id, kind, content FROM messages_out').all() as Array<{
+        id: string;
+        kind: string;
+        content: string;
+      }>;
+      expect(rows).toHaveLength(1);
+      expect(rows[0].id).toBe('deny-1');
+      expect(rows[0].kind).toBe('chat');
+      expect(JSON.parse(rows[0].content).text).toBe('Permission denied');
+    } finally {
+      outDb.close();
+    }
   });
 });
 

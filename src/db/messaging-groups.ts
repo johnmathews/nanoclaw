@@ -21,10 +21,18 @@ import { getDb, hasTable } from './connection.js';
 export function createMessagingGroup(group: MessagingGroup): void {
   getDb()
     .prepare(
-      `INSERT INTO messaging_groups (id, channel_type, platform_id, instance, name, is_group, unknown_sender_policy, created_at)
-       VALUES (@id, @channel_type, @platform_id, @instance, @name, @is_group, @unknown_sender_policy, @created_at)`,
+      `INSERT INTO messaging_groups (id, channel_type, platform_id, instance, name, is_group, unknown_sender_policy, reply_mode, created_at)
+       VALUES (@id, @channel_type, @platform_id, @instance, @name, @is_group, @unknown_sender_policy, @reply_mode, @created_at)`,
     )
-    .run({ ...group, instance: group.instance ?? group.channel_type });
+    // Default reply_mode is 'channel' — replies land in the channel, not a
+    // thread (operator preference, 2026-06-12). Callers that want threaded
+    // replies must pass reply_mode explicitly. `instance` defaults to
+    // channel_type (upstream multi-instance dimension, dormant on this install).
+    .run({
+      ...group,
+      instance: group.instance ?? group.channel_type,
+      reply_mode: group.reply_mode ?? 'channel',
+    });
 }
 
 export function getMessagingGroup(id: string): MessagingGroup | undefined {
@@ -116,7 +124,7 @@ export function getMessagingGroupsByChannel(channelType: string): MessagingGroup
 
 export function updateMessagingGroup(
   id: string,
-  updates: Partial<Pick<MessagingGroup, 'name' | 'is_group' | 'unknown_sender_policy'>>,
+  updates: Partial<Pick<MessagingGroup, 'name' | 'is_group' | 'unknown_sender_policy' | 'reply_mode'>>,
 ): void {
   const fields: string[] = [];
   const values: Record<string, unknown> = { id };
