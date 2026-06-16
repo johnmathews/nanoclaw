@@ -29,7 +29,9 @@ import { wakeContainer } from '../../container-runner.js';
 import { log } from '../../log.js';
 import { openInboundDb, resolveSession, sessionDir, writeSessionMessage } from '../../session-manager.js';
 import type { Session } from '../../types.js';
+import { requestApproval } from '../approvals/index.js';
 import { hasDestination } from './db/agent-destinations.js';
+import { getMessagePolicy } from './db/agent-message-policies.js';
 
 export { isSafeAttachmentName };
 
@@ -212,10 +214,8 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
   if (!targetAgentGroupId) {
     throw new Error(`agent-to-agent message ${msg.id} is missing a target agent group id`);
   }
-  if (
-    targetAgentGroupId !== session.agent_group_id &&
-    !hasDestination(session.agent_group_id, 'agent', targetAgentGroupId)
-  ) {
+  const isSelf = targetAgentGroupId === session.agent_group_id;
+  if (!isSelf && !hasDestination(session.agent_group_id, 'agent', targetAgentGroupId)) {
     throw new Error(
       `unauthorized agent-to-agent: ${session.agent_group_id} has no destination for ${targetAgentGroupId}`,
     );
@@ -223,6 +223,82 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
   if (!getAgentGroup(targetAgentGroupId)) {
     throw new Error(`target agent group ${targetAgentGroupId} not found for message ${msg.id}`);
   }
+
+  // Approval-policy gate: an authorized cross-group send may carry a directed
+  // require-approval policy. If so, HOLD the message — queue an approval card to
+  // the target's admins and return WITHOUT routing. Returning normally lets the
+  // delivery loop mark the outbound row delivered (consume it, like a system
+  // action); the held message lives in the approval payload and is re-routed by
+  // `applyA2aMessageGate` on approve. Self-messages and unauthorized messages
+  // never reach here with a policy (no destination row → no policy).
+  if (!isSelf) {
+    const policy = getMessagePolicy(session.agent_group_id, targetAgentGroupId);
+    if (policy) {
+      const sourceName = getAgentGroup(session.agent_group_id)?.name ?? session.agent_group_id;
+      const targetName = getAgentGroup(targetAgentGroupId)?.name ?? targetAgentGroupId;
+      await requestApproval({
+        session,
+        agentName: sourceName,
+        action: A2A_MESSAGE_GATE_ACTION,
+        approverAgentGroupId: targetAgentGroupId,
+        approverUserIds: policy.approvers ? (JSON.parse(policy.approvers) as string[]) : undefined,
+        title: 'Message approval',
+        question: buildGateQuestion(sourceName, targetName, msg.content),
+        payload: {
+          id: msg.id,
+          platform_id: targetAgentGroupId,
+          content: msg.content,
+          in_reply_to: msg.in_reply_to,
+        },
+      });
+      log.info('Agent message held for approval', {
+        from: session.agent_group_id,
+        to: targetAgentGroupId,
+        msgId: msg.id,
+      });
+      return;
+    }
+  }
+
+  await performAgentRoute(msg, session, targetAgentGroupId);
+}
+
+/** Dispatch key joining the approval card (held message) to `applyA2aMessageGate`. */
+export const A2A_MESSAGE_GATE_ACTION = 'a2a_message_gate';
+
+/**
+ * Build the approval-card body: who → whom, the (truncated) message text, and
+ * any attachment filenames so the approver can review what's being sent.
+ */
+function buildGateQuestion(sourceName: string, targetName: string, contentStr: string): string {
+  const MAX = 1500;
+  let text = '';
+  let files: string[] = [];
+  try {
+    const parsed = JSON.parse(contentStr) as { text?: unknown; files?: unknown };
+    if (typeof parsed.text === 'string') text = parsed.text;
+    if (Array.isArray(parsed.files)) files = parsed.files.filter((f): f is string => typeof f === 'string');
+  } catch {
+    text = contentStr;
+  }
+  const body = text.length > MAX ? `${text.slice(0, MAX)}… (truncated)` : text;
+  const lines = [`Agent "${sourceName}" wants to send a message to "${targetName}":`, '', body];
+  if (files.length > 0) lines.push('', `Attachments: ${files.join(', ')}`);
+  lines.push('', 'Approve delivery?');
+  return lines.join('\n');
+}
+
+/**
+ * Perform the actual cross-session route: pick the target session, forward any
+ * file attachments, write into the target's inbound DB, and wake it. Authorization
+ * (and any approval gate) is the CALLER's responsibility — `routeAgentMessage`
+ * for the live path, `applyA2aMessageGate` for the held-then-approved path.
+ */
+export async function performAgentRoute(
+  msg: RoutableAgentMessage,
+  session: Session,
+  targetAgentGroupId: string,
+): Promise<void> {
   const targetSession = resolveTargetSession(msg, session, targetAgentGroupId);
   const a2aMsgId = `a2a-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
