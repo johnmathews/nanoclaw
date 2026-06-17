@@ -12,15 +12,20 @@ export function getMessagePolicy(fromAgentGroupId: string, toAgentGroupId: strin
     .get(fromAgentGroupId, toAgentGroupId) as AgentMessagePolicy | undefined;
 }
 
-/** Upsert (idempotent) a gate for `from → to`. */
-export function setMessagePolicy(fromAgentGroupId: string, toAgentGroupId: string, createdAt: string): void {
+/** Upsert a gate for `from → to`. `approver` is a specific target admin/owner, or null for all. */
+export function setMessagePolicy(
+  fromAgentGroupId: string,
+  toAgentGroupId: string,
+  approver: string | null,
+  createdAt: string,
+): void {
   getDb()
     .prepare(
-      `INSERT INTO agent_message_policies (from_agent_group_id, to_agent_group_id, created_at)
-       VALUES (@from_agent_group_id, @to_agent_group_id, @created_at)
-       ON CONFLICT (from_agent_group_id, to_agent_group_id) DO NOTHING`,
+      `INSERT INTO agent_message_policies (from_agent_group_id, to_agent_group_id, approver, created_at)
+       VALUES (@from_agent_group_id, @to_agent_group_id, @approver, @created_at)
+       ON CONFLICT (from_agent_group_id, to_agent_group_id) DO UPDATE SET approver = excluded.approver`,
     )
-    .run({ from_agent_group_id: fromAgentGroupId, to_agent_group_id: toAgentGroupId, created_at: createdAt });
+    .run({ from_agent_group_id: fromAgentGroupId, to_agent_group_id: toAgentGroupId, approver, created_at: createdAt });
 }
 
 /** Remove the policy for `from → to`. Returns true if a row was deleted. */

@@ -234,9 +234,10 @@ export interface AgentDestination {
   created_at: string;
 }
 
-/** Directed per-message approval gate; a row's existence requires approval (approver = target admins). */
+/** Directed per-message approval gate; `approver` is a specific target admin/owner, or NULL = all target admins. */
 export interface AgentMessagePolicy {
   from_agent_group_id: string;
   to_agent_group_id: string;
+  approver: string | null;
   created_at: string;
 }

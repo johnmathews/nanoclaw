@@ -1,4 +1,5 @@
 import { getAgentGroup } from '../../db/agent-groups.js';
+import { hasAdminPrivilege } from '../../modules/permissions/db/user-roles.js';
 import { removeMessagePolicy, setMessagePolicy } from '../../modules/agent-to-agent/db/agent-message-policies.js';
 import { registerResource } from '../crud.js';
 
@@ -12,6 +13,11 @@ registerResource({
   columns: [
     { name: 'from_agent_group_id', type: 'string', description: 'Source agent group. References agent_groups.id.' },
     { name: 'to_agent_group_id', type: 'string', description: 'Target agent group. References agent_groups.id.' },
+    {
+      name: 'approver',
+      type: 'string',
+      description: 'Specific user-id who approves. Must be an admin/owner of the target. NULL = all target admins.',
+    },
     { name: 'created_at', type: 'string', description: 'Auto-set.' },
   ],
   operations: { list: 'open' },
@@ -19,18 +25,22 @@ registerResource({
     set: {
       access: 'approval',
       description:
-        'Require approval (by the target’s admins/owners) for messages from one agent to another. Use --from <agent-group-id> --to <agent-group-id>.',
+        'Require approval for messages from one agent to another. Use --from <agent-group-id> --to <agent-group-id> [--approver <user-id>]. Without --approver, all of the target’s admins/owners are asked; with it, that one user (who must be an admin/owner of the target).',
       handler: async (args) => {
         const from = args.from as string;
         const to = args.to as string;
+        const approver = (args.approver as string) || null;
         if (!from) throw new Error('--from is required');
         if (!to) throw new Error('--to is required');
         if (from === to) throw new Error('--from and --to must differ (self-messages are never gated)');
         if (!getAgentGroup(from)) throw new Error(`source agent group not found: ${from}`);
         if (!getAgentGroup(to)) throw new Error(`target agent group not found: ${to}`);
+        if (approver && !hasAdminPrivilege(approver, to)) {
+          throw new Error(`approver "${approver}" is not an admin/owner of the target agent group`);
+        }
 
-        setMessagePolicy(from, to, new Date().toISOString());
-        return { from_agent_group_id: from, to_agent_group_id: to };
+        setMessagePolicy(from, to, approver, new Date().toISOString());
+        return { from_agent_group_id: from, to_agent_group_id: to, approver };
       },
     },
     remove: {

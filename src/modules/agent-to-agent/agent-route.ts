@@ -237,6 +237,7 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
         agentName: sourceName,
         action: A2A_MESSAGE_GATE_ACTION,
         approverAgentGroupId: targetAgentGroupId,
+        approverUserId: policy.approver ?? undefined,
         title: 'Message approval',
         question: buildGateQuestion(sourceName, targetName, msg.content),
         payload: {
