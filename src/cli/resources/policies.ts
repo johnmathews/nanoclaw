@@ -16,7 +16,7 @@ registerResource({
     {
       name: 'approver',
       type: 'string',
-      description: 'Specific user-id who approves. Must be an admin/owner of the target. NULL = all target admins.',
+      description: 'User-id who approves (required). Must be an admin/owner of the target.',
     },
     { name: 'created_at', type: 'string', description: 'Auto-set.' },
   ],
@@ -25,17 +25,18 @@ registerResource({
     set: {
       access: 'approval',
       description:
-        'Require approval for messages from one agent to another. Use --from <agent-group-id> --to <agent-group-id> [--approver <user-id>]. Without --approver, all of the target’s admins/owners are asked; with it, that one user (who must be an admin/owner of the target).',
+        'Require approval for messages from one agent to another. Use --from <agent-group-id> --to <agent-group-id> --approver <user-id>. The approver must be an admin/owner of the target.',
       handler: async (args) => {
         const from = args.from as string;
         const to = args.to as string;
-        const approver = (args.approver as string) || null;
+        const approver = args.approver as string;
         if (!from) throw new Error('--from is required');
         if (!to) throw new Error('--to is required');
+        if (!approver) throw new Error('--approver is required');
         if (from === to) throw new Error('--from and --to must differ (self-messages are never gated)');
         if (!getAgentGroup(from)) throw new Error(`source agent group not found: ${from}`);
         if (!getAgentGroup(to)) throw new Error(`target agent group not found: ${to}`);
-        if (approver && !hasAdminPrivilege(approver, to)) {
+        if (!hasAdminPrivilege(approver, to)) {
           throw new Error(`approver "${approver}" is not an admin/owner of the target agent group`);
         }
 

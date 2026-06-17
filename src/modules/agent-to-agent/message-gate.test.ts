@@ -100,8 +100,12 @@ describe('agent message policies', () => {
   it('set / get / remove round-trip, incl. approver', () => {
     expect(getMessagePolicy(A, B)).toBeUndefined();
 
-    setMessagePolicy(A, B, null, now());
-    expect(getMessagePolicy(A, B)).toMatchObject({ from_agent_group_id: A, to_agent_group_id: B, approver: null });
+    setMessagePolicy(A, B, 'telegram:sam', now());
+    expect(getMessagePolicy(A, B)).toMatchObject({
+      from_agent_group_id: A,
+      to_agent_group_id: B,
+      approver: 'telegram:sam',
+    });
     expect(policyCount()).toBe(1);
 
     // Upsert updates the approver without inserting a duplicate row.
@@ -125,8 +129,8 @@ describe('agent message policies', () => {
     expect(requestApproval).not.toHaveBeenCalled();
   });
 
-  it('policy present (no approver) → holds, requests approval scoped to the target, no specific user', async () => {
-    setMessagePolicy(A, B, null, now());
+  it('policy present → holds the message and requests approval from the policy approver scoped to the target', async () => {
+    setMessagePolicy(A, B, 'telegram:dana', now());
 
     await routeAgentMessage(
       { id: 'm2', platform_id: B, content: JSON.stringify({ text: 'sensitive' }), in_reply_to: null },
@@ -135,29 +139,18 @@ describe('agent message policies', () => {
 
     // Held: nothing routed to B.
     expect(readInbound(B, SB.id)).toHaveLength(0);
-    // One approval requested, scoped to the target group, carrying the held message.
+    // One approval requested, to the policy's approver, scoped to the target group.
     expect(requestApproval).toHaveBeenCalledTimes(1);
     const opts = vi.mocked(requestApproval).mock.calls[0][0];
     expect(opts.action).toBe('a2a_message_gate');
     expect(opts.approverAgentGroupId).toBe(B);
-    expect(opts.approverUserId).toBeUndefined();
+    expect(opts.approverUserId).toBe('telegram:dana');
     expect(opts.payload).toMatchObject({ id: 'm2', platform_id: B });
     expect(JSON.parse(String(opts.payload.content)).text).toBe('sensitive');
   });
 
-  it('policy with a specific approver → routes the card to that user', async () => {
-    setMessagePolicy(A, B, 'telegram:dana', now());
-    await routeAgentMessage(
-      { id: 'm3', platform_id: B, content: JSON.stringify({ text: 'x' }), in_reply_to: null },
-      SA,
-    );
-    const opts = vi.mocked(requestApproval).mock.calls[0][0];
-    expect(opts.approverUserId).toBe('telegram:dana');
-    expect(opts.approverAgentGroupId).toBe(B);
-  });
-
   it('self-message is never gated even if a policy row somehow exists', async () => {
-    setMessagePolicy(A, A, null, now()); // pathological, but must be ignored
+    setMessagePolicy(A, A, 'telegram:dana', now()); // pathological, but must be ignored
     await routeAgentMessage(
       { id: 'self', platform_id: A, content: JSON.stringify({ text: 'note' }), in_reply_to: null },
       SA,
@@ -186,14 +179,14 @@ describe('agent message policies', () => {
   // ── ghost-gate cleanup ──
 
   it('deleting the connection drops its policy', () => {
-    setMessagePolicy(A, B, null, now());
+    setMessagePolicy(A, B, 'telegram:dana', now());
     deleteDestination(A, 'b'); // removes the A→B agent destination
     expect(getMessagePolicy(A, B)).toBeUndefined();
   });
 
   it('deleteAllDestinationsTouching drops policies on both sides', () => {
-    setMessagePolicy(A, B, null, now());
-    setMessagePolicy(B, A, null, now());
+    setMessagePolicy(A, B, 'telegram:dana', now());
+    setMessagePolicy(B, A, 'telegram:dana', now());
     deleteAllDestinationsTouching(A);
     expect(getMessagePolicy(A, B)).toBeUndefined();
     expect(getMessagePolicy(B, A)).toBeUndefined();

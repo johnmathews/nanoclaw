@@ -12,11 +12,11 @@ export function getMessagePolicy(fromAgentGroupId: string, toAgentGroupId: strin
     .get(fromAgentGroupId, toAgentGroupId) as AgentMessagePolicy | undefined;
 }
 
-/** Upsert a gate for `from → to`. `approver` is a specific target admin/owner, or null for all. */
+/** Upsert a gate for `from → to`. `approver` is the target admin/owner who approves (required). */
 export function setMessagePolicy(
   fromAgentGroupId: string,
   toAgentGroupId: string,
-  approver: string | null,
+  approver: string,
   createdAt: string,
 ): void {
   getDb()
