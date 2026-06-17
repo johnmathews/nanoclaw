@@ -3,25 +3,9 @@ import type Database from 'better-sqlite3';
 import type { Migration } from './index.js';
 
 /**
- * Agent message policies: an optional, directed, per-message approval gate on
- * top of an existing agent-to-agent connection.
- *
- * A row gates messages FROM `from_agent_group_id` TO `to_agent_group_id`: while
- * the connection (an `agent_destinations` edge) still allows the send, each
- * message is held for human approval before delivery. **No row = free flow**
- * (today's behavior) — the table is purely additive and backward compatible.
- *
- * The mere existence of a row means "require approval"; there is no `mode`
- * column in v1. A future mode (e.g. trust-on-first-use) would add the column
- * via its own migration.
- *
- * `approvers`: JSON array of user-ids permitted to approve. NULL = default to
- * the target group's admins/owners (via `pickApprover(to_agent_group_id)`).
- *
- * Directional + per-pair: the PK enforces one policy per (from → to). Gate both
- * directions with two rows. Policies are deleted alongside their connection
- * (see `deletePoliciesTouching`) so a stale rule can't silently reactivate on
- * re-wire.
+ * Per-message approval gate on an agent-to-agent connection. A row gates
+ * messages from→to (PK enforces one per direction); no row = free flow.
+ * `approvers` is a JSON array of user-ids, NULL = the target's admins.
  */
 export const moduleAgentMessagePolicies: Migration = {
   version: 17,

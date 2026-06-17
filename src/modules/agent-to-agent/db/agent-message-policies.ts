@@ -1,14 +1,6 @@
 /**
- * Per-message approval policies for agent-to-agent connections.
- *
- * A row gates messages FROM `from_agent_group_id` TO `to_agent_group_id`: each
- * such message is held for human approval before delivery. **No row = free
- * flow** — `getMessagePolicy` returning undefined means "deliver as today".
- *
- * Directed and per-pair (PK on from+to). Policies are operator-managed via
- * `ncl policies` and deleted alongside their connection via
- * `deletePoliciesTouching` (called from the destination-delete paths) so a
- * stale rule can't silently reactivate when a connection is re-wired.
+ * Per-message approval policies for agent-to-agent connections. A row gates
+ * from→to; no row (undefined) = free flow. Operator-managed via `ncl policies`.
  */
 import type { AgentMessagePolicy } from '../../../types.js';
 import { getDb } from '../../../db/connection.js';
@@ -20,10 +12,7 @@ export function getMessagePolicy(fromAgentGroupId: string, toAgentGroupId: strin
     .get(fromAgentGroupId, toAgentGroupId) as AgentMessagePolicy | undefined;
 }
 
-/**
- * Upsert a require-approval policy for `from → to`. `approvers` is a JSON array
- * string of user-ids (or null to default to the target's admins/owners).
- */
+/** Upsert a policy for `from → to`. `approvers` is a JSON array string, or null. */
 export function setMessagePolicy(
   fromAgentGroupId: string,
   toAgentGroupId: string,
@@ -53,11 +42,7 @@ export function removeMessagePolicy(fromAgentGroupId: string, toAgentGroupId: st
   return info.changes > 0;
 }
 
-/**
- * Delete every policy where this agent group is either side of the edge. Called
- * from the destination-delete paths so a policy never outlives its connection
- * (which would re-gate silently on re-wire).
- */
+/** Delete every policy touching this agent group, so none outlives its connection. */
 export function deletePoliciesTouching(agentGroupId: string): void {
   getDb()
     .prepare('DELETE FROM agent_message_policies WHERE from_agent_group_id = ? OR to_agent_group_id = ?')

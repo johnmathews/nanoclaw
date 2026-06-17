@@ -197,19 +197,9 @@ export interface RequestApprovalOptions {
   title: string;
   /** Card body shown to the admin. */
   question: string;
-  /**
-   * Scope the approver pick to a different agent group than the requesting
-   * session's (e.g. the *target* of an agent-to-agent message, so the target's
-   * admins approve). Also stamped onto the pending_approvals row's
-   * `agent_group_id` so `isAuthorizedApprovalClick` validates the click against
-   * this group. Defaults to `session.agent_group_id`.
-   */
+  /** Pick approvers from this group instead of the session's, and stamp it on the row for click-auth. Defaults to the session's group. */
   approverAgentGroupId?: string;
-  /**
-   * Explicit ordered list of user-ids eligible to approve. When non-empty, used
-   * verbatim instead of `pickApprover`. These must still be reachable via DM and
-   * authorized to click (admins of `approverAgentGroupId`).
-   */
+  /** Explicit approver user-ids, used verbatim instead of `pickApprover` when non-empty. */
   approverUserIds?: string[];
 }
 
@@ -222,8 +212,7 @@ export interface RequestApprovalOptions {
 export async function requestApproval(opts: RequestApprovalOptions): Promise<void> {
   const { session, action, payload, title, question, agentName } = opts;
 
-  // Approver scope: an explicit user list wins; else pick from the requested
-  // approver group (e.g. the a2a target), falling back to the session's group.
+  // Explicit user list wins; else pick from the approver group (defaults to the session's).
   const approverGroupId = opts.approverAgentGroupId ?? session.agent_group_id;
   const approvers =
     opts.approverUserIds && opts.approverUserIds.length > 0 ? opts.approverUserIds : pickApprover(approverGroupId);
@@ -251,9 +240,7 @@ export async function requestApproval(opts: RequestApprovalOptions): Promise<voi
     action,
     payload: JSON.stringify(payload),
     created_at: new Date().toISOString(),
-    // Stamp the approver group when scoped away from the session's own group, so
-    // isAuthorizedApprovalClick validates the click against that group (e.g. the
-    // a2a target's admins approve, not the source's).
+    // Stamp the approver group so isAuthorizedApprovalClick validates the click against it.
     agent_group_id: opts.approverAgentGroupId ?? null,
     title,
     options_json: JSON.stringify(normalizedOptions),

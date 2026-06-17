@@ -90,8 +90,7 @@ export function hasDestination(agentGroupId: string, targetType: 'channel' | 'ag
  * so the deletion propagates to the running container's inbound.db.
  */
 export function deleteDestination(agentGroupId: string, localName: string): void {
-  // Resolve the target before deleting so we can drop a matching approval policy
-  // for this exact agent→agent edge (no ghost gate on re-wire).
+  // Resolve the target first so we can drop a matching policy for this edge (no ghost gate on re-wire).
   const row = getDb()
     .prepare('SELECT target_type, target_id FROM agent_destinations WHERE agent_group_id = ? AND local_name = ?')
     .get(agentGroupId, localName) as { target_type: string; target_id: string } | undefined;

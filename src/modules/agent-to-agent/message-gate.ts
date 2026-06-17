@@ -1,16 +1,7 @@
 /**
- * Approval handler for held agent-to-agent messages (`a2a_message_gate`).
- *
- * When a directed require-approval policy gates an A→B send, `routeAgentMessage`
- * holds the message in the approval payload and queues a card to B's admins.
- * On approve, this handler reconstructs the original message and re-routes it
- * via `performAgentRoute` — the same path a free (ungated) send takes.
- *
- * Reject needs no handler here: the generic reject path in the approvals
- * response handler already notifies the source agent and drops the row.
- *
- * `session` is the SOURCE (requesting) session — `performAgentRoute` needs it
- * for `agent_group_id` / `id` (return-path stamping), exactly as the live path.
+ * Approve handler for a held a2a message: reconstruct it from the payload and
+ * re-route via `performAgentRoute`. `session` is the source session. Reject is
+ * handled by the generic response-handler path (no handler needed here).
  */
 import { log } from '../../log.js';
 import type { ApprovalHandler } from '../approvals/index.js';

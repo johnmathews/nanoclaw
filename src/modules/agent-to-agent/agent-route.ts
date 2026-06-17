@@ -224,13 +224,10 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
     throw new Error(`target agent group ${targetAgentGroupId} not found for message ${msg.id}`);
   }
 
-  // Approval-policy gate: an authorized cross-group send may carry a directed
-  // require-approval policy. If so, HOLD the message — queue an approval card to
-  // the target's admins and return WITHOUT routing. Returning normally lets the
-  // delivery loop mark the outbound row delivered (consume it, like a system
-  // action); the held message lives in the approval payload and is re-routed by
-  // `applyA2aMessageGate` on approve. Self-messages and unauthorized messages
-  // never reach here with a policy (no destination row → no policy).
+  // Approval-policy gate: if a policy gates this edge, hold the message in the
+  // approval payload and return without routing. Returning (not throwing) lets
+  // the delivery loop consume the outbound row; `applyA2aMessageGate` re-routes
+  // on approve. Self-messages have no policy, so they're never gated.
   if (!isSelf) {
     const policy = getMessagePolicy(session.agent_group_id, targetAgentGroupId);
     if (policy) {
@@ -266,10 +263,7 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
 /** Dispatch key joining the approval card (held message) to `applyA2aMessageGate`. */
 export const A2A_MESSAGE_GATE_ACTION = 'a2a_message_gate';
 
-/**
- * Build the approval-card body: who → whom, the (truncated) message text, and
- * any attachment filenames so the approver can review what's being sent.
- */
+/** Approval-card body: who → whom, the (truncated) message text, and attachment names. */
 function buildGateQuestion(sourceName: string, targetName: string, contentStr: string): string {
   const MAX = 1500;
   let text = '';
@@ -289,10 +283,8 @@ function buildGateQuestion(sourceName: string, targetName: string, contentStr: s
 }
 
 /**
- * Perform the actual cross-session route: pick the target session, forward any
- * file attachments, write into the target's inbound DB, and wake it. Authorization
- * (and any approval gate) is the CALLER's responsibility — `routeAgentMessage`
- * for the live path, `applyA2aMessageGate` for the held-then-approved path.
+ * Cross-session route: pick the target session, forward files, write to its
+ * inbound DB, wake it. Authorization is the caller's responsibility.
  */
 export async function performAgentRoute(
   msg: RoutableAgentMessage,

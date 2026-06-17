@@ -234,11 +234,7 @@ export interface AgentDestination {
   created_at: string;
 }
 
-/**
- * Directed, per-message approval gate on an agent-to-agent connection. A row
- * gates messages from `from_agent_group_id` to `to_agent_group_id`. No row =
- * free flow. `approvers` is a JSON array of user-ids (NULL = target admins).
- */
+/** Directed per-message approval gate; `approvers` is a JSON user-id array (NULL = target admins). */
 export interface AgentMessagePolicy {
   from_agent_group_id: string;
   to_agent_group_id: string;
