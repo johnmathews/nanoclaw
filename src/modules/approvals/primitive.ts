@@ -208,9 +208,9 @@ export interface RequestApprovalOptions {
  * approval handler for this action via the response dispatcher.
  */
 export async function requestApproval(opts: RequestApprovalOptions): Promise<void> {
-  const { session, action, payload, title, question, agentName } = opts;
+  const { session, action, payload, title, question, agentName, approverUserId } = opts;
 
-  const approvers = opts.approverUserId ? [opts.approverUserId] : pickApprover(session.agent_group_id);
+  const approvers = approverUserId ? [approverUserId] : pickApprover(session.agent_group_id);
   if (approvers.length === 0) {
     notifyAgent(session, `${action} failed: no owner or admin configured to approve.`);
     return;

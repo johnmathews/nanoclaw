@@ -228,13 +228,14 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
   if (!isSelf) {
     const policy = getMessagePolicy(sourceAgentGroupId, targetAgentGroupId);
     if (policy) {
+      const { approver } = policy;
       const sourceName = getAgentGroup(sourceAgentGroupId)?.name ?? sourceAgentGroupId;
       const targetName = getAgentGroup(targetAgentGroupId)?.name ?? targetAgentGroupId;
       await requestApproval({
         session,
         agentName: sourceName,
         action: A2A_MESSAGE_GATE_ACTION,
-        approverUserId: policy.approver,
+        approverUserId: approver,
         title: 'Message approval',
         question: buildGateQuestion(sourceName, targetName, msg.content),
         payload: {
@@ -242,7 +243,7 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
           platform_id: targetAgentGroupId,
           content: msg.content,
           in_reply_to: msg.in_reply_to,
-          approver: policy.approver,
+          approver,
         },
       });
       log.info('Agent message held for approval', {
