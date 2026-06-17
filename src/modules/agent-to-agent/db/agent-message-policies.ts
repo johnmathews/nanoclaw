@@ -53,12 +53,6 @@ export function removeMessagePolicy(fromAgentGroupId: string, toAgentGroupId: st
   return info.changes > 0;
 }
 
-export function listMessagePolicies(): AgentMessagePolicy[] {
-  return getDb()
-    .prepare('SELECT * FROM agent_message_policies ORDER BY from_agent_group_id, to_agent_group_id')
-    .all() as AgentMessagePolicy[];
-}
-
 /**
  * Delete every policy where this agent group is either side of the edge. Called
  * from the destination-delete paths so a policy never outlives its connection

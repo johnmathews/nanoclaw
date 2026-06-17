@@ -4,14 +4,10 @@ import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 
 import { routeAgentMessage } from './agent-route.js';
 import { createDestination, deleteDestination, deleteAllDestinationsTouching } from './db/agent-destinations.js';
-import {
-  getMessagePolicy,
-  listMessagePolicies,
-  removeMessagePolicy,
-  setMessagePolicy,
-} from './db/agent-message-policies.js';
+import { getMessagePolicy, removeMessagePolicy, setMessagePolicy } from './db/agent-message-policies.js';
 import { applyA2aMessageGate } from './message-gate.js';
 import { initTestDb, closeDb, runMigrations, createAgentGroup } from '../../db/index.js';
+import { getDb } from '../../db/connection.js';
 import { createSession } from '../../db/sessions.js';
 import { requestApproval } from '../approvals/index.js';
 import { initSessionFolder, inboundDbPath } from '../../session-manager.js';
@@ -40,6 +36,10 @@ const B = 'ag-B';
 
 function now(): string {
   return new Date().toISOString();
+}
+
+function policyCount(): number {
+  return (getDb().prepare('SELECT COUNT(*) AS n FROM agent_message_policies').get() as { n: number }).n;
 }
 
 function readInbound(agentGroupId: string, sessionId: string) {
@@ -97,17 +97,17 @@ describe('agent message policies', () => {
 
   // ── policy table round-trip ──
 
-  it('set / get / list / remove round-trip', () => {
+  it('set / get / remove round-trip', () => {
     expect(getMessagePolicy(A, B)).toBeUndefined();
 
     setMessagePolicy(A, B, null, now());
     expect(getMessagePolicy(A, B)).toMatchObject({ from_agent_group_id: A, to_agent_group_id: B, approvers: null });
-    expect(listMessagePolicies()).toHaveLength(1);
+    expect(policyCount()).toBe(1);
 
-    // Upsert overwrites approvers.
+    // Upsert overwrites approvers without inserting a duplicate row.
     setMessagePolicy(A, B, JSON.stringify(['slack:dana']), now());
     expect(JSON.parse(getMessagePolicy(A, B)!.approvers!)).toEqual(['slack:dana']);
-    expect(listMessagePolicies()).toHaveLength(1);
+    expect(policyCount()).toBe(1);
 
     expect(removeMessagePolicy(A, B)).toBe(true);
     expect(getMessagePolicy(A, B)).toBeUndefined();

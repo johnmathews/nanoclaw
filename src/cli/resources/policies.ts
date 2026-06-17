@@ -1,13 +1,3 @@
-/**
- * `ncl policies` — operator-managed agent-to-agent approval policies.
- *
- * A policy gates messages FROM one agent TO another: while connected, each
- * message is held for human approval before delivery. **No row = free flow.**
- *
- * Operator-only by construction: `policies` is NOT in the container `cli_scope`
- * allowlist (`dispatch.ts`), so a confined agent can never set or remove a gate
- * on itself. The host socket runs as `caller:'host'` and bypasses that gate.
- */
 import { getAgentGroup } from '../../db/agent-groups.js';
 import { hasAdminPrivilege } from '../../modules/permissions/db/user-roles.js';
 import { removeMessagePolicy, setMessagePolicy } from '../../modules/agent-to-agent/db/agent-message-policies.js';
