@@ -16,7 +16,7 @@ registerResource({
     {
       name: 'approver',
       type: 'string',
-      description: 'User-id who approves (required). Must be an admin/owner of the target.',
+      description: 'User-id who approves (required). Must be an admin/owner of the source or target.',
     },
     { name: 'created_at', type: 'string', description: 'Auto-set.' },
   ],
@@ -25,7 +25,7 @@ registerResource({
     set: {
       access: 'approval',
       description:
-        'Require approval for messages from one agent to another. Use --from <agent-group-id> --to <agent-group-id> --approver <user-id>. The approver must be an admin/owner of the target.',
+        'Require approval for messages from one agent to another. Use --from <agent-group-id> --to <agent-group-id> --approver <user-id>. The approver must be an admin/owner of the source or the target.',
       handler: async (args) => {
         const from = args.from as string;
         const to = args.to as string;
@@ -36,8 +36,8 @@ registerResource({
         if (from === to) throw new Error('--from and --to must differ (self-messages are never gated)');
         if (!getAgentGroup(from)) throw new Error(`source agent group not found: ${from}`);
         if (!getAgentGroup(to)) throw new Error(`target agent group not found: ${to}`);
-        if (!hasAdminPrivilege(approver, to)) {
-          throw new Error(`approver "${approver}" is not an admin/owner of the target agent group`);
+        if (!hasAdminPrivilege(approver, from) && !hasAdminPrivilege(approver, to)) {
+          throw new Error(`approver "${approver}" is not an admin/owner of the source or target agent group`);
         }
 
         setMessagePolicy(from, to, approver, new Date().toISOString());

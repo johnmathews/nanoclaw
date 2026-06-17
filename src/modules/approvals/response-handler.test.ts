@@ -161,4 +161,46 @@ describe('approval response authorization', () => {
     expect(handler).toHaveBeenCalledTimes(1);
     expect(getPendingApproval('appr-3')).toBeUndefined();
   });
+
+  it('an approval naming an approver in its payload is resolvable by that user, not a non-assignee', async () => {
+    const { registerApprovalHandler } = await import('./primitive.js');
+    const { handleApprovalsResponse } = await import('./response-handler.js');
+    const handler = vi.fn().mockResolvedValue(undefined);
+    registerApprovalHandler('payload_approver_action', handler);
+
+    createPendingApproval({
+      approval_id: 'appr-4',
+      session_id: 'sess-1',
+      request_id: 'appr-4',
+      action: 'payload_approver_action',
+      payload: JSON.stringify({ approver: 'telegram:dana' }),
+      created_at: now(),
+      title: 'Assigned approval',
+      options_json: JSON.stringify([]),
+    });
+
+    // A non-assignee (no global/owner role) cannot resolve it.
+    await handleApprovalsResponse({
+      questionId: 'appr-4',
+      value: 'approve',
+      userId: 'stranger',
+      channelType: 'telegram',
+      platformId: 'dm-stranger',
+      threadId: null,
+    });
+    expect(handler).not.toHaveBeenCalled();
+    expect(getPendingApproval('appr-4')).toBeDefined();
+
+    // The named approver resolves it.
+    await handleApprovalsResponse({
+      questionId: 'appr-4',
+      value: 'approve',
+      userId: 'dana',
+      channelType: 'telegram',
+      platformId: 'dm-dana',
+      threadId: null,
+    });
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(getPendingApproval('appr-4')).toBeUndefined();
+  });
 });

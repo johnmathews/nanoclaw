@@ -236,7 +236,6 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
         session,
         agentName: sourceName,
         action: A2A_MESSAGE_GATE_ACTION,
-        approverAgentGroupId: targetAgentGroupId,
         approverUserId: policy.approver,
         title: 'Message approval',
         question: buildGateQuestion(sourceName, targetName, msg.content),
@@ -245,6 +244,7 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
           platform_id: targetAgentGroupId,
           content: msg.content,
           in_reply_to: msg.in_reply_to,
+          approver: policy.approver,
         },
       });
       log.info('Agent message held for approval', {

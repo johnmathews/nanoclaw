@@ -143,9 +143,8 @@ describe('agent message policies', () => {
     expect(requestApproval).toHaveBeenCalledTimes(1);
     const opts = vi.mocked(requestApproval).mock.calls[0][0];
     expect(opts.action).toBe('a2a_message_gate');
-    expect(opts.approverAgentGroupId).toBe(B);
     expect(opts.approverUserId).toBe('telegram:dana');
-    expect(opts.payload).toMatchObject({ id: 'm2', platform_id: B });
+    expect(opts.payload).toMatchObject({ id: 'm2', platform_id: B, approver: 'telegram:dana' });
     expect(JSON.parse(String(opts.payload.content)).text).toBe('sensitive');
   });
 

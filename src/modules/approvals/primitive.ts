@@ -197,9 +197,7 @@ export interface RequestApprovalOptions {
   title: string;
   /** Card body shown to the admin. */
   question: string;
-  /** Pick approvers from this group instead of the session's, and stamp it on the row for click-auth. Defaults to the session's group. */
-  approverAgentGroupId?: string;
-  /** Deliver the card to this specific user instead of all of the approver group's admins. */
+  /** Deliver the card to this specific user instead of all of the session group's admins. */
   approverUserId?: string;
 }
 
@@ -212,9 +210,8 @@ export interface RequestApprovalOptions {
 export async function requestApproval(opts: RequestApprovalOptions): Promise<void> {
   const { session, action, payload, title, question, agentName } = opts;
 
-  // A specific approver wins; else all admins of the approver group (defaults to the session's).
-  const approverGroupId = opts.approverAgentGroupId ?? session.agent_group_id;
-  const approvers = opts.approverUserId ? [opts.approverUserId] : pickApprover(approverGroupId);
+  // A specific approver wins; else all admins of the session's group.
+  const approvers = opts.approverUserId ? [opts.approverUserId] : pickApprover(session.agent_group_id);
   if (approvers.length === 0) {
     notifyAgent(session, `${action} failed: no owner or admin configured to approve.`);
     return;
@@ -239,8 +236,6 @@ export async function requestApproval(opts: RequestApprovalOptions): Promise<voi
     action,
     payload: JSON.stringify(payload),
     created_at: new Date().toISOString(),
-    // Stamp the approver group so isAuthorizedApprovalClick validates the click against it.
-    agent_group_id: opts.approverAgentGroupId ?? null,
     title,
     options_json: JSON.stringify(normalizedOptions),
   });

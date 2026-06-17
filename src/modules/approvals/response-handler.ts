@@ -125,6 +125,13 @@ function isAuthorizedApprovalClick(approval: PendingApproval, payload: ResponseP
   const userId = namespacedUserId(payload);
   if (!userId) return false;
 
+  // If the approval names a specific approver in its payload, only that user
+  // (or an owner/global admin) may resolve it.
+  const assignee = approvalAssignee(approval);
+  if (assignee) {
+    return userId === assignee || isOwner(userId) || isGlobalAdmin(userId);
+  }
+
   const agentGroupId =
     approval.agent_group_id ?? (approval.session_id ? getSession(approval.session_id)?.agent_group_id : null);
 
@@ -133,4 +140,14 @@ function isAuthorizedApprovalClick(approval: PendingApproval, payload: ResponseP
   }
 
   return hasAdminPrivilege(userId, agentGroupId);
+}
+
+/** Read an optional `approver` user-id assigned in the approval's payload JSON. */
+function approvalAssignee(approval: PendingApproval): string | null {
+  try {
+    const parsed = JSON.parse(approval.payload) as { approver?: unknown };
+    return typeof parsed.approver === 'string' ? parsed.approver : null;
+  } catch {
+    return null;
+  }
 }
