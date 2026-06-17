@@ -1,5 +1,4 @@
 import { getAgentGroup } from '../../db/agent-groups.js';
-import { hasAdminPrivilege } from '../../modules/permissions/db/user-roles.js';
 import { removeMessagePolicy, setMessagePolicy } from '../../modules/agent-to-agent/db/agent-message-policies.js';
 import { registerResource } from '../crud.js';
 
@@ -16,7 +15,7 @@ registerResource({
     {
       name: 'approver',
       type: 'string',
-      description: 'User-id who approves (required). Must be an admin/owner of the source or target.',
+      description: 'User-id who approves each gated message (required). Only this user (or an owner) can approve.',
     },
     { name: 'created_at', type: 'string', description: 'Auto-set.' },
   ],
@@ -25,7 +24,7 @@ registerResource({
     set: {
       access: 'approval',
       description:
-        'Require approval for messages from one agent to another. Use --from <agent-group-id> --to <agent-group-id> --approver <user-id>. The approver must be an admin/owner of the source or the target.',
+        'Require approval for messages from one agent to another. Use --from <agent-group-id> --to <agent-group-id> --approver <user-id>. Only the named approver (or an owner) can approve.',
       handler: async (args) => {
         const from = args.from as string;
         const to = args.to as string;
@@ -36,9 +35,6 @@ registerResource({
         if (from === to) throw new Error('--from and --to must differ (self-messages are never gated)');
         if (!getAgentGroup(from)) throw new Error(`source agent group not found: ${from}`);
         if (!getAgentGroup(to)) throw new Error(`target agent group not found: ${to}`);
-        if (!hasAdminPrivilege(approver, from) && !hasAdminPrivilege(approver, to)) {
-          throw new Error(`approver "${approver}" is not an admin/owner of the source or target agent group`);
-        }
 
         setMessagePolicy(from, to, approver, new Date().toISOString());
         return { from_agent_group_id: from, to_agent_group_id: to, approver };
