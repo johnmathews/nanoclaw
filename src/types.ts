@@ -234,10 +234,9 @@ export interface AgentDestination {
   created_at: string;
 }
 
-/** Directed per-message approval gate; `approvers` is a JSON user-id array (NULL = target admins). */
+/** Directed per-message approval gate; a row's existence requires approval (approver = target admins). */
 export interface AgentMessagePolicy {
   from_agent_group_id: string;
   to_agent_group_id: string;
-  approvers: string | null;
   created_at: string;
 }

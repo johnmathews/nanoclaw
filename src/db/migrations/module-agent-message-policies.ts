@@ -5,7 +5,7 @@ import type { Migration } from './index.js';
 /**
  * Per-message approval gate on an agent-to-agent connection. A row gates
  * messages from→to (PK enforces one per direction); no row = free flow.
- * `approvers` is a JSON array of user-ids, NULL = the target's admins.
+ * Approver is always the target's admins/owners in v1.
  */
 export const moduleAgentMessagePolicies: Migration = {
   version: 17,
@@ -15,7 +15,6 @@ export const moduleAgentMessagePolicies: Migration = {
       CREATE TABLE agent_message_policies (
         from_agent_group_id TEXT NOT NULL REFERENCES agent_groups(id),
         to_agent_group_id   TEXT NOT NULL REFERENCES agent_groups(id),
-        approvers           TEXT,
         created_at          TEXT NOT NULL,
         PRIMARY KEY (from_agent_group_id, to_agent_group_id)
       );

@@ -199,8 +199,6 @@ export interface RequestApprovalOptions {
   question: string;
   /** Pick approvers from this group instead of the session's, and stamp it on the row for click-auth. Defaults to the session's group. */
   approverAgentGroupId?: string;
-  /** Explicit approver user-ids, used verbatim instead of `pickApprover` when non-empty. */
-  approverUserIds?: string[];
 }
 
 /**
@@ -212,10 +210,9 @@ export interface RequestApprovalOptions {
 export async function requestApproval(opts: RequestApprovalOptions): Promise<void> {
   const { session, action, payload, title, question, agentName } = opts;
 
-  // Explicit user list wins; else pick from the approver group (defaults to the session's).
+  // Pick from the approver group (defaults to the session's own group).
   const approverGroupId = opts.approverAgentGroupId ?? session.agent_group_id;
-  const approvers =
-    opts.approverUserIds && opts.approverUserIds.length > 0 ? opts.approverUserIds : pickApprover(approverGroupId);
+  const approvers = pickApprover(approverGroupId);
   if (approvers.length === 0) {
     notifyAgent(session, `${action} failed: no owner or admin configured to approve.`);
     return;

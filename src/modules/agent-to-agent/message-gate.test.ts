@@ -100,13 +100,12 @@ describe('agent message policies', () => {
   it('set / get / remove round-trip', () => {
     expect(getMessagePolicy(A, B)).toBeUndefined();
 
-    setMessagePolicy(A, B, null, now());
-    expect(getMessagePolicy(A, B)).toMatchObject({ from_agent_group_id: A, to_agent_group_id: B, approvers: null });
+    setMessagePolicy(A, B, now());
+    expect(getMessagePolicy(A, B)).toMatchObject({ from_agent_group_id: A, to_agent_group_id: B });
     expect(policyCount()).toBe(1);
 
-    // Upsert overwrites approvers without inserting a duplicate row.
-    setMessagePolicy(A, B, JSON.stringify(['slack:dana']), now());
-    expect(JSON.parse(getMessagePolicy(A, B)!.approvers!)).toEqual(['slack:dana']);
+    // Idempotent upsert — no duplicate row.
+    setMessagePolicy(A, B, now());
     expect(policyCount()).toBe(1);
 
     expect(removeMessagePolicy(A, B)).toBe(true);
@@ -126,7 +125,7 @@ describe('agent message policies', () => {
   });
 
   it('policy present → holds the message (no route) and requests approval scoped to the target', async () => {
-    setMessagePolicy(A, B, null, now());
+    setMessagePolicy(A, B, now());
 
     await routeAgentMessage(
       { id: 'm2', platform_id: B, content: JSON.stringify({ text: 'sensitive' }), in_reply_to: null },
@@ -144,18 +143,8 @@ describe('agent message policies', () => {
     expect(JSON.parse(String(opts.payload.content)).text).toBe('sensitive');
   });
 
-  it('policy with named approvers passes them through to requestApproval', async () => {
-    setMessagePolicy(A, B, JSON.stringify(['slack:dana']), now());
-    await routeAgentMessage(
-      { id: 'm3', platform_id: B, content: JSON.stringify({ text: 'x' }), in_reply_to: null },
-      SA,
-    );
-    const opts = vi.mocked(requestApproval).mock.calls[0][0];
-    expect(opts.approverUserIds).toEqual(['slack:dana']);
-  });
-
   it('self-message is never gated even if a policy row somehow exists', async () => {
-    setMessagePolicy(A, A, null, now()); // pathological, but must be ignored
+    setMessagePolicy(A, A, now()); // pathological, but must be ignored
     await routeAgentMessage(
       { id: 'self', platform_id: A, content: JSON.stringify({ text: 'note' }), in_reply_to: null },
       SA,
@@ -184,14 +173,14 @@ describe('agent message policies', () => {
   // ── ghost-gate cleanup ──
 
   it('deleting the connection drops its policy', () => {
-    setMessagePolicy(A, B, null, now());
+    setMessagePolicy(A, B, now());
     deleteDestination(A, 'b'); // removes the A→B agent destination
     expect(getMessagePolicy(A, B)).toBeUndefined();
   });
 
   it('deleteAllDestinationsTouching drops policies on both sides', () => {
-    setMessagePolicy(A, B, null, now());
-    setMessagePolicy(B, A, null, now());
+    setMessagePolicy(A, B, now());
+    setMessagePolicy(B, A, now());
     deleteAllDestinationsTouching(A);
     expect(getMessagePolicy(A, B)).toBeUndefined();
     expect(getMessagePolicy(B, A)).toBeUndefined();

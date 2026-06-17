@@ -12,26 +12,15 @@ export function getMessagePolicy(fromAgentGroupId: string, toAgentGroupId: strin
     .get(fromAgentGroupId, toAgentGroupId) as AgentMessagePolicy | undefined;
 }
 
-/** Upsert a policy for `from → to`. `approvers` is a JSON array string, or null. */
-export function setMessagePolicy(
-  fromAgentGroupId: string,
-  toAgentGroupId: string,
-  approvers: string | null,
-  createdAt: string,
-): void {
+/** Upsert (idempotent) a gate for `from → to`. */
+export function setMessagePolicy(fromAgentGroupId: string, toAgentGroupId: string, createdAt: string): void {
   getDb()
     .prepare(
-      `INSERT INTO agent_message_policies (from_agent_group_id, to_agent_group_id, approvers, created_at)
-       VALUES (@from_agent_group_id, @to_agent_group_id, @approvers, @created_at)
-       ON CONFLICT (from_agent_group_id, to_agent_group_id)
-       DO UPDATE SET approvers = excluded.approvers`,
+      `INSERT INTO agent_message_policies (from_agent_group_id, to_agent_group_id, created_at)
+       VALUES (@from_agent_group_id, @to_agent_group_id, @created_at)
+       ON CONFLICT (from_agent_group_id, to_agent_group_id) DO NOTHING`,
     )
-    .run({
-      from_agent_group_id: fromAgentGroupId,
-      to_agent_group_id: toAgentGroupId,
-      approvers,
-      created_at: createdAt,
-    });
+    .run({ from_agent_group_id: fromAgentGroupId, to_agent_group_id: toAgentGroupId, created_at: createdAt });
 }
 
 /** Remove the policy for `from → to`. Returns true if a row was deleted. */
