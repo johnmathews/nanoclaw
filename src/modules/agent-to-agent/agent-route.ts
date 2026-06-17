@@ -210,15 +210,14 @@ function resolveTargetSession(msg: RoutableAgentMessage, sourceSession: Session,
 }
 
 export async function routeAgentMessage(msg: RoutableAgentMessage, session: Session): Promise<void> {
+  const sourceAgentGroupId = session.agent_group_id;
   const targetAgentGroupId = msg.platform_id;
   if (!targetAgentGroupId) {
     throw new Error(`agent-to-agent message ${msg.id} is missing a target agent group id`);
   }
-  const isSelf = targetAgentGroupId === session.agent_group_id;
-  if (!isSelf && !hasDestination(session.agent_group_id, 'agent', targetAgentGroupId)) {
-    throw new Error(
-      `unauthorized agent-to-agent: ${session.agent_group_id} has no destination for ${targetAgentGroupId}`,
-    );
+  const isSelf = targetAgentGroupId === sourceAgentGroupId;
+  if (!isSelf && !hasDestination(sourceAgentGroupId, 'agent', targetAgentGroupId)) {
+    throw new Error(`unauthorized agent-to-agent: ${sourceAgentGroupId} has no destination for ${targetAgentGroupId}`);
   }
   if (!getAgentGroup(targetAgentGroupId)) {
     throw new Error(`target agent group ${targetAgentGroupId} not found for message ${msg.id}`);
@@ -229,9 +228,9 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
   // the delivery loop consume the outbound row; `applyA2aMessageGate` re-routes
   // on approve. Self-messages have no policy, so they're never gated.
   if (!isSelf) {
-    const policy = getMessagePolicy(session.agent_group_id, targetAgentGroupId);
+    const policy = getMessagePolicy(sourceAgentGroupId, targetAgentGroupId);
     if (policy) {
-      const sourceName = getAgentGroup(session.agent_group_id)?.name ?? session.agent_group_id;
+      const sourceName = getAgentGroup(sourceAgentGroupId)?.name ?? sourceAgentGroupId;
       const targetName = getAgentGroup(targetAgentGroupId)?.name ?? targetAgentGroupId;
       await requestApproval({
         session,
@@ -249,7 +248,7 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
         },
       });
       log.info('Agent message held for approval', {
-        from: session.agent_group_id,
+        from: sourceAgentGroupId,
         to: targetAgentGroupId,
         msgId: msg.id,
       });
