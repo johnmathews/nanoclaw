@@ -261,19 +261,26 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
 /** Dispatch key joining the approval card (held message) to `applyA2aMessageGate`. */
 export const A2A_MESSAGE_GATE_ACTION = 'a2a_message_gate';
 
-/** Approval-card body: who → whom, the (truncated) message text, and attachment names. */
-function buildGateQuestion(sourceName: string, targetName: string, contentStr: string): string {
-  const MAX = 1500;
-  let text = '';
-  let files: string[] = [];
+/** Max message-body chars shown on the approval card (keeps within platform message limits). */
+const GATE_CARD_BODY_MAX = 1500;
+
+/** Best-effort extract of display text + attachment names from an outbound message's content JSON. */
+function parseMessageContent(contentStr: string): { text: string; files: string[] } {
   try {
     const parsed = JSON.parse(contentStr) as { text?: unknown; files?: unknown };
-    if (typeof parsed.text === 'string') text = parsed.text;
-    if (Array.isArray(parsed.files)) files = parsed.files.filter((f): f is string => typeof f === 'string');
+    return {
+      text: typeof parsed.text === 'string' ? parsed.text : '',
+      files: Array.isArray(parsed.files) ? parsed.files.filter((f): f is string => typeof f === 'string') : [],
+    };
   } catch {
-    text = contentStr;
+    return { text: contentStr, files: [] };
   }
-  const body = text.length > MAX ? `${text.slice(0, MAX)}… (truncated)` : text;
+}
+
+/** Approval-card body: who → whom, the (truncated) message text, and attachment names. */
+function buildGateQuestion(sourceName: string, targetName: string, contentStr: string): string {
+  const { text, files } = parseMessageContent(contentStr);
+  const body = text.length > GATE_CARD_BODY_MAX ? `${text.slice(0, GATE_CARD_BODY_MAX)}… (truncated)` : text;
   const lines = [`Agent "${sourceName}" wants to send a message to "${targetName}":`, '', body];
   if (files.length > 0) lines.push('', `Attachments: ${files.join(', ')}`);
   lines.push('', 'Approve delivery?');
