@@ -237,6 +237,7 @@ export async function requestApproval(opts: RequestApprovalOptions): Promise<voi
     created_at: new Date().toISOString(),
     title,
     options_json: JSON.stringify(normalizedOptions),
+    approver_user_id: approverUserId ?? null,
   });
 
   const adapter = getDeliveryAdapter();

@@ -162,21 +162,22 @@ describe('approval response authorization', () => {
     expect(getPendingApproval('appr-3')).toBeUndefined();
   });
 
-  it('an approval naming an approver in its payload is resolvable by that user, not a non-assignee', async () => {
+  it('an approval with approver_user_id is resolvable by that user, not a non-assignee', async () => {
     const { registerApprovalHandler } = await import('./primitive.js');
     const { handleApprovalsResponse } = await import('./response-handler.js');
     const handler = vi.fn().mockResolvedValue(undefined);
-    registerApprovalHandler('payload_approver_action', handler);
+    registerApprovalHandler('assigned_approver_action', handler);
 
     createPendingApproval({
       approval_id: 'appr-4',
       session_id: 'sess-1',
       request_id: 'appr-4',
-      action: 'payload_approver_action',
-      payload: JSON.stringify({ approver: 'telegram:dana' }),
+      action: 'assigned_approver_action',
+      payload: JSON.stringify({}),
       created_at: now(),
       title: 'Assigned approval',
       options_json: JSON.stringify([]),
+      approver_user_id: 'telegram:dana',
     });
 
     // A non-assignee (no global/owner role) cannot resolve it.

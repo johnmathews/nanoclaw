@@ -22,6 +22,7 @@ import { migration020 } from './020-task-outcomes.js';
 import { migration021 } from './021-memory-budgets.js';
 import { moduleApprovalsPendingApprovals } from './module-approvals-pending-approvals.js';
 import { moduleApprovalsTitleOptions } from './module-approvals-title-options.js';
+import { moduleApprovalsApprover } from './module-approvals-approver.js';
 
 export interface Migration {
   version: number;
@@ -45,6 +46,7 @@ export const migrations: Migration[] = [
   moduleAgentToAgentDestinations,
   moduleAgentMessagePolicies,
   moduleApprovalsTitleOptions,
+  moduleApprovalsApprover,
   migration008,
   migration009,
   migration010,

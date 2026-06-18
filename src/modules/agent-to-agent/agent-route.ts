@@ -243,7 +243,6 @@ export async function routeAgentMessage(msg: RoutableAgentMessage, session: Sess
           platform_id: targetAgentGroupId,
           content: msg.content,
           in_reply_to: msg.in_reply_to,
-          approver,
         },
       });
       log.info('Agent message held for approval', {

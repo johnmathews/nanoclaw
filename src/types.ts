@@ -222,6 +222,8 @@ export interface PendingApproval {
   status: 'pending' | 'approved' | 'rejected' | 'expired';
   title: string;
   options_json: string;
+  /** When set, only this exact user may resolve the approval. */
+  approver_user_id: string | null;
 }
 
 // ── Agent destinations (central DB) ──

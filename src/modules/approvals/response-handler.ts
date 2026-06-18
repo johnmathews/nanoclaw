@@ -126,9 +126,8 @@ function isAuthorizedApprovalClick(approval: PendingApproval, payload: ResponseP
   if (!userId) return false;
 
   // An approval may name a specific approver; only that exact user may resolve it.
-  const assignee = approvalAssignee(approval);
-  if (assignee) {
-    return userId === assignee;
+  if (approval.approver_user_id) {
+    return userId === approval.approver_user_id;
   }
 
   const agentGroupId =
@@ -139,14 +138,4 @@ function isAuthorizedApprovalClick(approval: PendingApproval, payload: ResponseP
   }
 
   return hasAdminPrivilege(userId, agentGroupId);
-}
-
-/** The `approver` user-id named in the stored approval payload (not the click payload), if any. */
-function approvalAssignee(approval: PendingApproval): string | null {
-  try {
-    const parsed = JSON.parse(approval.payload) as { approver?: unknown };
-    return typeof parsed.approver === 'string' ? parsed.approver : null;
-  } catch {
-    return null;
-  }
 }
