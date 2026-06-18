@@ -125,10 +125,10 @@ function isAuthorizedApprovalClick(approval: PendingApproval, payload: ResponseP
   const userId = namespacedUserId(payload);
   if (!userId) return false;
 
-  // An approval may name a specific approver; only they (or an owner) may resolve it.
+  // An approval may name a specific approver; only that exact user may resolve it.
   const assignee = approvalAssignee(approval);
   if (assignee) {
-    return userId === assignee || isOwner(userId) || isGlobalAdmin(userId);
+    return userId === assignee;
   }
 
   const agentGroupId =
