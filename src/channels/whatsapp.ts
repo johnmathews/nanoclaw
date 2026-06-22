@@ -39,6 +39,7 @@ import {
 import type { GroupMetadata, WAMessageKey, WAMessage, WASocket } from '@whiskeysockets/baileys';
 
 import { isSafeAttachmentName } from '../attachment-safety.js';
+import { ChannelDisconnectedError } from './delivery-errors.js';
 import { ASSISTANT_HAS_OWN_NUMBER, ASSISTANT_NAME } from '../config.js';
 import { readEnvFile } from '../env.js';
 import { log } from '../log.js';
@@ -398,10 +399,6 @@ registerChannelAdapter('whatsapp', {
     let botLidUser: string | undefined;
     let botPhoneJid: string | undefined;
 
-    // Outgoing queue for messages sent while disconnected
-    const outgoingQueue: Array<{ jid: string; text: string; mentions?: string[] }> = [];
-    let flushing = false;
-
     // Sent message cache for retry/re-encrypt requests
     const sentMessageCache = new Map<string, any>();
 
@@ -513,48 +510,28 @@ registerChannelAdapter('whatsapp', {
       }
     }
 
-    async function flushOutgoingQueue(): Promise<void> {
-      if (flushing || outgoingQueue.length === 0) return;
-      flushing = true;
-      try {
-        log.info('Flushing outgoing message queue', { count: outgoingQueue.length });
-        while (outgoingQueue.length > 0) {
-          const item = outgoingQueue.shift()!;
-          const payload: { text: string; mentions?: string[] } = { text: item.text };
-          if (item.mentions && item.mentions.length > 0) payload.mentions = item.mentions;
-          const sent = await sock.sendMessage(item.jid, payload);
-          if (sent?.key?.id && sent.message) {
-            sentMessageCache.set(sent.key.id, sent.message);
-          }
-        }
-      } finally {
-        flushing = false;
-      }
-    }
-
     async function sendRawMessage(jid: string, text: string, mentions?: string[]): Promise<string | undefined> {
+      // Not connected → throw so the host delivery loop defers and re-drives the
+      // message when the socket comes back. Returning here (the old behavior)
+      // made the host mark the message delivered while it was only queued
+      // in-memory — lost on the next restart, never seen by the user.
       if (!connected) {
-        outgoingQueue.push({ jid, text, mentions });
-        log.info('WA disconnected, message queued', { jid, queueSize: outgoingQueue.length });
-        return;
+        throw new ChannelDisconnectedError(`WhatsApp not connected — cannot send to ${jid}`);
       }
-      try {
-        const payload: { text: string; mentions?: string[] } = { text };
-        if (mentions && mentions.length > 0) payload.mentions = mentions;
-        const sent = await sock.sendMessage(jid, payload);
-        if (sent?.key?.id && sent.message) {
-          sentMessageCache.set(sent.key.id, sent.message);
-          if (sentMessageCache.size > SENT_MESSAGE_CACHE_MAX) {
-            const oldest = sentMessageCache.keys().next().value!;
-            sentMessageCache.delete(oldest);
-          }
+      // Let send errors propagate. The host classifies them (transient → retry,
+      // permanent → surface) — swallowing them here would silently drop the
+      // message while reporting success.
+      const payload: { text: string; mentions?: string[] } = { text };
+      if (mentions && mentions.length > 0) payload.mentions = mentions;
+      const sent = await sock.sendMessage(jid, payload);
+      if (sent?.key?.id && sent.message) {
+        sentMessageCache.set(sent.key.id, sent.message);
+        if (sentMessageCache.size > SENT_MESSAGE_CACHE_MAX) {
+          const oldest = sentMessageCache.keys().next().value!;
+          sentMessageCache.delete(oldest);
         }
-        return sent?.key?.id ?? undefined;
-      } catch (err) {
-        outgoingQueue.push({ jid, text, mentions });
-        log.warn('Failed to send, message queued', { jid, err, queueSize: outgoingQueue.length });
-        return undefined;
       }
+      return sent?.key?.id ?? undefined;
     }
 
     // --- Socket creation ---
@@ -694,9 +671,6 @@ registerChannelAdapter('whatsapp', {
               botLidUser = lidUser;
             }
           }
-
-          // Flush queued messages
-          flushOutgoingQueue().catch((err) => log.error('Failed to flush outgoing queue', { err }));
 
           // Group sync
           syncGroupMetadata().catch((err) => log.error('Initial group sync failed', { err }));
@@ -919,6 +893,11 @@ registerChannelAdapter('whatsapp', {
 
         // Send file attachments (first file gets the caption, rest are captionless)
         if (hasFiles) {
+          // Guard before any send so a disconnected socket defers the whole
+          // message (host re-drives it) instead of dropping files one by one.
+          if (!connected) {
+            throw new ChannelDisconnectedError(`WhatsApp not connected — cannot send files to ${platformId}`);
+          }
           let captionUsed = false;
           for (const file of message.files!) {
             try {

@@ -16,12 +16,16 @@ import { getMessagingGroup, getMessagingGroupByPlatform } from './db/messaging-g
 import {
   getDueOutboundMessages,
   getDeliveredIds,
+  getDeferredDeliveries,
+  insertMessage,
   markDelivered,
   markDeliveryFailed,
+  markDeliveryDeferred,
   migrateDeliveredTable,
 } from './db/session-db.js';
 import { log } from './log.js';
 import { normalizeOptions } from './channels/ask-question.js';
+import { classifyDeliveryError, ChannelDisconnectedError, PermanentDeliveryError } from './channels/delivery-errors.js';
 import { clearOutbox, openInboundDb, openOutboundDb, readOutboxFiles } from './session-manager.js';
 import { pauseTypingRefreshAfterDelivery, setTypingAdapter } from './modules/typing/index.js';
 import type { OutboundFile } from './channels/adapter.js';
@@ -31,8 +35,25 @@ const ACTIVE_POLL_MS = 1000;
 const SWEEP_POLL_MS = 60_000;
 const MAX_DELIVERY_ATTEMPTS = 3;
 
-/** Track delivery attempt counts. Resets on process restart (gives failed messages a fresh chance). */
+/** Backoff before re-driving a message that's deferred because its channel is
+ *  offline. Capped so a long outage doesn't stretch the gap indefinitely, but
+ *  long enough to avoid hammering a reconnecting socket every poll tick. */
+const DEFERRAL_BACKOFF_BASE_SEC = 15;
+const DEFERRAL_BACKOFF_MAX_SEC = 120;
+
+/** Track transient (channel-online) delivery attempt counts. Resets on process
+ *  restart, which gives messages a fresh chance. Channel-offline deferrals are
+ *  tracked in the `delivered` table instead (so they survive restarts). */
 const deliveryAttempts = new Map<string, number>();
+
+/** ISO timestamp `sec` seconds in the future — backoff gate for deferred rows. */
+function backoffUntil(sec: number): string {
+  return new Date(Date.now() + sec * 1000).toISOString();
+}
+
+function deferralBackoffSec(attempts: number): number {
+  return Math.min(DEFERRAL_BACKOFF_MAX_SEC, DEFERRAL_BACKOFF_BASE_SEC * 2 ** Math.max(0, attempts - 1));
+}
 
 /**
  * Sessions whose outbound queue is currently being drained.
@@ -187,13 +208,23 @@ async function drainSession(session: Session): Promise<void> {
     const allDue = getDueOutboundMessages(outDb);
     if (allDue.length === 0) return;
 
-    // Filter out already-delivered messages using inbound.db's delivered table
-    const delivered = getDeliveredIds(inDb);
-    const undelivered = allDue.filter((m) => !delivered.has(m.id));
-    if (undelivered.length === 0) return;
-
-    // Ensure platform_message_id column exists (migration for existing sessions)
+    // Ensure delivery-tracking columns exist (migration for existing sessions).
+    // Run before reading the table so the status/attempts queries don't trip on
+    // a pre-migration schema.
     migrateDeliveredTable(inDb);
+
+    // Filter out terminal messages (delivered or permanently failed). Deferred
+    // messages stay in the set — they're re-driven once their backoff elapses.
+    const delivered = getDeliveredIds(inDb);
+    const deferred = getDeferredDeliveries(inDb);
+    const nowIso = new Date().toISOString();
+    const undelivered = allDue.filter((m) => {
+      if (delivered.has(m.id)) return false;
+      const d = deferred.get(m.id);
+      if (d?.next_attempt_at && d.next_attempt_at > nowIso) return false; // backoff not elapsed
+      return true;
+    });
+    if (undelivered.length === 0) return;
 
     for (const msg of undelivered) {
       try {
@@ -211,6 +242,39 @@ async function drainSession(session: Session): Promise<void> {
           pauseTypingRefreshAfterDelivery(session.id);
         }
       } catch (err) {
+        const disposition = classifyDeliveryError(err);
+
+        // Channel offline — the message is fine, the pipe is down. Defer with
+        // backoff and re-drive later; never count it against the retry budget
+        // and never mark it terminal. This is the path that previously
+        // returned undefined and got silently marked "delivered".
+        if (disposition === 'disconnected') {
+          const attempts = (deferred.get(msg.id)?.attempts ?? 0) + 1;
+          markDeliveryDeferred(inDb, msg.id, attempts, backoffUntil(deferralBackoffSec(attempts)));
+          log.warn('Message delivery deferred — channel offline, will retry', {
+            messageId: msg.id,
+            sessionId: session.id,
+            deferrals: attempts,
+            err,
+          });
+          continue;
+        }
+
+        // Permanent — retrying can't help (bad scope, deleted target, ACL).
+        // Give up immediately and tell the agent its message never landed.
+        if (disposition === 'permanent') {
+          log.error('Message delivery failed permanently (non-retryable), giving up', {
+            messageId: msg.id,
+            sessionId: session.id,
+            err,
+          });
+          markDeliveryFailed(inDb, msg.id);
+          deliveryAttempts.delete(msg.id);
+          surfaceDeliveryFailure(msg, inDb, err);
+          continue;
+        }
+
+        // Transient (channel online, send errored) — bounded immediate retries.
         const attempts = (deliveryAttempts.get(msg.id) ?? 0) + 1;
         deliveryAttempts.set(msg.id, attempts);
         if (attempts >= MAX_DELIVERY_ATTEMPTS) {
@@ -222,6 +286,7 @@ async function drainSession(session: Session): Promise<void> {
           });
           markDeliveryFailed(inDb, msg.id);
           deliveryAttempts.delete(msg.id);
+          surfaceDeliveryFailure(msg, inDb, err);
         } else {
           log.warn('Message delivery failed, will retry', {
             messageId: msg.id,
@@ -253,8 +318,10 @@ async function deliverMessage(
   inDb: Database.Database,
 ): Promise<string | undefined> {
   if (!deliveryAdapter) {
-    log.warn('No delivery adapter configured, dropping message', { id: msg.id });
-    return;
+    // Not "drop" — the adapter may simply not be wired yet at boot. Treat as a
+    // disconnected channel so the message is deferred and re-driven, not
+    // silently marked delivered.
+    throw new ChannelDisconnectedError(`No delivery adapter configured yet (message ${msg.id})`);
   }
 
   const content = JSON.parse(msg.content);
@@ -271,7 +338,10 @@ async function deliverMessage(
   // check will throw, which falls into the normal retry → mark-failed path.
   if (msg.channel_type === 'agent') {
     if (!hasTable(getDb(), 'agent_destinations')) {
-      throw new Error(`agent-to-agent module not installed — cannot route message ${msg.id}`);
+      throw new PermanentDeliveryError(
+        `agent-to-agent module not installed — cannot route message ${msg.id}`,
+        'module_not_installed',
+      );
     }
     const { routeAgentMessage } = await import('./modules/agent-to-agent/agent-route.js');
     await routeAgentMessage(msg, session);
@@ -312,7 +382,10 @@ async function deliverMessage(
         ? originMg
         : getMessagingGroupByPlatform(msg.channel_type, msg.platform_id);
     if (!mg) {
-      throw new Error(`unknown messaging group for ${msg.channel_type}/${msg.platform_id} (message ${msg.id})`);
+      throw new PermanentDeliveryError(
+        `unknown messaging group for ${msg.channel_type}/${msg.platform_id} (message ${msg.id})`,
+        'unknown_messaging_group',
+      );
     }
     if (mg.reply_mode === 'channel') effectiveThreadId = null;
     const isOriginChat = session.messaging_group_id === mg.id;
@@ -327,8 +400,9 @@ async function deliverMessage(
         )
         .get(session.agent_group_id, 'channel', mg.id);
       if (!row) {
-        throw new Error(
+        throw new PermanentDeliveryError(
           `unauthorized channel destination: ${session.agent_group_id} cannot send to ${mg.channel_type}/${mg.platform_id}`,
+          'unauthorized_destination',
         );
       }
     }
@@ -398,6 +472,63 @@ async function deliverMessage(
   clearOutbox(session.agent_group_id, session.id, msg.id);
 
   return platformMsgId;
+}
+
+/**
+ * Tell the agent that one of its outbound messages never reached the user.
+ *
+ * Without this, a terminally-failed send is invisible: the agent's own record
+ * (its outbound DB row) makes it believe the message was sent, so it "remembers"
+ * sending something the user never got. We write a context-only inbound row
+ * (`trigger: 0`) into the session's inbound DB: it does NOT wake the container
+ * on its own (so a broken channel can't spin a deliver→notify→deliver loop),
+ * but it rides along on the agent's next real turn so it can re-send via another
+ * route or tell the user. Best-effort: a failure to surface must never crash the
+ * delivery loop, so this swallows its own errors.
+ */
+function surfaceDeliveryFailure(
+  msg: { id: string; content: string; channel_type: string | null; platform_id: string | null },
+  inDb: Database.Database,
+  err: unknown,
+): void {
+  try {
+    let preview = '';
+    try {
+      const parsed = JSON.parse(msg.content) as Record<string, unknown>;
+      const body = (parsed.markdown as string) || (parsed.text as string) || '';
+      preview = body.length > 200 ? `${body.slice(0, 200)}…` : body;
+    } catch {
+      /* non-JSON / opaque content — omit preview */
+    }
+    const reason =
+      err instanceof PermanentDeliveryError && err.reason
+        ? err.reason
+        : err instanceof Error
+          ? err.message
+          : String(err);
+    const dest = msg.channel_type
+      ? `${msg.channel_type}${msg.platform_id ? `/${msg.platform_id}` : ''}`
+      : 'the channel';
+    const text =
+      `⚠️ System notice: a message you sent could NOT be delivered to ${dest} and the user did not receive it ` +
+      `(reason: ${reason}). If it still matters, re-send it (optionally via another route) or let the user know.` +
+      (preview ? `\n\nUndelivered message:\n${preview}` : '');
+
+    insertMessage(inDb, {
+      id: `delivery-fail-${msg.id}`,
+      kind: 'chat',
+      timestamp: new Date().toISOString(),
+      platformId: null,
+      channelType: null,
+      threadId: null,
+      content: JSON.stringify({ text, sender: 'system', senderName: 'System', system: true }),
+      processAfter: null,
+      recurrence: null,
+      trigger: 0,
+    });
+  } catch (surfaceErr) {
+    log.error('Failed to surface delivery failure to agent', { messageId: msg.id, err: surfaceErr });
+  }
 }
 
 /**

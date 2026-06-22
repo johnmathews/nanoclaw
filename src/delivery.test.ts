@@ -35,7 +35,8 @@ import {
   createMessagingGroup,
   createMessagingGroupAgent,
 } from './db/index.js';
-import { getDeliveredIds } from './db/session-db.js';
+import { getDeliveredIds, getDeferredDeliveries } from './db/session-db.js';
+import { ChannelDisconnectedError, PermanentDeliveryError } from './channels/delivery-errors.js';
 import { resolveSession, outboundDbPath, openInboundDb } from './session-manager.js';
 import { deliverSessionMessages, setDeliveryAdapter } from './delivery.js';
 
@@ -218,6 +219,137 @@ describe('deliverSessionMessages — retry and permanent failure', () => {
     // Attempt 3 — not called, message already delivered
     await deliverSessionMessages(session);
     expect(callCount).toBe(2);
+  });
+});
+
+describe('deliverSessionMessages — channel offline (deferral)', () => {
+  it('defers (not delivered, not failed) and re-drives when the channel reconnects', async () => {
+    seedAgentAndChannel();
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    insertOutbound('ag-1', session.id, 'out-offline');
+
+    let online = false;
+    let callCount = 0;
+    setDeliveryAdapter({
+      async deliver() {
+        callCount++;
+        if (!online) throw new ChannelDisconnectedError('socket down');
+        return 'plat-ok';
+      },
+    });
+
+    // First attempt — channel offline → deferred, NOT marked delivered/failed.
+    await deliverSessionMessages(session);
+    expect(callCount).toBe(1);
+
+    let inDb = openInboundDb('ag-1', session.id);
+    expect(getDeliveredIds(inDb).has('out-offline')).toBe(false); // not terminal
+    const deferred = getDeferredDeliveries(inDb);
+    expect(deferred.has('out-offline')).toBe(true);
+    expect(deferred.get('out-offline')!.attempts).toBe(1);
+    inDb.close();
+
+    // Immediate re-poll: backoff gate skips it (adapter not called again).
+    await deliverSessionMessages(session);
+    expect(callCount).toBe(1);
+
+    // Clear the backoff (simulate time passing) and bring the channel online.
+    inDb = openInboundDb('ag-1', session.id);
+    inDb.prepare('UPDATE delivered SET next_attempt_at = NULL WHERE message_out_id = ?').run('out-offline');
+    inDb.close();
+    online = true;
+
+    // Now it re-drives and delivers — and the deferred row flips to delivered.
+    await deliverSessionMessages(session);
+    expect(callCount).toBe(2);
+
+    inDb = openInboundDb('ag-1', session.id);
+    expect(getDeliveredIds(inDb).has('out-offline')).toBe(true);
+    expect(getDeferredDeliveries(inDb).has('out-offline')).toBe(false);
+    inDb.close();
+  });
+
+  it('never burns the retry budget while offline (no permanent fail)', async () => {
+    seedAgentAndChannel();
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    insertOutbound('ag-1', session.id, 'out-down');
+
+    setDeliveryAdapter({
+      async deliver() {
+        throw new ChannelDisconnectedError('still down');
+      },
+    });
+
+    // Re-drive many times (clearing backoff each round) — must never become
+    // a terminal failure; a long outage should not drop the message.
+    for (let i = 0; i < 5; i++) {
+      const db = openInboundDb('ag-1', session.id);
+      db.prepare('UPDATE delivered SET next_attempt_at = NULL WHERE message_out_id = ?').run('out-down');
+      db.close();
+      await deliverSessionMessages(session);
+    }
+
+    const inDb = openInboundDb('ag-1', session.id);
+    expect(getDeliveredIds(inDb).has('out-down')).toBe(false); // still not terminal
+    expect(getDeferredDeliveries(inDb).has('out-down')).toBe(true);
+    inDb.close();
+  });
+});
+
+describe('deliverSessionMessages — surfacing failures to the agent', () => {
+  it('writes a non-waking notice to inbound.db on a permanent failure', async () => {
+    seedAgentAndChannel();
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    insertOutbound('ag-1', session.id, 'out-perm');
+
+    let callCount = 0;
+    setDeliveryAdapter({
+      async deliver() {
+        callCount++;
+        throw new PermanentDeliveryError('An API error occurred: missing_scope', 'missing_scope');
+      },
+    });
+
+    await deliverSessionMessages(session);
+
+    // Permanent → one attempt, terminal failure, no retries.
+    expect(callCount).toBe(1);
+
+    const inDb = openInboundDb('ag-1', session.id);
+    expect(getDeliveredIds(inDb).has('out-perm')).toBe(true);
+
+    // A system notice rode in as a context-only (trigger=0) row so the agent
+    // learns its message never arrived without waking a deliver→notify loop.
+    const notice = inDb
+      .prepare('SELECT content, trigger FROM messages_in WHERE id = ?')
+      .get('delivery-fail-out-perm') as { content: string; trigger: number } | undefined;
+    inDb.close();
+    expect(notice).toBeDefined();
+    expect(notice!.trigger).toBe(0);
+    expect(notice!.content).toContain('could NOT be delivered');
+    expect(notice!.content).toContain('missing_scope');
+  });
+
+  it('surfaces a notice after transient retries are exhausted', async () => {
+    seedAgentAndChannel();
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    insertOutbound('ag-1', session.id, 'out-exhaust');
+
+    setDeliveryAdapter({
+      async deliver() {
+        throw new Error('network timeout');
+      },
+    });
+
+    await deliverSessionMessages(session); // 1
+    await deliverSessionMessages(session); // 2
+    await deliverSessionMessages(session); // 3 → exhausted
+
+    const inDb = openInboundDb('ag-1', session.id);
+    expect(getDeliveredIds(inDb).has('out-exhaust')).toBe(true);
+    const notice = inDb.prepare('SELECT id FROM messages_in WHERE id = ?').get('delivery-fail-out-exhaust');
+    inDb.close();
+    expect(notice).toBeDefined();
   });
 });
 

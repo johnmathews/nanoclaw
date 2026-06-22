@@ -6,6 +6,7 @@
  */
 import type { ChannelAdapter, ChannelRegistration, ChannelSetup, OutboundFile } from './adapter.js';
 import type { ChannelDeliveryAdapter } from '../delivery.js';
+import { ChannelDisconnectedError } from './delivery-errors.js';
 import { log } from '../log.js';
 
 const SETUP_RETRY_DELAYS_MS = [2000, 5000, 10000];
@@ -85,8 +86,10 @@ export function createChannelDeliveryAdapter(): ChannelDeliveryAdapter {
     ): Promise<string | undefined> {
       const adapter = getChannelAdapterExact(instance ?? channelType);
       if (!adapter) {
-        log.warn('No adapter for channel type', { channelType, instance });
-        return;
+        // Adapter offline or not yet registered. Throw (don't return) so the
+        // delivery loop defers and re-drives the message instead of marking it
+        // delivered — a returned undefined would silently drop it.
+        throw new ChannelDisconnectedError(`No active adapter for ${instance ?? channelType}`);
       }
       return adapter.deliver(platformId, threadId, { kind, content: JSON.parse(content), files });
     },

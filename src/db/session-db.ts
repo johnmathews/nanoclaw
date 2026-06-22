@@ -275,24 +275,68 @@ export function getDueOutboundMessages(db: Database.Database): OutboundMessage[]
 // delivered
 // ---------------------------------------------------------------------------
 
+/**
+ * IDs the delivery loop should NOT re-attempt: terminal outcomes only
+ * (`delivered` = sent, `failed` = permanently given up). Deliberately EXCLUDES
+ * `deferred` rows — those record a not-yet-deliverable message (channel
+ * offline) and must be re-driven on the next poll and across restarts. A
+ * `deferred` row therefore persists the attempt count + backoff while keeping
+ * the message in the undelivered set.
+ */
 export function getDeliveredIds(db: Database.Database): Set<string> {
   return new Set(
-    (db.prepare('SELECT message_out_id FROM delivered').all() as Array<{ message_out_id: string }>).map(
-      (r) => r.message_out_id,
-    ),
+    (
+      db.prepare("SELECT message_out_id FROM delivered WHERE status IN ('delivered', 'failed')").all() as Array<{
+        message_out_id: string;
+      }>
+    ).map((r) => r.message_out_id),
   );
 }
 
+/** Per-message deferral state for messages awaiting a retry (channel offline). */
+export interface DeferredDelivery {
+  attempts: number;
+  next_attempt_at: string | null;
+}
+
+/** Map of message_out_id → deferral state for all currently-deferred rows. */
+export function getDeferredDeliveries(db: Database.Database): Map<string, DeferredDelivery> {
+  const rows = db
+    .prepare("SELECT message_out_id, attempts, next_attempt_at FROM delivered WHERE status = 'deferred'")
+    .all() as Array<{ message_out_id: string; attempts: number; next_attempt_at: string | null }>;
+  return new Map(rows.map((r) => [r.message_out_id, { attempts: r.attempts, next_attempt_at: r.next_attempt_at }]));
+}
+
+// All three marks use INSERT OR REPLACE (not OR IGNORE) so a prior `deferred`
+// row transitions cleanly to its terminal/next state. OR IGNORE would leave a
+// stale `deferred` row in place after a successful send, causing the message to
+// be re-driven and delivered a second time.
+
 export function markDelivered(db: Database.Database, messageOutId: string, platformMessageId: string | null): void {
   db.prepare(
-    "INSERT OR IGNORE INTO delivered (message_out_id, platform_message_id, status, delivered_at) VALUES (?, ?, 'delivered', datetime('now'))",
+    'INSERT OR REPLACE INTO delivered (message_out_id, platform_message_id, status, delivered_at, attempts, next_attempt_at) ' +
+      "VALUES (?, ?, 'delivered', datetime('now'), 0, NULL)",
   ).run(messageOutId, platformMessageId ?? null);
 }
 
 export function markDeliveryFailed(db: Database.Database, messageOutId: string): void {
   db.prepare(
-    "INSERT OR IGNORE INTO delivered (message_out_id, platform_message_id, status, delivered_at) VALUES (?, NULL, 'failed', datetime('now'))",
+    'INSERT OR REPLACE INTO delivered (message_out_id, platform_message_id, status, delivered_at, attempts, next_attempt_at) ' +
+      "VALUES (?, NULL, 'failed', datetime('now'), 0, NULL)",
   ).run(messageOutId);
+}
+
+/** Record a message as awaiting retry (channel offline / transient deferral). */
+export function markDeliveryDeferred(
+  db: Database.Database,
+  messageOutId: string,
+  attempts: number,
+  nextAttemptAt: string,
+): void {
+  db.prepare(
+    'INSERT OR REPLACE INTO delivered (message_out_id, platform_message_id, status, delivered_at, attempts, next_attempt_at) ' +
+      "VALUES (?, NULL, 'deferred', datetime('now'), ?, ?)",
+  ).run(messageOutId, attempts, nextAttemptAt);
 }
 
 /** Ensure the delivered table has columns added after initial schema. */
@@ -305,6 +349,12 @@ export function migrateDeliveredTable(db: Database.Database): void {
   }
   if (!cols.has('status')) {
     db.prepare("ALTER TABLE delivered ADD COLUMN status TEXT NOT NULL DEFAULT 'delivered'").run();
+  }
+  if (!cols.has('attempts')) {
+    db.prepare('ALTER TABLE delivered ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0').run();
+  }
+  if (!cols.has('next_attempt_at')) {
+    db.prepare('ALTER TABLE delivered ADD COLUMN next_attempt_at TEXT').run();
   }
 }
 

@@ -195,8 +195,13 @@ CREATE INDEX IF NOT EXISTS idx_messages_in_series ON messages_in(series_id);
 CREATE TABLE IF NOT EXISTS delivered (
   message_out_id      TEXT PRIMARY KEY,
   platform_message_id TEXT,
+  -- 'delivered' = sent | 'failed' = permanently given up (both terminal) |
+  -- 'deferred'  = awaiting retry (channel offline); re-driven, not terminal.
   status              TEXT NOT NULL DEFAULT 'delivered',
-  delivered_at        TEXT NOT NULL
+  delivered_at        TEXT NOT NULL,
+  -- Retry bookkeeping for 'deferred' rows (0 for terminal rows).
+  attempts            INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at     TEXT
 );
 
 -- Destination map for this session's agent.

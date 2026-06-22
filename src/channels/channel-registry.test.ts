@@ -204,19 +204,22 @@ describe('channel registry — instance keying', () => {
     expect(reg.getChannelAdapter('slack')).toBe(tester);
 
     // The delivery bridge dispatches by exact key: a default-instance
-    // message (instance === channelType after backfill) is dropped, not
-    // delivered through the sibling's identity.
+    // message (instance === channelType after backfill) throws
+    // ChannelDisconnectedError so the host defers + re-drives it — it is
+    // NEVER delivered through the sibling's identity.
+    const { ChannelDisconnectedError } = await import('./delivery-errors.js');
     const bridge = reg.createChannelDeliveryAdapter();
-    const result = await bridge.deliver(
-      'slack',
-      'slack:C1',
-      null,
-      'chat',
-      JSON.stringify({ text: 'to the default bot' }),
-      undefined,
-      'slack',
-    );
-    expect(result).toBeUndefined();
+    await expect(
+      bridge.deliver(
+        'slack',
+        'slack:C1',
+        null,
+        'chat',
+        JSON.stringify({ text: 'to the default bot' }),
+        undefined,
+        'slack',
+      ),
+    ).rejects.toBeInstanceOf(ChannelDisconnectedError);
     expect(tester.delivered).toHaveLength(0);
 
     // Sanity: the same bridge DOES deliver when the exact instance is live.

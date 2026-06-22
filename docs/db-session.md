@@ -60,18 +60,34 @@ Content shapes: see [api-details.md §Session DB Schema Details](api-details.md#
 
 ### 2.2 `delivered`
 
-Host writes here after handing a `messages_out` row to the channel adapter. Container reads `platform_message_id` to target edits and reactions.
+Host writes here to track the outcome of each `messages_out` row it hands to the channel adapter. Container reads `platform_message_id` to target edits and reactions.
 
 ```sql
 CREATE TABLE delivered (
   message_out_id      TEXT PRIMARY KEY,
   platform_message_id TEXT,
-  status              TEXT NOT NULL DEFAULT 'delivered',  -- delivered|failed
-  delivered_at        TEXT NOT NULL
+  -- 'delivered' = sent | 'failed' = permanently given up (both terminal) |
+  -- 'deferred'  = awaiting retry (channel offline); re-driven, not terminal.
+  status              TEXT NOT NULL DEFAULT 'delivered',
+  delivered_at        TEXT NOT NULL,
+  attempts            INTEGER NOT NULL DEFAULT 0,  -- deferral count (0 for terminal rows)
+  next_attempt_at     TEXT                         -- backoff gate for 'deferred' rows
 );
 ```
 
-Writer: `markDelivered()` / `markDeliveryFailed()` in `src/db/session-db.ts`. Older session DBs are brought up to schema lazily by `migrateDeliveredTable()`.
+**Status model (load-bearing for not silently dropping messages):** a `messages_out` row is only treated as "done" — and skipped on the next poll — when it reaches a *terminal* status (`delivered` or `failed`). `getDeliveredIds()` returns terminal rows only; `deferred` rows are deliberately excluded so they're re-driven on the next poll and across restarts.
+
+The delivery loop (`src/delivery.ts`) classifies a failed send (`classifyDeliveryError` in `src/channels/delivery-errors.ts`):
+
+| Disposition | Cause | Outcome |
+|-------------|-------|---------|
+| `disconnected` | channel offline (socket down, adapter not registered) | `markDeliveryDeferred()` with exponential backoff; never counts against the retry budget, never terminal — re-driven until the channel recovers |
+| `permanent` | bad scope, deleted edit/reaction target, ACL rejection | `markDeliveryFailed()` immediately + a context-only notice written to `messages_in` so the agent learns its message never landed |
+| `transient` | network blip, 5xx, timeout | up to `MAX_DELIVERY_ATTEMPTS` (3) immediate retries, then `markDeliveryFailed()` + the same agent notice |
+
+The cardinal rule: a channel adapter's `deliver()` returning normally means the message reached the platform. An adapter that could not send **throws** (`ChannelDisconnectedError` / `PermanentDeliveryError`); it never returns `undefined`-as-success. `undefined` is reserved for operations that legitimately produce no platform message id (reactions, edits).
+
+Writers: `markDelivered()` / `markDeliveryFailed()` / `markDeliveryDeferred()` in `src/db/session-db.ts`. Older session DBs are brought up to schema lazily by `migrateDeliveredTable()` (adds `platform_message_id`, `status`, `attempts`, `next_attempt_at`).
 
 ### 2.3 `destinations`
 
@@ -181,6 +197,6 @@ Access: `container/agent-runner/src/db/session-state.ts`.
 
 ## 5. Schema evolution
 
-Unlike the central DB, session DBs do **not** go through numbered migrations. Both `INBOUND_SCHEMA` and `OUTBOUND_SCHEMA` use `CREATE TABLE IF NOT EXISTS`, so a fresh session always gets the current shape. For session folders created under older builds, column-level gaps are patched lazily on open — e.g. `migrateDeliveredTable()` in `src/db/session-db.ts` adds `platform_message_id` and `status` to the `delivered` table if missing.
+Unlike the central DB, session DBs do **not** go through numbered migrations. Both `INBOUND_SCHEMA` and `OUTBOUND_SCHEMA` use `CREATE TABLE IF NOT EXISTS`, so a fresh session always gets the current shape. For session folders created under older builds, column-level gaps are patched lazily on open — e.g. `migrateDeliveredTable()` in `src/db/session-db.ts` adds `platform_message_id`, `status`, `attempts`, and `next_attempt_at` to the `delivered` table if missing.
 
 If you add a column to either schema, add a matching lazy migration for existing session folders, and prefer nullable columns or defaulted values so no data backfill is required.
