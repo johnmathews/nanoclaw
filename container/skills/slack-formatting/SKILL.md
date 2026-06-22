@@ -36,6 +36,8 @@ Check your group folder name or workspace path:
 <!channel>                           # @channel
 ```
 
+**Email addresses are plain text — never wrap them.** Write `someone@example.com` as-is; Slack auto-links it. Do NOT hand-encode it as `<mailto:...>`, do NOT put it inside `<...>`, and do NOT slip a `<` before the `@`. The `<@...>` form is ONLY for a real Slack user ID — an email is not a mention. Getting this wrong produces broken output like `someone<@example.com>` (the `@example.com` is mis-parsed as a failed user mention). When in doubt, type the address as plain text and let Slack link it.
+
 ### Lists
 
 Slack supports simple bullet lists but NOT numbered lists:

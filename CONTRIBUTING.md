@@ -96,10 +96,20 @@ Skills that run inside the agent container, not on the host. These teach the con
 
 **Key difference:** These are NOT invoked by the user on the host. They're loaded by Claude Code inside the container and influence how the agent behaves.
 
+**Two load modes — choose deliberately:**
+
+| File the skill ships | When the agent sees it | Use for |
+|----------------------|------------------------|---------|
+| `SKILL.md` only | **On-demand** — the agent must choose to invoke the skill | Reference material the agent reaches for when a task needs it (full formatting tables, tool how-tos) |
+| `instructions.md` (alongside or instead of `SKILL.md`) | **Always-on** — `composeGroupClaudeMd` auto-discovers it by filename and injects it as a `skill-<name>.md` fragment into *every* group's CLAUDE.md on each spawn | The handful of rules that must never be missed, even when the agent doesn't think to load the skill |
+
+Keep `instructions.md` short — it's a permanent context-window cost for every agent, Slack or not. Put the few must-not-fail rules there and leave the full reference in `SKILL.md`. Example: `whatsapp-formatting` and `slack-formatting` each ship both — `instructions.md` carries the mention/email gotchas that silently break messages, `SKILL.md` carries the complete mrkdwn reference.
+
 **Guidelines:**
 - Follow the same SKILL.md + frontmatter format
 - Use `allowed-tools` frontmatter to scope tool permissions
 - Keep them focused — the agent's context window is shared across all container skills
+- If a rule is a silent-failure footgun (malformed output that still "sends"), put it in `instructions.md` so it's always loaded — not just in the on-demand `SKILL.md`
 
 ### Writing a good skill
 
