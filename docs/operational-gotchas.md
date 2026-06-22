@@ -161,3 +161,32 @@ entries with `[migration-only]` so they're easy to prune later.
     `multimodal.ts` + `src/transcription.ts` / `src/pdf-extract.ts` —
     the doc mirrors them. If interfaces drift again, fix the doc here
     rather than letting it stale.
+
+## Delivery
+
+31. Outbound delivery is **poll-driven**, and the WhatsApp socket
+    reconnects ~150×/day, so the two interact. The host delivers via two
+    polls (`src/delivery.ts`): the 1s active poll covers sessions whose
+    `container_status` is `running`/`idle`; the 60s sweep covers all
+    `active` sessions. A reply that can't send the instant it's written
+    (WhatsApp mid-reconnect, or a "zombie" socket: `connection==='open'`
+    but the server stopped acking) is **deferred** and re-driven later —
+    but once the agent's turn ends the container idles/stops and the
+    session leaves the fast poll, so the deferred reply used to wait for
+    the 60s sweep (symptom: "ask → silence → user pokes the chat → reply
+    appears instantly", because the new inbound re-wakes the container).
+    Three mechanisms keep this prompt (added 2026-06-22, follow-up to the
+    silent-loss fix `ef38c0f4` which removed WhatsApp's old
+    flush-on-reconnect queue):
+    - **`ChannelSetup.onReconnect`** (`src/channels/adapter.ts`) — WhatsApp
+      fires it on every socket re-open *after the first*; the host runs
+      `redriveActiveSessionsNow()` to flush deferred messages immediately.
+    - **`pendingRedrive`** (`src/delivery.ts`) — a session with a
+      non-terminal delivery (deferred in backoff, or mid transient-retry)
+      stays on the 1s poll even off-container; cleared once everything is
+      terminal so the set can't grow unbounded.
+    - **`SEND_TIMEOUT_MS` = 15s** (`src/channels/whatsapp.ts`
+      `sendViaSocket`) — caps a single `sock.sendMessage`; on timeout it
+      tears the stale socket down (forcing a reconnect) and throws
+      `ChannelDisconnectedError` so the host defers + re-drives, instead of
+      hanging the session's inflight delivery forever.

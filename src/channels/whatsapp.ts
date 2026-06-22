@@ -102,6 +102,12 @@ const GROUP_METADATA_CACHE_TTL_MS = 60_000; // 1 min for outbound sends
 const SENT_MESSAGE_CACHE_MAX = 256;
 const RECONNECT_DELAY_MS = 5000;
 const PENDING_QUESTIONS_MAX = 64;
+/** Hard ceiling on a single sock.sendMessage. A WhatsApp socket can go
+ *  "zombie" — connection==='open' (so `connected` is true) but the server has
+ *  stopped acking — leaving sendMessage hung indefinitely. That stalls the
+ *  host's per-session delivery until an unrelated inbound revives the socket.
+ *  Normal sends complete in well under a second; 15s only trips on a dead pipe. */
+const SEND_TIMEOUT_MS = 15_000;
 
 /** Normalize an option label to a slash command: "Approve" → "/approve" */
 function optionToCommand(option: string): string {
@@ -391,6 +397,10 @@ registerChannelAdapter('whatsapp', {
     // State
     let sock: WASocket;
     let connected = false;
+    // True once the socket has opened at least once, so we can distinguish the
+    // initial connect from a reconnect and only fire the host re-drive hook on
+    // the latter (nothing has deferred yet on first boot).
+    let everConnected = false;
     let shuttingDown = false;
     let setupConfig: ChannelSetup;
 
@@ -510,6 +520,37 @@ registerChannelAdapter('whatsapp', {
       }
     }
 
+    /**
+     * Send through the live socket with a hard timeout. On timeout we tear the
+     * stale socket down to force a reconnect (so the zombie self-heals and the
+     * onReconnect re-drive fires) and throw ChannelDisconnectedError so the host
+     * defers and re-drives the message once the channel is back — rather than
+     * hanging this delivery forever.
+     */
+    async function sendViaSocket(
+      jid: string,
+      content: Parameters<WASocket['sendMessage']>[1],
+    ): Promise<Awaited<ReturnType<WASocket['sendMessage']>>> {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          log.warn('WhatsApp send timed out — tearing down stale socket to force reconnect', { jid });
+          connected = false;
+          try {
+            sock.end(new Error('send timeout'));
+          } catch {
+            /* socket already dead */
+          }
+          reject(new ChannelDisconnectedError(`WhatsApp send timed out after ${SEND_TIMEOUT_MS}ms — socket stale`));
+        }, SEND_TIMEOUT_MS);
+      });
+      try {
+        return await Promise.race([sock.sendMessage(jid, content), timeout]);
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+
     async function sendRawMessage(jid: string, text: string, mentions?: string[]): Promise<string | undefined> {
       // Not connected → throw so the host delivery loop defers and re-drives the
       // message when the socket comes back. Returning here (the old behavior)
@@ -523,7 +564,7 @@ registerChannelAdapter('whatsapp', {
       // message while reporting success.
       const payload: { text: string; mentions?: string[] } = { text };
       if (mentions && mentions.length > 0) payload.mentions = mentions;
-      const sent = await sock.sendMessage(jid, payload);
+      const sent = await sendViaSocket(jid, payload);
       if (sent?.key?.id && sent.message) {
         sentMessageCache.set(sent.key.id, sent.message);
         if (sentMessageCache.size > SENT_MESSAGE_CACHE_MAX) {
@@ -647,7 +688,21 @@ registerChannelAdapter('whatsapp', {
           }
         } else if (connection === 'open') {
           connected = true;
+          const isReconnect = everConnected;
+          everConnected = true;
           log.info('Connected to WhatsApp');
+
+          // Reconnect (not first boot) → tell the host to flush any outbound
+          // messages that deferred while the socket was down, right now, instead
+          // of waiting for the next delivery poll / 60s sweep. Replaces the old
+          // in-memory flushOutgoingQueue that this adapter used to run here.
+          if (isReconnect) {
+            try {
+              setupConfig.onReconnect?.();
+            } catch (err) {
+              log.error('onReconnect hook threw', { err });
+            }
+          }
 
           // Clean up pairing code file after successful connection
           try {
@@ -911,7 +966,7 @@ registerChannelAdapter('whatsapp', {
               }
               const mediaMsg = buildMediaMessage(file.data, file.filename, ext, caption);
               if (captionMentions) mediaMsg.mentions = captionMentions;
-              const sent = await sock.sendMessage(platformId, mediaMsg);
+              const sent = await sendViaSocket(platformId, mediaMsg);
               if (sent?.key?.id && sent.message) {
                 sentMessageCache.set(sent.key.id, sent.message);
               }

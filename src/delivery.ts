@@ -70,6 +70,21 @@ function deferralBackoffSec(attempts: number): number {
  */
 const inflightDeliveries = new Set<string>();
 
+/**
+ * Sessions with a non-terminal delivery (channel-offline deferral in backoff,
+ * or a transient mid-retry) that must keep being re-driven on the fast 1s poll
+ * even after their container goes idle/stopped.
+ *
+ * Without this, a session drops out of getRunningSessions() the moment its
+ * agent's turn ends, so an undelivered reply waits for the 60s sweep — or, in
+ * practice, until the user sends another message that re-wakes the container.
+ * That was the "ask → silence → poke → reply appears instantly" regression.
+ *
+ * Entries are added/cleared by drainSession based on the session's actual
+ * pending state, so a recovered (or deleted) session stops being polled.
+ */
+const pendingRedrive = new Map<string, Session>();
+
 export interface ChannelDeliveryAdapter {
   deliver(
     channelType: string,
@@ -147,11 +162,45 @@ export function getDeliveryPollsRunning(): boolean {
   return activePolling && sweepPolling;
 }
 
+/**
+ * Re-drive delivery for every active session immediately.
+ *
+ * Wired to a channel adapter's `onReconnect` hook: the instant a reconnect-prone
+ * transport (WhatsApp) re-opens its socket, any message that deferred during the
+ * outage flushes now instead of waiting for the next poll tick or 60s sweep.
+ * Fire-and-forget; the per-session inflight guard makes it safe to overlap with
+ * the regular polls.
+ */
+export async function redriveActiveSessionsNow(): Promise<void> {
+  try {
+    for (const session of getActiveSessions()) {
+      await deliverSessionMessages(session);
+    }
+  } catch (err) {
+    log.error('Channel-reconnect re-drive error', { err });
+  }
+}
+
+/** Whether a session is currently being kept on the fast poll because it has a
+ *  non-terminal delivery pending (deferred in backoff, or mid transient retry).
+ *  Exposed for tests and health introspection. */
+export function hasPendingRedrive(sessionId: string): boolean {
+  return pendingRedrive.has(sessionId);
+}
+
 async function pollActive(): Promise<void> {
   if (!activePolling) return;
 
   try {
     const sessions = getRunningSessions();
+    // Also drive sessions that still have a pending (deferred / mid-retry)
+    // delivery even though their container is no longer running — see
+    // pendingRedrive. Dedup against the running set so a session isn't drained
+    // twice in one tick.
+    const seen = new Set(sessions.map((s) => s.id));
+    for (const session of pendingRedrive.values()) {
+      if (!seen.has(session.id)) sessions.push(session);
+    }
     for (const session of sessions) {
       await deliverSessionMessages(session);
     }
@@ -192,7 +241,10 @@ export async function deliverSessionMessages(session: Session): Promise<void> {
 
 async function drainSession(session: Session): Promise<void> {
   const agentGroup = getAgentGroup(session.agent_group_id);
-  if (!agentGroup) return;
+  if (!agentGroup) {
+    pendingRedrive.delete(session.id);
+    return;
+  }
 
   let outDb: Database.Database;
   let inDb: Database.Database;
@@ -200,13 +252,17 @@ async function drainSession(session: Session): Promise<void> {
     outDb = openOutboundDb(agentGroup.id, session.id);
     inDb = openInboundDb(agentGroup.id, session.id);
   } catch {
+    pendingRedrive.delete(session.id);
     return; // DBs might not exist yet
   }
 
   try {
     // Read all due messages from outbound.db (read-only)
     const allDue = getDueOutboundMessages(outDb);
-    if (allDue.length === 0) return;
+    if (allDue.length === 0) {
+      pendingRedrive.delete(session.id);
+      return;
+    }
 
     // Ensure delivery-tracking columns exist (migration for existing sessions).
     // Run before reading the table so the status/attempts queries don't trip on
@@ -224,12 +280,18 @@ async function drainSession(session: Session): Promise<void> {
       if (d?.next_attempt_at && d.next_attempt_at > nowIso) return false; // backoff not elapsed
       return true;
     });
-    if (undelivered.length === 0) return;
+
+    // Track which messages reached a terminal state (delivered or permanently
+    // failed) — by the end, anything in allDue NOT here is still pending
+    // (deferred in backoff, or scheduled for a transient retry) and the session
+    // must stay on the fast poll. Seed with the already-terminal set.
+    const resolved = new Set<string>(delivered);
 
     for (const msg of undelivered) {
       try {
         const platformMsgId = await deliverMessage(msg, session, inDb);
         markDelivered(inDb, msg.id, platformMsgId ?? null);
+        resolved.add(msg.id);
         deliveryAttempts.delete(msg.id);
 
         // Pause the typing indicator after a real user-facing message
@@ -269,6 +331,7 @@ async function drainSession(session: Session): Promise<void> {
             err,
           });
           markDeliveryFailed(inDb, msg.id);
+          resolved.add(msg.id);
           deliveryAttempts.delete(msg.id);
           surfaceDeliveryFailure(msg, inDb, err);
           continue;
@@ -285,6 +348,7 @@ async function drainSession(session: Session): Promise<void> {
             err,
           });
           markDeliveryFailed(inDb, msg.id);
+          resolved.add(msg.id);
           deliveryAttempts.delete(msg.id);
           surfaceDeliveryFailure(msg, inDb, err);
         } else {
@@ -298,6 +362,13 @@ async function drainSession(session: Session): Promise<void> {
         }
       }
     }
+
+    // Keep the session on the fast poll iff something's still pending (deferred
+    // in backoff, or scheduled for a transient retry); otherwise stop polling it
+    // off-container so the set doesn't grow unbounded.
+    const keepPending = allDue.some((m) => !resolved.has(m.id));
+    if (keepPending) pendingRedrive.set(session.id, session);
+    else pendingRedrive.delete(session.id);
   } finally {
     outDb.close();
     inDb.close();

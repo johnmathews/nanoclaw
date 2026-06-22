@@ -38,7 +38,7 @@ import {
 import { getDeliveredIds, getDeferredDeliveries } from './db/session-db.js';
 import { ChannelDisconnectedError, PermanentDeliveryError } from './channels/delivery-errors.js';
 import { resolveSession, outboundDbPath, openInboundDb } from './session-manager.js';
-import { deliverSessionMessages, setDeliveryAdapter } from './delivery.js';
+import { deliverSessionMessages, setDeliveryAdapter, redriveActiveSessionsNow, hasPendingRedrive } from './delivery.js';
 
 function now(): string {
   return new Date().toISOString();
@@ -293,6 +293,74 @@ describe('deliverSessionMessages — channel offline (deferral)', () => {
     expect(getDeliveredIds(inDb).has('out-down')).toBe(false); // still not terminal
     expect(getDeferredDeliveries(inDb).has('out-down')).toBe(true);
     inDb.close();
+  });
+});
+
+describe('off-container re-drive (pendingRedrive + reconnect)', () => {
+  it('keeps a deferred session on the fast poll, and drops it once delivered', async () => {
+    // Regression: after the agent's turn ends the container leaves
+    // getRunningSessions(), so a message that deferred during a WhatsApp
+    // reconnect gap used to wait for the 60s sweep (or the user poking the
+    // chat). pendingRedrive keeps the session on the 1s poll until it lands.
+    seedAgentAndChannel();
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    insertOutbound('ag-1', session.id, 'out-redrive');
+
+    let online = false;
+    setDeliveryAdapter({
+      async deliver() {
+        if (!online) throw new ChannelDisconnectedError('socket down');
+        return 'plat-ok';
+      },
+    });
+
+    // Deferred → tracked for off-container re-drive.
+    await deliverSessionMessages(session);
+    expect(hasPendingRedrive(session.id)).toBe(true);
+
+    // Channel back → delivered → no longer tracked (set doesn't grow unbounded).
+    const inDb = openInboundDb('ag-1', session.id);
+    inDb.prepare('UPDATE delivered SET next_attempt_at = NULL WHERE message_out_id = ?').run('out-redrive');
+    inDb.close();
+    online = true;
+
+    await deliverSessionMessages(session);
+    expect(hasPendingRedrive(session.id)).toBe(false);
+  });
+
+  it('redriveActiveSessionsNow flushes a deferred message when the channel returns', async () => {
+    // The onReconnect hook calls this the instant the socket re-opens.
+    seedAgentAndChannel();
+    const { session } = resolveSession('ag-1', 'mg-1', null, 'shared');
+    insertOutbound('ag-1', session.id, 'out-reconnect');
+
+    let online = false;
+    let callCount = 0;
+    setDeliveryAdapter({
+      async deliver() {
+        callCount++;
+        if (!online) throw new ChannelDisconnectedError('socket down');
+        return 'plat-ok';
+      },
+    });
+
+    // First attempt while offline → deferred.
+    await deliverSessionMessages(session);
+    expect(callCount).toBe(1);
+    expect(getDeliveredIds(openInboundDb('ag-1', session.id)).has('out-reconnect')).toBe(false);
+
+    // Socket re-opens: clear the backoff gate and re-drive every active session.
+    const inDb = openInboundDb('ag-1', session.id);
+    inDb.prepare('UPDATE delivered SET next_attempt_at = NULL WHERE message_out_id = ?').run('out-reconnect');
+    inDb.close();
+    online = true;
+
+    await redriveActiveSessionsNow();
+
+    expect(callCount).toBe(2);
+    const after = openInboundDb('ag-1', session.id);
+    expect(getDeliveredIds(after).has('out-reconnect')).toBe(true);
+    after.close();
   });
 });
 

@@ -15,7 +15,13 @@ import { initDb } from './db/connection.js';
 import { initSearchIndexDb } from './db/search-index-db.js';
 import { runMigrations } from './db/migrations/index.js';
 import { ensureContainerRuntimeRunning, cleanupOrphans } from './container-runtime.js';
-import { startActiveDeliveryPoll, startSweepDeliveryPoll, setDeliveryAdapter, stopDeliveryPolls } from './delivery.js';
+import {
+  startActiveDeliveryPoll,
+  startSweepDeliveryPoll,
+  setDeliveryAdapter,
+  stopDeliveryPolls,
+  redriveActiveSessionsNow,
+} from './delivery.js';
 import { startHostSweep, stopHostSweep } from './host-sweep.js';
 import { routeInbound } from './router.js';
 import { log } from './log.js';
@@ -154,6 +160,13 @@ async function main(): Promise<void> {
           name,
           isGroup,
         });
+      },
+      onReconnect() {
+        log.info('Channel reconnected — re-driving deferred deliveries', {
+          channelType: adapter.channelType,
+          instance: adapter.instance ?? adapter.channelType,
+        });
+        void redriveActiveSessionsNow();
       },
       onAction(questionId, selectedOption, userId) {
         dispatchResponse({

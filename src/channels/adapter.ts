@@ -21,6 +21,16 @@ export interface ChannelSetup {
   /** Called when the adapter discovers metadata about a conversation. */
   onMetadata(platformId: string, name?: string, isGroup?: boolean): void;
 
+  /**
+   * Called by an adapter when its transport reconnects (socket re-opened after
+   * a drop). The host re-drives deferred/undelivered outbound messages
+   * immediately instead of waiting for the next delivery poll tick or the 60s
+   * sweep — important for chatty, reconnect-prone transports (WhatsApp drops
+   * and re-opens its socket ~150×/day). Optional: adapters with no reconnect
+   * concept omit it.
+   */
+  onReconnect?(): void;
+
   /** Called when a user clicks a button/action in a card (e.g., ask_user_question response). */
   onAction(questionId: string, selectedOption: string, userId: string): void;
 }
