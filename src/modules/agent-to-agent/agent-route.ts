@@ -299,7 +299,10 @@ function buildGateQuestion(sourceName: string, targetName: string, contentStr: s
   const body = text.length > GATE_CARD_BODY_MAX ? `${text.slice(0, GATE_CARD_BODY_MAX)}… (truncated)` : text;
   const lines = [`Agent "${sourceName}" wants to send a message to "${targetName}":`, '', body];
   if (files.length > 0) lines.push('', `Attachments: ${files.join(', ')}`);
-  lines.push('', 'Approve delivery?');
+  lines.push(
+    '',
+    `Approve, Reject, or "Reject with reason…" to decline and then type a short reason I'll relay to "${sourceName}".`,
+  );
   return lines.join('\n');
 }
 
