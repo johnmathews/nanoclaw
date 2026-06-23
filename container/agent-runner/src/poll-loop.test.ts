@@ -460,7 +460,7 @@ describe('silent-turn recovery', () => {
     let calls = 0;
     const provider = new MockProvider({}, (prompt) => {
       calls++;
-      return prompt.includes('no reply to the user') ? '<message to="wa">Hoi John!</message>' : '';
+      return prompt.includes('Delivery check') ? '<message to="wa">Hoi John!</message>' : '';
     });
     const query = provider.query({ prompt: 'Hoi', cwd: '/tmp' });
     setTimeout(() => query.end(), 120);

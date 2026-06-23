@@ -219,11 +219,26 @@ entries with `[migration-only]` so they're easy to prune later.
     - **Instruction reinforcement** (`mcp-tools/core.instructions.md`) —
       "Always reply to a user's chat message … stay silent only when a task
       explicitly tells you to."
-    - Lives in the image, so it goes live on the next container cold-start;
-      **no host restart** needed (host spawns by `:latest`, resolved at
-      `docker run`; all groups use the base image — no custom `image_tag`).
-    - Residual: the nudge fires **once**; if the model whiffs *and* ignores
-      the nudge, the turn still ends silent (bounded, rare). The fix
-      removes the manual-`"?"` symptom, it does not stop the model from
-      occasionally producing an empty turn in the first place. Tests:
+    - **Deployment**: the agent-runner source is **bind-mounted live** from
+      the host (`src/container-runner.ts` ~343:
+      `container/agent-runner/src` → `/app/src`, read-only) — it is NOT
+      baked into the image (the image's `/app` has no `src`). So a source
+      edit needs **no image rebuild and no host restart**; it applies to the
+      next container that *cold-starts*. A warm container keeps the old code
+      in memory (Bun loads `index.ts` once at spawn) until it cycles — to
+      force a live change immediately, kill the running container
+      (`ncl groups restart`).
+    - **Observed failure mode (2026-06-23):** the model often ends a chat
+      turn with an `<internal>`-only body insisting it "already sent via
+      send_message" — but the outbound log is empty (it never called the
+      tool, or it answered an earlier message and conflated a newer one).
+      The first, soft nudge ("you may stay silent") let it rationalize this
+      as a "false alarm" and stay silent. The nudge was hardened to state
+      factually that the outbound log is empty and to forbid an
+      `<internal>`-only reply (when the nudge fires we *know*
+      `deliveredThisTurn === 0`, so the assertion is always true).
+    - Residual: the nudge fires **once** per silent run; if the model
+      ignores even the hardened nudge the turn still ends silent (bounded,
+      rare). The fix targets the manual-`"?"` symptom; it does not stop the
+      model from producing an empty turn in the first place. Tests:
       `poll-loop.test.ts` "silent-turn recovery" (×4).

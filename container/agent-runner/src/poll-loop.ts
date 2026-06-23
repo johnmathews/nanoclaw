@@ -589,9 +589,11 @@ export async function processQuery(
           silentNudgeStreak += 1;
           log('Silent turn on a chat message — nudging the agent to reply');
           query.push(
-            `<system>You produced no reply to the user's message — nothing was delivered to the channel. ` +
-              `If a reply is warranted, send it now wrapped in <message to="name">...</message>. ` +
-              `If you genuinely have nothing to say, you may stay silent.</system>`,
+            `<system>Delivery check: the outbound log for this turn is EMPTY — nothing reached the user. ` +
+              `If you believe you already sent a reply (e.g. via send_message), that send did NOT record a delivery, ` +
+              `or it answered an earlier message and the user's latest message is still unanswered. This is not a false alarm. ` +
+              `Reply to the user's most recent message now, wrapped in <message to="name">...</message>. ` +
+              `Do not respond with only <internal> — that delivers nothing.</system>`,
           );
         } else {
           // Baseline the counter for the next turn only once this turn settled
