@@ -416,7 +416,7 @@ describe('error result with no <message> envelope', () => {
     const budgetText = 'Spending limit reached. Add your own key at https://example.com/keys';
     const { query, pushes } = makeResultQuery({ type: 'result', text: budgetText, isError: true });
 
-    await processQuery(query, ERR_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+    await processQuery(query, ERR_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined, false, false);
 
     const out = getUndeliveredMessages();
     expect(out).toHaveLength(1);
@@ -430,11 +430,114 @@ describe('error result with no <message> envelope', () => {
   it('still nudges (and does not deliver) a normal unwrapped result', async () => {
     const { query, pushes } = makeResultQuery({ type: 'result', text: 'bare text, no envelope' });
 
-    await processQuery(query, ERR_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined);
+    await processQuery(query, ERR_ROUTING, ['m1'], 'claude', undefined, 'prompt', undefined, false, false);
 
     expect(getUndeliveredMessages()).toHaveLength(0);
     expect(pushes).toHaveLength(1);
     expect(pushes[0]).toContain('was not delivered');
+  });
+});
+
+describe('silent-turn recovery', () => {
+  function seedWaDestination(): void {
+    getInboundDb()
+      .prepare(
+        `INSERT INTO destinations (name, display_name, type, channel_type, platform_id, agent_group_id)
+         VALUES ('wa', 'wa', 'channel', 'whatsapp', 'p1', NULL)`,
+      )
+      .run();
+  }
+
+  it('nudges a silent chat turn and delivers the recovered reply', async () => {
+    seedWaDestination();
+    insertMessage('m1', 'chat', { sender: 'John', text: 'Hoi' });
+    const messages = getPendingMessages();
+    const routing = extractRouting(messages);
+    const { markProcessing } = await import('./db/messages-in.js');
+    markProcessing(['m1']);
+
+    // First turn: model whiffs (empty). After the nudge it sends the reply.
+    let calls = 0;
+    const provider = new MockProvider({}, (prompt) => {
+      calls++;
+      return prompt.includes('no reply to the user') ? '<message to="wa">Hoi John!</message>' : '';
+    });
+    const query = provider.query({ prompt: 'Hoi', cwd: '/tmp' });
+    setTimeout(() => query.end(), 120);
+
+    await processQuery(query, routing, ['m1'], 'mock', undefined, 'Hoi', undefined, false, true);
+
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    expect(JSON.parse(out[0].content).text).toBe('Hoi John!');
+    expect(calls).toBe(2); // original whiff + one nudge that recovered
+  });
+
+  it('does not nudge a non-chat (task) turn that stays silent', async () => {
+    seedWaDestination();
+    insertMessage('t1', 'task', { prompt: 'silent task' });
+    const messages = getPendingMessages();
+    const routing = extractRouting(messages);
+    const { markProcessing } = await import('./db/messages-in.js');
+    markProcessing(['t1']);
+
+    let calls = 0;
+    const provider = new MockProvider({}, () => {
+      calls++;
+      return '';
+    });
+    const query = provider.query({ prompt: 'silent task', cwd: '/tmp' });
+    setTimeout(() => query.end(), 120);
+
+    await processQuery(query, routing, ['t1'], 'mock', undefined, 'silent task', undefined, false, false);
+
+    expect(getUndeliveredMessages()).toHaveLength(0);
+    expect(calls).toBe(1); // no nudge — tasks may complete in silence
+  });
+
+  it('nudges at most once when the model keeps producing nothing', async () => {
+    seedWaDestination();
+    insertMessage('m1', 'chat', { sender: 'John', text: 'Hoi' });
+    const messages = getPendingMessages();
+    const routing = extractRouting(messages);
+    const { markProcessing } = await import('./db/messages-in.js');
+    markProcessing(['m1']);
+
+    let calls = 0;
+    const provider = new MockProvider({}, () => {
+      calls++;
+      return ''; // never replies, even after the nudge
+    });
+    const query = provider.query({ prompt: 'Hoi', cwd: '/tmp' });
+    setTimeout(() => query.end(), 120);
+
+    await processQuery(query, routing, ['m1'], 'mock', undefined, 'Hoi', undefined, false, true);
+
+    expect(getUndeliveredMessages()).toHaveLength(0);
+    expect(calls).toBe(2); // original whiff + exactly one nudge, then it gives up
+  });
+
+  it('does not nudge a chat turn that already replied', async () => {
+    seedWaDestination();
+    insertMessage('m1', 'chat', { sender: 'John', text: 'Hoi' });
+    const messages = getPendingMessages();
+    const routing = extractRouting(messages);
+    const { markProcessing } = await import('./db/messages-in.js');
+    markProcessing(['m1']);
+
+    let calls = 0;
+    const provider = new MockProvider({}, () => {
+      calls++;
+      return '<message to="wa">Hoi terug!</message>';
+    });
+    const query = provider.query({ prompt: 'Hoi', cwd: '/tmp' });
+    setTimeout(() => query.end(), 120);
+
+    await processQuery(query, routing, ['m1'], 'mock', undefined, 'Hoi', undefined, false, true);
+
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1);
+    expect(calls).toBe(1); // replied first time — no nudge
   });
 });
 

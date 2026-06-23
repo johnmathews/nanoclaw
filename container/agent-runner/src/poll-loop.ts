@@ -1,6 +1,6 @@
 import { findByName, getAllDestinations, type DestinationEntry } from './destinations.js';
 import { getPendingMessages, markProcessing, markCompleted, type MessageInRow } from './db/messages-in.js';
-import { writeMessageOut } from './db/messages-out.js';
+import { writeMessageOut, getOutboundWriteCount } from './db/messages-out.js';
 import { getInboundDb, touchHeartbeat, clearStaleProcessingAcks } from './db/connection.js';
 import { clearContinuation, migrateLegacyContinuation, setContinuation } from './db/session-state.js';
 import { clearCurrentInReplyTo, setCurrentInReplyTo } from './current-batch.js';
@@ -260,6 +260,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
         prompt,
         continuation,
         config.provider.supportsMultimodalContent ?? false,
+        expectsReply(keep),
       );
       if (result.continuation && result.continuation !== continuation) {
         continuation = result.continuation;
@@ -332,6 +333,17 @@ function formatMessagesWithCommands(messages: MessageInRow[], nativeSlashCommand
   return parts.join('\n\n');
 }
 
+/**
+ * Whether a batch of inbound messages is conversational input that warrants a
+ * reply. Only `chat` / `chat-sdk` messages (a human talking to the agent) do.
+ * Tasks, webhooks, and system rows routinely complete in silence — a task may
+ * deliver by email only, a reconnect/on-wake nudge may need no action — so they
+ * must never trigger the silent-turn nudge. See {@link processQuery}.
+ */
+function expectsReply(messages: MessageInRow[]): boolean {
+  return messages.some((m) => m.kind === 'chat' || m.kind === 'chat-sdk');
+}
+
 interface QueryResult {
   continuation?: string;
 }
@@ -345,10 +357,21 @@ export async function processQuery(
   initialPrompt: string,
   initialContinuation: string | undefined,
   supportsMultimodal: boolean,
+  initialExpectsReply: boolean,
 ): Promise<QueryResult> {
   let queryContinuation: string | undefined;
   let done = false;
   let unwrappedNudged = false;
+  // Silent-turn recovery: a turn triggered by a user chat message that delivers
+  // nothing (no <message> block, no mid-turn send_message/add_reaction) is
+  // almost always the model whiffing — it returned empty or an <internal>-only
+  // body and the reply it owed never went out. The user then has to nudge with
+  // "?" to shake it loose. Detect that and nudge once automatically. Gated on a
+  // chat trigger (turnExpectsReply) and capped at one nudge per silent run
+  // (silentNudgeStreak) so a model that intends silence can't be looped.
+  let turnExpectsReply = initialExpectsReply;
+  let silentNudgeStreak = 0;
+  let deliveredCountAtTurnStart = getOutboundWriteCount();
   // Prompt queue for the exchange hook — each result event consumes the
   // oldest unanswered prompt, except a wrapping-retry result, which answers
   // the same prompt again. Unused (and unmaintained) when the provider
@@ -432,6 +455,11 @@ export async function processQuery(
         const prompt = formatMessages(keep);
         log(`Pushing ${keep.length} follow-up message(s) into active query`);
         unwrappedNudged = false;
+        // Fresh user input gets a fresh shot at silent-turn recovery: re-arm
+        // the nudge and (re)mark this run as reply-expecting if the follow-up
+        // is conversational.
+        silentNudgeStreak = 0;
+        if (expectsReply(keep)) turnExpectsReply = true;
         query.push(prompt);
         archivePrompts.push(prompt);
         // Follow-up images: same pattern as the initial batch — separate
@@ -505,13 +533,17 @@ export async function processQuery(
         // (send_message) mid-turn, or the message may not need a response
         // at all — either way the turn is finished.
         markCompleted(initialBatchIds);
+
+        let willRetryWrapping = false;
         if (event.text) {
           const { sent, hasUnwrapped } = dispatchResultText(event.text, routing);
           if (sent === 0 && event.isError === true) {
             // Non-retryable error turn (e.g. a 403 billing_error) with no
             // <message> envelope: deliver the notice instead of dropping it as
             // scratchpad, and skip the re-wrap nudge — it would just re-hammer
-            // the failing gateway turn after turn.
+            // the failing gateway turn after turn. The notice goes out through
+            // deliverErrorResult (an outbound write), so the silent-turn check
+            // below sees a delivered turn and won't also nudge.
             deliverErrorResult(event.text, routing);
             notifyExchangeComplete(onExchangeComplete, {
               prompt: archivePrompts[0] ?? initialPrompt,
@@ -519,9 +551,8 @@ export async function processQuery(
               continuation: queryContinuation ?? initialContinuation,
               status: 'error',
             });
-            archivePrompts.shift();
           } else {
-            const willRetryWrapping = hasUnwrapped && !unwrappedNudged;
+            willRetryWrapping = hasUnwrapped && !unwrappedNudged;
             notifyExchangeComplete(onExchangeComplete, {
               prompt: archivePrompts[0] ?? initialPrompt,
               result: event.text,
@@ -539,13 +570,41 @@ export async function processQuery(
                   `Please re-send your response with the correct wrapping.</system>`,
               );
             }
-            // The wrapping-retry result answers the SAME user prompt — keep it
-            // queued so the retry archives against it, not the nudge text.
-            if (!willRetryWrapping) archivePrompts.shift();
           }
-        } else {
-          archivePrompts.shift();
         }
+
+        // Silent-turn recovery. Nothing reached the channel this turn — no
+        // <message> block dispatched and no mid-turn send_message/add_reaction,
+        // measured via the outbound-write counter so every delivery path is
+        // covered (an entirely <internal> body and an empty result both land
+        // here). For a user chat turn that's a dropped reply, not intentional
+        // silence — the model whiffed and the user is left having to type "?".
+        // Nudge once. Skipped while a wrapping retry already recovers this turn,
+        // for non-chat triggers, and after one ignored nudge (streak cap) so a
+        // model that means to stay silent can't be looped.
+        const deliveredThisTurn = getOutboundWriteCount() - deliveredCountAtTurnStart;
+        const silentTurn =
+          deliveredThisTurn === 0 && !willRetryWrapping && turnExpectsReply && silentNudgeStreak < 1;
+        if (silentTurn) {
+          silentNudgeStreak += 1;
+          log('Silent turn on a chat message — nudging the agent to reply');
+          query.push(
+            `<system>You produced no reply to the user's message — nothing was delivered to the channel. ` +
+              `If a reply is warranted, send it now wrapped in <message to="name">...</message>. ` +
+              `If you genuinely have nothing to say, you may stay silent.</system>`,
+          );
+        } else {
+          // Baseline the counter for the next turn only once this turn settled
+          // (delivered something, or we're giving up on a silent one). While a
+          // retry is in flight the baseline stays put so the recovered result
+          // still reads as this turn's delivery.
+          deliveredCountAtTurnStart = getOutboundWriteCount();
+        }
+
+        // Keep the triggering prompt queued while a retry (wrapping or silent)
+        // is in flight so the recovered result archives against it, not the
+        // nudge text.
+        if (!willRetryWrapping && !silentTurn) archivePrompts.shift();
       }
     }
   } catch (err) {

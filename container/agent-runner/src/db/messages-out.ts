@@ -6,6 +6,21 @@
  */
 import { getInboundDb, getOutboundDb } from './connection.js';
 
+/**
+ * Monotonic count of outbound writes this process. Every delivery path —
+ * final <message> blocks (sendToDestination) and the mid-turn MCP tools
+ * (send_message / send_file / edit_message / add_reaction) — flows through
+ * writeMessageOut, so this is the single reliable "did the turn deliver
+ * anything?" signal. The poll loop snapshots it around each result event to
+ * detect a turn that produced nothing and nudge the model to actually reply.
+ */
+let outboundWriteCount = 0;
+
+/** Current process-lifetime outbound write count. See {@link outboundWriteCount}. */
+export function getOutboundWriteCount(): number {
+  return outboundWriteCount;
+}
+
 export interface MessageOutRow {
   id: string;
   seq: number | null;
@@ -73,6 +88,7 @@ export function writeMessageOut(msg: WriteMessageOut): number {
       $content: msg.content,
     });
 
+  outboundWriteCount++;
   return nextSeq;
 }
 

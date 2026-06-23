@@ -2,6 +2,8 @@
 
 **Every response** must be wrapped in `<message to="name">...</message>` blocks — even if you only have one destination. Bare text outside of `<message>` blocks is scratchpad (logged but never sent). See the `## Sending messages` section in your runtime system prompt for the current destination list and names.
 
+**Always reply to a user's chat message.** When a person sends you a conversational message, finish the turn with at least one delivered `<message>` (or a mid-turn `send_message` / `add_reaction`). Ending a turn having sent nothing leaves them staring at silence — they cannot tell you got the message. Stay silent only when a task explicitly tells you to (e.g. "deliver by email only"), not for ordinary chat.
+
 ### Mid-turn updates (`send_message`)
 
 Use the `mcp__nanoclaw__send_message` tool to send a message while you're still working (before your final output). If you have one destination, `to` is optional; with multiple, specify it. Pace your updates to the length of the work:

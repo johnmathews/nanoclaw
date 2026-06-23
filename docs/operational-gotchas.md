@@ -190,3 +190,40 @@ entries with `[migration-only]` so they're easy to prune later.
       tears the stale socket down (forcing a reconnect) and throws
       `ChannelDisconnectedError` so the host defers + re-drives, instead of
       hanging the session's inflight delivery forever.
+
+## Responder behaviour (silent turns)
+
+32. A turn can end having delivered **nothing** — the model returns empty
+    text, or an `<internal>`-only body that strips to nothing. The host
+    logs this as `Indexed conversation history … outCount=0`. For a *task*
+    or *system* trigger that's often legitimate (delivered by email,
+    posted mid-turn via `send_message`, or a reconnect ack like "Tools
+    reconnected, no action needed"). For a **human chat message** it's a
+    dropped reply — the user sees silence and has to poke the chat (`"?"`)
+    to shake the reply loose. This is channel-agnostic (seen on nederlands
+    WhatsApp, Financial Times, HackerNews, Managers' Guide, …); it just
+    screamed loudest on the rapid-fire WhatsApp tutor. Fixed
+    (added 2026-06-23) in the **container** agent-runner, not the host:
+    - **Silent-turn recovery** (`container/agent-runner/src/poll-loop.ts`
+      `processQuery`) — on every `result` event, if nothing reached the
+      channel this turn (measured by the process-wide
+      `getOutboundWriteCount()` in `db/messages-out.js`, which every
+      delivery path — final `<message>` blocks + `send_message` /
+      `send_file` / `edit_message` / `add_reaction` — increments) **and**
+      the turn was triggered by a `chat`/`chat-sdk` message, push one
+      `<system>` nudge asking the model to send its reply. Gated to chat
+      triggers (tasks/digests stay silent), skipped while the wrapping
+      retry already covers the turn, and capped at one nudge per silent run
+      (`silentNudgeStreak`, re-armed on fresh input) so a model that means
+      to stay silent can't be looped.
+    - **Instruction reinforcement** (`mcp-tools/core.instructions.md`) —
+      "Always reply to a user's chat message … stay silent only when a task
+      explicitly tells you to."
+    - Lives in the image, so it goes live on the next container cold-start;
+      **no host restart** needed (host spawns by `:latest`, resolved at
+      `docker run`; all groups use the base image — no custom `image_tag`).
+    - Residual: the nudge fires **once**; if the model whiffs *and* ignores
+      the nudge, the turn still ends silent (bounded, rare). The fix
+      removes the manual-`"?"` symptom, it does not stop the model from
+      occasionally producing an empty turn in the first place. Tests:
+      `poll-loop.test.ts` "silent-turn recovery" (×4).
