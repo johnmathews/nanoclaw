@@ -10,6 +10,10 @@ dist/
 store/
 data/
 logs/
+# Stray session DBs created in the repo root when a script/agent-runner is run
+# with a relative path (real session DBs live under data/, already ignored).
+/inbound.db
+/outbound.db
 
 # Groups - per-installation state, not tracked.
 # CONFIDENTIALITY: per-group content (agent memory, scraped/archived article
