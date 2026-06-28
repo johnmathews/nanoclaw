@@ -98,8 +98,60 @@ export function forwardAttachedFiles(
     return [];
   }
 
-  const targetInboxDir = path.join(sessionDir(target.agentGroupId, target.sessionId), 'inbox', target.messageId);
+  // Target-side containment — mirror of saveAttachments() in session-manager.ts.
+  // A compromised target agent can write inside its own session dir; without
+  // these checks it could pre-place `inbox` (or `inbox/<future-msgId>`) as a
+  // symlink pointing anywhere host-writable, and mkdirSync({recursive}) would
+  // silently no-op on it while the subsequent copyFileSync followed it and
+  // landed attacker-influenced bytes outside the sandbox (#2828).
+  const inboxRoot = path.join(sessionDir(target.agentGroupId, target.sessionId), 'inbox');
+  const targetInboxDir = path.join(inboxRoot, target.messageId);
+
+  // Reject a pre-placed symlink (or non-directory) at either the inbox root or
+  // the per-message subdir BEFORE mkdir. lstatSync does not follow the final
+  // path component, so it sees the link itself even if its target is missing.
+  for (const dir of [inboxRoot, targetInboxDir]) {
+    try {
+      const dirStat = fs.lstatSync(dir);
+      if (dirStat.isSymbolicLink() || !dirStat.isDirectory()) {
+        log.warn('agent-route: rejecting unsafe target inbox path', {
+          targetGroup: target.agentGroupId,
+          targetSession: target.sessionId,
+          targetMsgId: target.messageId,
+          dir,
+        });
+        return [];
+      }
+    } catch {
+      // Does not exist yet — fine, mkdir below will create it.
+    }
+  }
+
   fs.mkdirSync(targetInboxDir, { recursive: true });
+
+  // Defense in depth: the resolved inbox subdir must stay within the resolved
+  // inbox root. Having ruled out symlinks above, realpathSync is trustworthy.
+  try {
+    const realInboxDir = fs.realpathSync(targetInboxDir);
+    const realInboxRoot = fs.realpathSync(inboxRoot);
+    if (!isPathInside(realInboxRoot, realInboxDir)) {
+      log.warn('agent-route: target inbox dir escaped inbox root', {
+        targetGroup: target.agentGroupId,
+        targetSession: target.sessionId,
+        targetMsgId: target.messageId,
+        targetInboxDir,
+      });
+      return [];
+    }
+  } catch (err) {
+    log.warn('agent-route: failed to resolve target inbox dir', {
+      targetGroup: target.agentGroupId,
+      targetSession: target.sessionId,
+      targetMsgId: target.messageId,
+      err,
+    });
+    return [];
+  }
 
   const attachments: ForwardedAttachment[] = [];
   for (const filename of source.filenames) {
@@ -137,7 +189,20 @@ export function forwardAttachedFiles(
       continue;
     }
     const dst = path.join(targetInboxDir, filename);
-    fs.copyFileSync(realSrc, dst);
+    try {
+      // COPYFILE_EXCL: fail with EEXIST rather than follow or overwrite a
+      // pre-placed symlink / existing file at dst — the host is the sole
+      // writer of these attachments.
+      fs.copyFileSync(realSrc, dst, fs.constants.COPYFILE_EXCL);
+    } catch (err) {
+      log.warn('agent-route: refusing to write target inbox file', {
+        sourceMsgId: source.messageId,
+        targetMsgId: target.messageId,
+        filename,
+        err,
+      });
+      continue;
+    }
     attachments.push({
       name: filename,
       filename,
