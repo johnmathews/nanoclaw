@@ -242,3 +242,17 @@ entries with `[migration-only]` so they're easy to prune later.
       rare). The fix targets the manual-`"?"` symptom; it does not stop the
       model from producing an empty turn in the first place. Tests:
       `poll-loop.test.ts` "silent-turn recovery" (×4).
+    - **Deeper fix (deferred — only if the nudge proves insufficient).**
+      The nudge is a recovery band-aid; the root cause is the async
+      multiplexing. nanoclaw batches inbound messages and `query.push()`es
+      follow-ups into an already-running turn (`poll-loop.ts` ~433), so the
+      model loses the clean "this input needs exactly one reply" framing
+      that Claude Code gets for free — it answers message N, message N+1 is
+      folded into the same query, and it thinks N+1 is "already handled"
+      ("already sent via send_message — false alarm"). The real fix is to
+      bind each inbound `chat`/`chat-sdk` row to a *required* delivery and
+      not let a follow-up silently absorb an unanswered message — e.g. track
+      unanswered chat rows per turn and only clear a row once a delivery
+      addressed to its channel/sender lands, otherwise re-prompt
+      specifically for the unanswered message. Bigger change to the batching
+      model than the nudge; do this only if the hardened nudge still leaks.
