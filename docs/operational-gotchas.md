@@ -256,3 +256,26 @@ entries with `[migration-only]` so they're easy to prune later.
       addressed to its channel/sender lands, otherwise re-prompt
       specifically for the unanswered message. Bigger change to the batching
       model than the nudge; do this only if the hardened nudge still leaks.
+
+33. **Silent-turn nudge fired on task ticks that followed a chat**
+    (fixed 2026-07-02, `container/agent-runner/src/poll-loop.ts`). The nudge
+    (item 32) is gated on a `turnExpectsReply` flag. That flag was **set
+    only, never cleared** — the initial chat batch latched it to `true` and
+    it stayed true for the rest of the `processQuery` run. So when a
+    scheduled task fired *later* in the same run (a follow-up `query.push()`
+    into the still-open query, `poll-loop.ts` ~433) and ended silently — as
+    routine-success tasks are documented to — the nudge still fired and
+    forced the background task to emit an extra channel message, violating
+    the "silent on routine success" task contract. Fix: rebind the flag to
+    the current follow-up batch instead of latching —
+    `turnExpectsReply = expectsReply(keep)` (was
+    `if (expectsReply(keep)) turnExpectsReply = true`). A chat follow-up sets
+    it true, a task-only follow-up sets it false. `initialExpectsReply` and
+    the `expectsReply` predicate are untouched. Tradeoff (rare, not
+    addressed): if a task follow-up lands *before* an as-yet-undelivered
+    chat's turn-end fires, the flag clears and that chat's silent-turn nudge
+    is suppressed — in practice the chat's end-of-turn fires first. Regression
+    test: `poll-loop.test.ts` "does not nudge a task follow-up that lands
+    after a completed chat turn" (silent-turn recovery block is now ×5).
+    Deploys on the next container cold-start via the live bind-mount (item
+    32 "Deployment") — no image rebuild or host restart required.
