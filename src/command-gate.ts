@@ -11,7 +11,7 @@
  *   Gated by the same admin check as ADMIN_COMMANDS.
  * - Normal messages: pass through unchanged
  */
-import { getDb, hasTable } from './db/connection.js';
+import { hasAdminPrivilege } from './modules/permissions/db/user-roles.js';
 import { getUsageText } from './usage.js';
 import { formatHealthText } from './health.js';
 import { snapshotHealth } from './health-snapshot.js';
@@ -22,7 +22,7 @@ export type GateResult =
   | { action: 'deny'; command: string }
   | { action: 'respond'; command: string; render: () => Promise<string> };
 
-const FILTERED_COMMANDS = new Set(['/help', '/login', '/logout', '/doctor', '/config', '/remote-control']);
+const FILTERED_COMMANDS = new Set(['/start', '/help', '/login', '/logout', '/doctor', '/config', '/remote-control']);
 const ADMIN_COMMANDS = new Set(['/clear', '/compact', '/context', '/cost', '/files', '/upload-trace']);
 
 /**
@@ -78,16 +78,5 @@ export function gateCommand(content: string, userId: string | null, agentGroupId
 
 function isAdmin(userId: string | null, agentGroupId: string): boolean {
   if (!userId) return false;
-  if (!hasTable(getDb(), 'user_roles')) return true; // no permissions module = allow all
-  const db = getDb();
-  const row = db
-    .prepare(
-      `SELECT 1 FROM user_roles
-       WHERE user_id = ?
-         AND (role = 'owner' OR role = 'admin')
-         AND (agent_group_id IS NULL OR agent_group_id = ?)
-       LIMIT 1`,
-    )
-    .get(userId, agentGroupId);
-  return row != null;
+  return hasAdminPrivilege(userId, agentGroupId);
 }
