@@ -474,7 +474,10 @@ export class ClaudeProvider implements AgentProvider {
           yield { type: 'result', text, isError: m.is_error === true };
         } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'api_retry') {
           yield { type: 'error', message: 'API retry', retryable: true };
-        } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'rate_limit_event') {
+        } else if (message.type === 'rate_limit_event') {
+          // SDK 0.3.x ships this as a top-level message type (SDKRateLimitEvent),
+          // not a `system` subtype — matching the old shape here left this branch
+          // dead and dropped the quota signal entirely.
           yield { type: 'error', message: 'Rate limit', retryable: false, classification: 'quota' };
         } else if (message.type === 'system' && (message as { subtype?: string }).subtype === 'compact_boundary') {
           const meta = (message as { compact_metadata?: { pre_tokens?: number } }).compact_metadata;
