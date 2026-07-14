@@ -539,6 +539,36 @@ describe('silent-turn recovery', () => {
     expect(out).toHaveLength(1);
     expect(calls).toBe(1); // replied first time — no nudge
   });
+
+  it('does not nudge a task follow-up that lands after a completed chat turn', async () => {
+    seedWaDestination();
+    insertMessage('m1', 'chat', { sender: 'John', text: 'Hoi' });
+    const messages = getPendingMessages();
+    const routing = extractRouting(messages);
+    const { markProcessing } = await import('./db/messages-in.js');
+    markProcessing(['m1']);
+
+    let calls = 0;
+    const provider = new MockProvider({}, () => {
+      calls++;
+      if (calls === 1) {
+        // Between turn 1 and turn 2, drop in a silent task follow-up. It gets
+        // picked up by the follow-up poll (ACTIVE_POLL_INTERVAL_MS = 500ms), so
+        // the query has to stay open past one poll tick.
+        setTimeout(() => insertMessage('t1', 'task', { prompt: 'silent task' }), 20);
+        return '<message to="wa">Hoi terug!</message>';
+      }
+      return ''; // task turn stays silent — intentional per task spec
+    });
+    const query = provider.query({ prompt: 'Hoi', cwd: '/tmp' });
+    setTimeout(() => query.end(), 900);
+
+    await processQuery(query, routing, ['m1'], 'mock', undefined, 'Hoi', undefined, false, true);
+
+    const out = getUndeliveredMessages();
+    expect(out).toHaveLength(1); // only the chat reply
+    expect(calls).toBe(2); // chat reply + one silent task turn, no nudge
+  });
 });
 
 describe('isCorruptionError', () => {

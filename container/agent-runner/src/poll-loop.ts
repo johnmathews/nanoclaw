@@ -455,11 +455,13 @@ export async function processQuery(
         const prompt = formatMessages(keep);
         log(`Pushing ${keep.length} follow-up message(s) into active query`);
         unwrappedNudged = false;
-        // Fresh user input gets a fresh shot at silent-turn recovery: re-arm
-        // the nudge and (re)mark this run as reply-expecting if the follow-up
-        // is conversational.
+        // Fresh user input gets a fresh shot at silent-turn recovery. Rebind
+        // the reply expectation to THIS batch — a chat follow-up sets it true,
+        // a task-only follow-up sets it false. Latching to true forever caused
+        // task ticks that follow a chat to trigger the silent-turn nudge and
+        // forced background tasks to emit an extra channel message.
         silentNudgeStreak = 0;
-        if (expectsReply(keep)) turnExpectsReply = true;
+        turnExpectsReply = expectsReply(keep);
         query.push(prompt);
         archivePrompts.push(prompt);
         // Follow-up images: same pattern as the initial batch — separate
