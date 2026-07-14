@@ -20,11 +20,20 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-function pendingRequest(): { requestId: string; query: string; limit: number } {
-  const out = getUndeliveredMessages().find((m) => JSON.parse(m.content).action === 'search_history');
-  if (!out) throw new Error('no search_history action written');
-  const c = JSON.parse(out.content);
-  return { requestId: c.requestId as string, query: c.query as string, limit: c.limit as number };
+// Poll until the handler has written its outbound search_history request rather
+// than assuming a fixed delay — a hard-coded sleep races the handler under load
+// and was the source of intermittent CI failures.
+async function pendingRequest(timeoutMs = 5000): Promise<{ requestId: string; query: string; limit: number }> {
+  const start = Date.now();
+  for (;;) {
+    const out = getUndeliveredMessages().find((m) => JSON.parse(m.content).action === 'search_history');
+    if (out) {
+      const c = JSON.parse(out.content);
+      return { requestId: c.requestId as string, query: c.query as string, limit: c.limit as number };
+    }
+    if (Date.now() - start > timeoutMs) throw new Error('no search_history action written');
+    await sleep(10);
+  }
 }
 
 function injectReply(requestId: string, frame: Record<string, unknown>): void {
@@ -51,8 +60,7 @@ describe('search_history — validation', () => {
 describe('search_history — round-trip', () => {
   it('writes the request payload and clamps the limit', async () => {
     const p = searchHistory.handler({ query: 'rollout plan', limit: 999 });
-    await sleep(50);
-    const req = pendingRequest();
+    const req = await pendingRequest();
     expect(req.query).toBe('rollout plan');
     expect(req.limit).toBe(50); // clamped to max
 
@@ -70,8 +78,7 @@ describe('search_history — round-trip', () => {
 
   it('formats a no-match reply', async () => {
     const p = searchHistory.handler({ query: 'nonexistent' });
-    await sleep(50);
-    const req = pendingRequest();
+    const req = await pendingRequest();
     injectReply(req.requestId, { ok: true, query: 'nonexistent', results: [] });
     const r = await p;
     expect(r.content[0].text).toContain('No matches');
@@ -79,8 +86,7 @@ describe('search_history — round-trip', () => {
 
   it('surfaces index_unavailable as a friendly error', async () => {
     const p = searchHistory.handler({ query: 'anything' });
-    await sleep(50);
-    const req = pendingRequest();
+    const req = await pendingRequest();
     injectReply(req.requestId, { ok: false, error: 'index_unavailable' });
     const r = await p;
     expect(r.isError).toBe(true);
