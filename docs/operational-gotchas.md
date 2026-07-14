@@ -279,3 +279,58 @@ entries with `[migration-only]` so they're easy to prune later.
     after a completed chat turn" (silent-turn recovery block is now ×5).
     Deploys on the next container cold-start via the live bind-mount (item
     32 "Deployment") — no image rebuild or host restart required.
+
+34. **Container test suite was red on every code PR for ~3 weeks — one test
+    file leaked a signalless poll loop** (fixed 2026-07-14, PR #738,
+    `container/agent-runner/src/upload-trace.test.ts`). The full `bun test`
+    run failed deterministically on two *unrelated* tests
+    (`integration.test.ts` "/clear arrives as a follow-up" and
+    `poll-loop.test.ts` "silent-turn … does not nudge a task follow-up"),
+    both of which pass in isolation. Root cause: `upload-trace.test.ts`'s
+    local `runPollLoopWithTimeout` helper called `runPollLoop({...})`
+    **without `signal`** — unlike the identical helper in
+    `integration.test.ts`. With no signal, `runPollLoop`'s
+    `config.signal?.aborted` check never fires, so `controller.abort()` only
+    settled the wrapping `Promise.race` while the underlying loop **ran
+    forever**, polling the shared global session DB every second into every
+    later test file, `markProcessing`-ing (stealing) their pending messages
+    and throwing `unable to open database file` after each `closeSessionDb()`.
+    This is exactly what the `PollLoopConfig.signal` doc comment warns about.
+    Fix = one line: thread `signal` through (no prod change — prod never
+    passes a signal). Debugging lesson: treat "flaky" full-suite-only
+    failures as **deterministic cross-file pollution** and bisect with
+    explicit file args (`bun test A.test.ts B.test.ts`) to find the polluter,
+    rather than bumping timeouts. Verified with 16 consecutive green full-suite
+    runs (164→165 pass / 0 fail). A separate, genuinely-flaky test
+    (`search_history` fixed-`sleep(50)` race) was deflaked the same day in
+    PR #736 (poll-until-present).
+
+35. **Restarting the host re-reads `.env`; a truncated or root-owned `.env`
+    silently drops Slack + the OneCLI host client** (incident + recovery
+    2026-07-14). The host runs compiled `dist/`
+    (`ExecStart=/usr/bin/node .../dist/index.js`) and reads secrets from
+    `.env` via `readEnvFile` at process start. On 2026-07-14 a routine
+    restart (to deploy host `src/` changes) surfaced that `.env` had been
+    **truncated and chowned to `root:600` on 2026-07-12** — `SLACK_SIGNING_SECRET`,
+    `ONECLI_URL`, `ONECLI_API_KEY` were gone. The 11-day-old process held the
+    full set in memory, so nothing broke until the restart. Consequences:
+    Slack loaded its token then threw `signingSecret is required`; the OneCLI
+    host SDK (`new OneCLI({ url: ONECLI_URL, apiKey: ONECLI_API_KEY })` in
+    `container-runner.ts`) fell back to cloud `api.onecli.sh` and 401'd on
+    every `wakeContainer` (766 times — noisy but non-fatal; containers still
+    spawn, they get creds via the *local* proxy at request time). WhatsApp
+    survived (file-based auth in a separate dir). **Recovery:** `.env` must be
+    `john`-owned and readable (`sudo chown john:john .env` — run in a real
+    terminal, NOT via a tool `!` prefix, which can't answer the sudo password
+    prompt); add `ONECLI_URL=http://172.17.0.1:10254` (the local proxy from
+    `~/.onecli/config.json`; it needs no auth so `ONECLI_API_KEY` can stay
+    unset); restore `SLACK_SIGNING_SECRET` from api.slack.com (app → Basic
+    Information → Signing Secret; `SLACK_APP_TOKEN` in `.env` is unused — the
+    adapter is HTTP-mode, not socket-mode). **Deploy = `pnpm run build` then
+    `systemctl --user restart nanoclaw-583cc1c4`** (host `src/` only — container
+    `src/` needs neither, per item 32). **Before any host restart, diff needed
+    vs present env keys** — `grep -rhoE "readEnvFile\(\[[^]]*\]" src/` gives the
+    needed set. For this install only two of the "missing" keys ever matter
+    (`ONECLI_URL`, `SLACK_SIGNING_SECRET`); `RESEND_*` (0 wired channels),
+    `WHATSAPP_*` (WA works without), `TZ` (system is `Europe/Amsterdam`), and
+    `ANTHROPIC_BASE_URL` are optional/unused here.
