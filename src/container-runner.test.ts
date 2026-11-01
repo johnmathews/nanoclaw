@@ -5,7 +5,8 @@ import path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { ContainerConfig } from './container-config.js';
-import { _syncSkillSymlinksForTesting, resolveProviderName } from './container-runner.js';
+import { isReservedContainerEnv } from './container-config.js';
+import { _syncSkillSymlinksForTesting, CLAUDE_CODE_QUIET_ENV, resolveProviderName } from './container-runner.js';
 
 function makeConfig(skills: string[] | 'all'): ContainerConfig {
   return {
@@ -140,5 +141,34 @@ describe('learn-skill SKILL.md presence', () => {
     expect(body).toMatch(/^## Verification$/m);
     // Teaches the load-bearing rule.
     expect(body.toLowerCase()).toContain('unique');
+  });
+});
+
+describe('CLAUDE_CODE_QUIET_ENV', () => {
+  it('names exactly the flags the shipped claude binary reads', () => {
+    // Verified against the strings in
+    // @anthropic-ai/claude-agent-sdk-linux-x64/claude in the agent image.
+    // A rename here silently brings the Datadog traffic back, so the names
+    // are asserted literally rather than derived.
+    expect([...CLAUDE_CODE_QUIET_ENV]).toEqual([
+      'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
+      'DISABLE_TELEMETRY',
+      'DISABLE_ERROR_REPORTING',
+    ]);
+  });
+
+  it('is set on every spawned container, before per-group env', () => {
+    const source = fs.readFileSync(path.join(import.meta.dirname, 'container-runner.ts'), 'utf-8');
+    // The loop lives in buildContainerArgs, which every spawn goes through.
+    expect(source).toMatch(/for \(const key of CLAUDE_CODE_QUIET_ENV\)\s*\{\s*\n\s*args\.push\('-e', `\$\{key\}=1`\);/);
+    // Ordering matters: operator env (container.json `env`) is pushed after,
+    // so a group can still deliberately re-enable telemetry.
+    expect(source.indexOf('CLAUDE_CODE_QUIET_ENV')).toBeLessThan(source.indexOf('containerEnvArgs('));
+  });
+
+  it('uses no key the container runner would filter as reserved', () => {
+    for (const key of CLAUDE_CODE_QUIET_ENV) {
+      expect(isReservedContainerEnv(key)).toBe(false);
+    }
   });
 });

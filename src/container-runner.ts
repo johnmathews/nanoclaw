@@ -53,6 +53,20 @@ import type { AgentGroup, Session } from './types.js';
 
 const onecli = new OneCLI({ url: ONECLI_URL, apiKey: ONECLI_API_KEY });
 
+/**
+ * Env vars that switch off the bundled Claude Code binary's non-essential
+ * outbound traffic (telemetry, error reporting, auto-update). Set on every
+ * agent container: this install has no Datadog, so each attempt is just a
+ * refused connection and a gateway WARN. Verified against the strings in
+ * `@anthropic-ai/claude-agent-sdk-linux-x64/claude` — if a future SDK bump
+ * renames them, the Datadog WARNs in the gateway log come back.
+ */
+export const CLAUDE_CODE_QUIET_ENV = [
+  'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
+  'DISABLE_TELEMETRY',
+  'DISABLE_ERROR_REPORTING',
+] as const;
+
 /** Active containers tracked by session ID. */
 const activeContainers = new Map<string, { process: ChildProcess; containerName: string }>();
 
@@ -453,6 +467,17 @@ async function buildContainerArgs(
   // Environment — only vars read by code we don't own.
   // Everything NanoClaw-specific is in container.json (read by runner at startup).
   args.push('-e', `TZ=${TIMEZONE}`);
+
+  // Non-essential outbound traffic from the bundled Claude Code binary. Its
+  // telemetry/error reporting posts to http-intake.logs.us5.datadoghq.com and
+  // api.datadoghq.com, which this install does not use: the egress-locked
+  // gateway refuses the connection and logs a WARN per attempt (a few hundred
+  // a day across agent groups). The three names are what the shipped binary
+  // actually reads; the umbrella flag covers telemetry, error reporting and
+  // the auto-updater, the other two are belt-and-braces for older binaries.
+  for (const key of CLAUDE_CODE_QUIET_ENV) {
+    args.push('-e', `${key}=1`);
+  }
 
   // Provider-contributed env vars (e.g. XDG_DATA_HOME, OPENCODE_*, NO_PROXY).
   if (providerContribution.env) {
