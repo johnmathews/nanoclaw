@@ -46,7 +46,7 @@ or CLI resource file; they will collide with upstream's.
 | `c6a22695` | Strict approver — only the named user may resolve | **VERIFY** — upstream has the column; confirm it enforces strictly in `modules/approvals/response-handler.ts`, else re-apply. |
 | `3a9dd645` | Render OneCLI approvals from the gateway's structured summary | **DROP** — upstream ships `src/gateway-approval-summary.ts` and `src/gateway-approval-presentation.ts`. |
 | `447e5e75` | Colored buttons on approval cards (Slack primary/danger) | **VERIFY** — upstream has `danger`/`primary` styling in 12 files; confirm the approval card itself is styled before re-applying. |
-| `f826de71` | **Reject-with-reason** — relay an optional decline reason back to the agent | **PORT** — 0 upstream occurrences. Touches `src/db/sessions.ts`, `src/host-sweep.ts`, `src/modules/approvals/{finalize,index}.ts` + `reason-capture.ts`. |
+| `f826de71` | **Reject-with-reason** — relay an optional decline reason back to the agent | **DROP (verdict corrected 2026-11-02)** — upstream has it: `awaiting_reason` (7 files), `reason-capture` (2), `"Reject with reason"` (11) at the tag. The commit is itself a cherry-pick of upstream `e8148bc0`. My first probe searched the wrong names. See `08-deep-intents.md` §8.3. |
 
 ## 7.4 Agent-runner turn handling
 
@@ -70,7 +70,7 @@ or CLI resource file; they will collide with upstream's.
 
 | Commits | Item | Verdict |
 |---|---|---|
-| `ef38c0f4` | Stop silently losing outbound messages on Slack & WhatsApp — adds `src/channels/delivery-errors.ts` | **PORT (rework)** — upstream `src/channels/` has no `delivery-errors.ts`, but it does have `src/delivery-guard.ts` and `delivery-attempts-authority.test.ts`. Read those first: upstream may now own this concern in a different place. |
+| `ef38c0f4` | Stop silently losing outbound messages on Slack & WhatsApp — adds `src/channels/delivery-errors.ts` | **PORT (rebase the bookkeeping)** — confirmed fork-only; upstream's `delivery-guard.ts` is the approval-consult path, unrelated. But upstream now has durable attempt bookkeeping in the central DB (`delivery_attempts`, migration `024-host-coordination.ts`), so port the taxonomy and dispositions **onto that** rather than the fork's session-DB `delivered` columns. Full intent: `08-deep-intents.md` §8.2. |
 | `2c7f6245` | Deliver WhatsApp replies promptly rather than on the next inbound | **PORT** — WhatsApp is a `channels`-branch adapter; re-apply with §2.3. |
 
 ## 7.7 Container runtime and build
@@ -90,16 +90,17 @@ or CLI resource file; they will collide with upstream's.
 | `9e907b02` | Gitignore stray root-level `inbound/outbound.db` artifacts | **PORT** — one line, with §6.7. |
 | `82b7c7ba`, `a4a5009e`, `acda17c6` | Journal and operational-gotchas entries | **PORT** — content only, with §6.9. |
 
-## 7.9 Remaining work before the replay
+## 7.9 Deep intents — extracted
 
-This inventory is classification, not full intent extraction. Three items still need the
-treatment sections 01–06 give their features — file lists, exact code shapes, test
-expectations — because they are **PORT** and non-trivial:
+The three items flagged here have been worked through in **`08-deep-intents.md`**, and one of
+them evaporated:
 
-1. **Silent-turn auto-recovery** (§7.4) — the nudge logic and its hardening.
-2. **Reject-with-reason** (§7.3) — five host files plus the reason-capture path.
-3. **Outbound-loss guard** (§7.6) — and the decision whether upstream's `delivery-guard.ts`
-   already covers it.
+| Item | Outcome |
+|---|---|
+| Silent-turn auto-recovery | **PORT** — full intent at §8.1, with the per-batch flag-reset bug, the hardened nudge text, the invariants, and a note to re-check upstream's batching model first. |
+| Outbound-loss guard | **PORT** — full intent at §8.2, rebased onto upstream's `delivery_attempts` table. |
+| Reject-with-reason | **DROP** — it is upstream's own feature; see §8.3. |
 
-Everything else is either a **DROP** (adopt upstream) or small enough to re-apply from the
-commit directly.
+No further extraction is outstanding. Everything remaining in this section is either a
+**DROP**, a **VERIFY** (a named upstream file to read before deciding), or small enough to
+re-apply from the commit directly.

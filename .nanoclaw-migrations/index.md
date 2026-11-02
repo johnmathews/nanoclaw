@@ -144,9 +144,15 @@ by intent.
 
 ## 1.6 Section 07 — fork work since the June rebuild
 
-**42 fork-local commits** (`1c9ff93c..HEAD`) post-date every section file and are not
-documented anywhere. These are a real part of the customization set and must be extracted
-before the replay. Inventory and classification: `07-since-june-rebuild.md`.
+**42 fork-local commits** (`1c9ff93c..HEAD`) post-date every section file and were not
+documented anywhere. Inventory and classification: `07-since-june-rebuild.md`. The two
+non-trivial ports it identified are extracted in full in `08-deep-intents.md` (silent-turn
+recovery; the outbound-loss guard, rebased onto upstream's `delivery_attempts` table). A
+third, reject-with-reason, proved to be upstream's own feature — §8.3 records the correction.
+
+The two largest clusters in §7 — a2a per-message approval policies and the approvals approver
+model — are upstream features at this tag, so they become "adopt upstream, then diff the
+nuances" rather than ~20 commits of replay.
 
 ## 1.7 Order of operations
 
@@ -166,7 +172,8 @@ Validate with `pnpm run build && pnpm test` after each numbered stage.
 6. **Container agent-runner** — §03 multimodal/reactions, §6.1 stripping.
 7. **Container build surface** — Dockerfile MCP layer, container skills (porting only the
    four-plus-two that survive the matrix).
-8. **§7 items** — the 42 commits, per `07-since-june-rebuild.md`.
+8. **§7/§8 items** — the 42 commits, per `07-since-june-rebuild.md` and the full
+   intents in `08-deep-intents.md`.
 9. **Config** — `.env` gains `NANOCLAW_DEFAULT_MODEL=claude-opus-4-7`; misc config from §6.7.
 10. **Validate + live round-trip** — host build + tests, container typecheck + `bun test`,
     container image build, then post into `#nanoclaw-introspection` (Slack `C0AMETJFW9X`)
