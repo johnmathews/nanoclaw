@@ -1,5 +1,15 @@
 # Section 06 — Infra Fixes & Config
 
+> **REFRESH 2026-11-02 — read `index.md` §1.5.6 first.**
+> **§6.4 is DROPPED** — upstream ships `src/modules/mount-security/index.test.ts`.
+> **§6.5 is DROPPED** — upstream removed Step 0a, Step 7.9 and the Diagnostics section, and
+> has no `diagnostics.md`. **§6.6 is rewritten**: upstream has **no** `@onecli-sh/sdk`
+> dependency (OneCLI installs via `/add-onecli`, which pins gateway 1.42.0 / cli 2.2.5 /
+> sdk 2.2.1 — what this host already runs), so locked decision #2 is obsolete.
+> **§6.3 is load-bearing**: upstream still emits `-v2-` infixes, so without it the rebuilt
+> install's unit and image names stop matching the running `nanoclaw-583cc1c4` service.
+> §6.1 and §6.2 verified still fork-only.
+
 > Recover bodies with `git show 971239a:<path>`.
 
 ---

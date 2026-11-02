@@ -1,5 +1,12 @@
 # Section 03 — Multimodal & Reactions
 
+> **REFRESH 2026-11-02 — verified still fully fork-only; **PORT ALL**.**
+> Checked against the target tag: `multimodal.ts`, `ImageContentBlock` /
+> `supportsMultimodalContent`, `query_reactions`, `pdf-extract.ts`, `transcription.ts` and the
+> `reactions` skill all have **0** upstream occurrences. Caveat: `providers/claude.ts`,
+> `poll-loop.ts` and `formatter.ts` have moved on upstream, so apply by intent, not by patch.
+> See `index.md` §1.5.3.
+
 Host-side preprocessing (PDF/voice) + container-side rendering (image blocks, voice/PDF
 prose) + the reactions MCP tool. The chat-sdk-bridge / WhatsApp consumers of the host
 modules are in §02.

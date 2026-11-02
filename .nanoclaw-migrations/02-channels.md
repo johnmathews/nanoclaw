@@ -1,5 +1,14 @@
 # Section 02 — Channels
 
+> **REFRESH 2026-11-02 — read `index.md` §1.5.2 first; it overrides this file.**
+> The pinned versions listed here are **stale**: upstream exact-pins `chat` and the adapters
+> at **4.29.0**. The approval-card actor byline (§2.1 item 8) is **upstream already**
+> (`chat-sdk-bridge-byline.test.ts` ships at the tag) — skip it. `chat-sdk-bridge.ts` gained
+> five new upstream test suites, so re-apply by intent rather than `git diff` paste. BREAKING
+> #4 reworked the Slack experience (per-agent provisioned apps, agent spawning), so read
+> upstream's `slack.ts` before §2.2. The `slack-formatting` / `whatsapp-formatting` container
+> skills now ship with their channel skills — do not port the fork's copies.
+
 Channel adapters are NOT in upstream trunk — they live on the `channels` branch and are
 installed by `/add-<channel>` skills (copy files + append a self-registration import to
 `src/channels/index.ts` + `pnpm install` a pinned dep). On clean upstream these files

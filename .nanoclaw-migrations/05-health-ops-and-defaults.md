@@ -1,5 +1,15 @@
 # Section 05 — Health/Ops, Slash Commands & Defaults
 
+> **REFRESH 2026-11-02 — read `index.md` §1.5.5 first.**
+> §5.4 (default model Opus) is **DROPPED and replaced**: upstream reads
+> `NANOCLAW_DEFAULT_MODEL` (`src/config.ts`) and applies it as the per-group fallback
+> (`src/container-config.ts`), so set `NANOCLAW_DEFAULT_MODEL=claude-opus-4-7` in `.env`
+> instead of carrying a migration and a hardcoded constant. §5.1 is still needed but should
+> build on upstream's new `src/slash-command.ts` parsing helpers. §5.2/§5.3 verified still
+> fork-only (`src/liveness.ts` is session-claim liveness, not host health — no overlap).
+> §5.5 renumbers to 026+. §5.6: check `.claude/skills/add-onecli/payload/src/gateway-providers/`
+> before re-adding identifier sanitization. §5.7 remains a skip.
+
 > Recover bodies with `git show 971239a:<path>`.
 
 The `/status` and `/usage` chat commands share a host-responder path through the command gate +

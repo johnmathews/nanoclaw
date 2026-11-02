@@ -1,111 +1,207 @@
-# NanoClaw Migration Guide
+# 1. NanoClaw migration guide — Phase 2 onto v2026.10.0
 
-Generated: 2026-06-15
-Base (merge-base where fork diverged): `2492259` (2026-05-25)
-HEAD at generation: `971239a`
-Upstream at generation: `acbb114`
+Refreshed: **2026-11-02**. Verified against upstream tag **`v2026.10.0`** (2026-10-09).
+Fork HEAD at refresh: `e35bb0dd`. Merge-base with upstream: `acbb1144b` (2026-06-15).
 
-This guide lets a fresh Claude session reproduce this fork's customizations on a
-**clean upstream checkout** (intent-based migration, not merge). It was extracted
-by `/migrate-nanoclaw` Phase 1. The upgrade (Phase 2) has **not** been run yet.
+This guide lets a fresh session reproduce this fork's customizations on a clean upstream
+checkout (intent-based migration, not merge). The six section files hold the detailed
+intents; **this index is authoritative where it contradicts them**, because they were
+written against June's upstream and have not been rewritten.
 
-## Operator decisions (locked 2026-06-15)
+## 1.1 What changed since the last version of this guide
 
-1. **Channel-instance / multi-instance dimension → ACCEPT DORMANT.** Upstream has
-   re-introduced the instance dimension this fork removed. Do **not** re-remove it.
-   Build on clean upstream as-is; the instance column/routing stays present but
-   unused (opt-in via config). All fork customizations layer on top of upstream's
-   current schema. Where a fork commit removed instance code (e.g. `reply_mode`
-   migrations replaced `016-messaging-group-instance.ts`, router/delivery dropped
-   `instance` args), **re-apply only the fork's net feature** (reply_mode, etc.) on
-   top of upstream's instance-aware code — do not delete upstream's instance logic.
+The previous index (`index-2026-06-15-executed.md`, kept for provenance) planned a replay
+onto upstream **2.1.16**. That replay **was executed** — commit `1c9ff93c
+"migrate: rebuild fork customizations on upstream 2.1.16 (intent-based)"`. So the current
+tree already *is* upstream 2.1.16 plus replayed customizations, plus **42** fork commits
+made since.
 
-2. **OneCLI SDK → TARGET 2.2.1 + gateway upgrade.** Clean upstream is on
-   `@onecli-sh/sdk` 2.2.1 (BREAKING vs the fork's 0.5.0). Keep upstream's 2.2.1 and
-   perform the OneCLI gateway upgrade per `docs/onecli-upgrades.md` during Phase 2.
-   Do **not** pin back to 0.5.0.
+This refresh therefore plans a **second** replay, onto a much more distant base:
 
-## Migration plan (order of operations)
+| | June 2026 replay | This replay |
+|---|---|---|
+| Target | upstream 2.1.16 | upstream **v2026.10.0** |
+| Upstream commits to absorb | ~40 | **1129** |
+| `[BREAKING]` items to action | few | **19** |
+| Customization set | the 6 section files | the 6 section files **+ §7 (42 commits)** |
 
-Phase 2 should proceed in this order; validate (`pnpm run build && pnpm test`) after
-each numbered stage:
+## 1.2 Why intent replay rather than merge
 
-1. **DB schema & migrations first** — renumber fork migrations 016–021 to the next
-   free numbers after whatever upstream/main now has in `src/db/migrations/`, then
-   register them. See `01-learning-and-memory.md` and `05-health-ops-and-defaults.md`.
-   (Migration numbering is the single biggest collision risk — do this carefully.)
-2. **Host-side standalone modules** — copy new files that have no upstream conflict:
-   `src/db/search-index-db.ts`, `src/db/task-outcomes.ts`, `src/search-index.ts`,
-   `src/pdf-extract.ts`, `src/transcription.ts`, `src/onecli-identifier.ts`,
-   `src/usage.ts`, `src/health*.ts`, `src/watchdog.ts`, `src/modules/memory/*`,
-   `src/modules/search/*`.
-3. **Host-side edits to upstream files** — `container-config.ts`, `container-runner.ts`,
-   `claude-md-compose.ts`, `command-gate.ts`, `router.ts`, `delivery.ts`,
-   `host-sweep.ts`, `index.ts`, `db/container-configs.ts`, `db/messaging-groups.ts`,
-   `types.ts`, `cli/*`, `modules/index.ts`, `modules/approvals/onecli-approvals.ts`,
-   `modules/agent-to-agent/create-agent.ts`. **High merge-risk files:** `index.ts`,
-   `container-runner.ts`, `host-sweep.ts` (upstream refactored these heavily — read
-   the upstream version before editing).
-4. **Channels** — run `/add-whatsapp`, `/add-slack`, `/add-resend` (in that order),
-   then re-apply the fork's per-channel modifications. See `02-channels.md`.
-5. **Container agent-runner** — new MCP tools + edits. See
-   `03-multimodal-and-reactions.md` and `01-learning-and-memory.md` (container side).
-   Run `cd container/agent-runner && bun install` then
-   `pnpm exec tsc -p container/agent-runner/tsconfig.json --noEmit`.
-6. **Container build surface** — Dockerfile (Gmail/GCal MCPs), container skills. See
-   `04-container-env-and-build.md`.
-7. **Config & misc** — `04`/`06` section files (Dockerfile, .gitignore, husky, etc.).
-8. **OneCLI gateway upgrade** — per decision #2 and `docs/onecli-upgrades.md`.
-9. **Validate + live round-trip** — build, test, container build, then post into
-   `#nanoclaw-introspection` (Slack `C0AMETJFW9X`) and confirm a reply lands.
+Upstream re-architected the layers this fork edits. Merging 1129 commits into 43 fork
+commits produces semantic conflicts (fork code calling APIs that no longer exist), not
+textual ones, and the known local failure mode is a merge that builds clean and silently
+drops behaviour. Relevant upstream churn since the merge-base: `container-runner.ts` 39
+commits, `delivery.ts` 21, `host-sweep.ts` 17, `router.ts` 15, `index.ts` 10.
 
-## Round-trip tool architecture (read before porting memory/search)
+## 1.3 Structural changes that invalidate assumptions in the section files
 
-`remember` and `search_history` are **host↔container round-trip** tools, not direct
-DB writers. The container can't write group source files or open the host index DB,
-so: container MCP tool writes a `system` action row to `outbound.db` → host delivery
-layer handles the action, applies the change, writes a deterministically-named reply
-(`rem-resp-<id>` / `search-resp-<id>`) into `inbound.db` with `trigger=0` (no re-wake)
-→ container polls `findResponseById` until it arrives. **Both halves must be ported or
-the tool times out after 30s.** See `01-learning-and-memory.md`.
+Read this before touching any section file. Each of these breaks instructions written in
+June.
 
-## Table of contents
+| Change | Consequence for the replay |
+|---|---|
+| **`src/db/session-db.ts` is gone.** Replaced by `src/mailbox/` (`compose.ts`, `model.ts`, `registry.ts`, `sqlite/`, `types.ts`) plus `src/db/driver.ts` + `driver-registry.ts` + `drivers/`. | Every `insertMessage` / session-DB call in a ported module must be rewritten against the mailbox API. Affects §1.2 and §1.3 directly. |
+| **Central DB access is async behind `DbDriver`** (BREAKING). Migrations gained `migrate.ts`, `registry.test.ts`, `portability.test.ts`. | Ported DB code must be `async`. Migration bodies take `await db.exec(...)`. |
+| **Container runtime moved behind a session-driver seam** (BREAKING). New `src/drivers/`, `src/guard/`, `src/provider-contracts/`. | §4.1 step 5, §6.2, and the telemetry fix (§7) all edit `container-runner.ts` and must be redesigned, not pasted. |
+| **`src/claude-md-compose.ts` → `src/project-doc-compose.ts`** (BREAKING), exporting `composeGroupProjectDoc`, `DEFAULT_PROJECT_DOC`, `renderBaseInstructions`. | Any `composeGroupClaudeMd` import must be retargeted. |
+| **Host modules use one lifecycle registry** — `src/host-lifecycle.ts` (BREAKING). | Modules importing `onShutdown()`/`getShutdownCallbacks()` from `response-registry.js` must move. |
+| **Migrations now run 001–025.** Upstream owns 016–025 with *different* content than the fork's 016–021. | **Every fork migration must be renumbered to 026+.** See §1.5 of `01-learning-and-memory.md` for the relative order. |
+| **Credential gateways install through skills** (BREAKING). Upstream `package.json` has **no** `@onecli-sh/sdk` dependency; OneCLI lives in `.claude/skills/add-onecli/`. | Supersedes locked decision #2 — see §1.4 below. |
+| **Chat SDK + adapters pinned to `4.29.0`** exactly (BREAKING). Fork used 4.26.0. | Use upstream's pin, never the fork's. |
+| **`slack-formatting` / `whatsapp-formatting` container skills moved to the `channels` branch** (BREAKING); they install with their channel. | Do **not** port the fork's copies. |
+| **Scheduled tasks moved from MCP tools to `ncl tasks`** (BREAKING, 27 upstream files). | The fork's MCP scheduling is superseded; `feedback_task_prompts_external` still applies to whatever replaces it. |
+| **Provider-agnostic file-based memory** (BREAKING) — `groups/<folder>/memory/` mounted into the container, agent edits with ordinary file tools; `container/agent-runner/src/memory/{context,hook,session-hook,scaffold}.ts` + templates; `docs/memory.md`; `/migrate-memory` skill. | Supersedes the fork's `remember` round-trip — see §2.1. |
+| Upstream added `src/slash-command.ts` (parsing helpers only: `commandText`, `slashCommandName`, `withoutBotSuffix`). | §5.1's host-responder gate is still needed, but should build on these helpers. |
 
-- `01-learning-and-memory.md` — remember, search_history, task-outcomes, FTS5 index,
-  MEMORY.md/USER.md compose, learn-skill, reporting skill, migrations 020/021.
-- `02-channels.md` — Slack/WhatsApp/Resend re-install + modifications, chat-sdk-bridge.
-- `03-multimodal-and-reactions.md` — image/voice/PDF, query_reactions, host pdf/whisper.
-- `04-container-env-and-build.md` — per-group env (migration 019), Dockerfile, skills.
-- `05-health-ops-and-defaults.md` — health/watchdog, /status, /usage, reply_mode,
-  default model (017), onecli-identifier, migrations 016/017/018.
-- `06-infra-fixes-and-config.md` — internal-tag strip, symlink shadow fix, install-slug,
-  mount-security tests, update-nanoclaw opt-out, package.json, config files, PG scripts.
+## 1.4 Operator decisions — restated
 
-## DO NOT PORT (install-specific one-offs / already-applied data migrations)
+1. **Channel-instance / multi-instance dimension → ACCEPT DORMANT.** Unchanged and still
+   correct. Build on upstream as-is; never re-remove upstream's `instance` column, routing
+   args or migrations. Where a fork commit removed instance code, re-apply **only** the
+   fork's net feature on top.
+2. **OneCLI → ~~target SDK 2.2.1 + gateway upgrade~~ → OBSOLETE, REPLACED.** Clean upstream
+   has no OneCLI dependency at all. Instead: run **`/add-onecli`**, whose
+   `.claude/skills/add-onecli/versions.json` at this tag pins
+   `onecli-gateway 1.42.0`, `onecli-cli 2.2.5`, `onecli-sdk 2.2.1` — **exactly what this
+   host already runs** (gateway and CLI upgraded 2026-11-01, commit `94ffd670`). No gateway
+   work is needed during Phase 2, and 1.43+ remains unsupported. Do not target
+   `upstream/main`, which requires gateway 1.45 + the grants migration.
+3. **Target the tag, not `main`.** `v2026.10.0` is the stable release carrying the four
+   symlink host-FS-escape CVEs, the `/clear` + `/upload-trace` permission bypass fix and the
+   `ncl` cross-group bypass fix. It is 110 commits behind `upstream/main`.
 
-These contain hardcoded IDs for THIS deployment or are one-shot migrations already run:
+## 1.5 Verdict matrix
 
-- `scripts/ft-kickoff.ts` — one-off `#financial-times` trigger, hardcoded channel/sender IDs.
-- `scripts/init-ft-channel.ts` — one-off `#financial-times` bootstrap. Use `/manage-channels`.
-- `scripts/close-non-winner-sessions.ts` — one-shot session cleanup, hardcoded IDs. Already applied.
-- `scripts/externalize-task-prompts.ts` — one-shot task-prompt migration, hardcoded IDs. Already applied.
-- `scripts/setup-ritsya-job-search.ts` — one-off agent-group create, hardcoded IDs. Use `/manage-channels`.
-- `groups/**`, `data/**`, `store/**`, `.env`, `journal/**` — install data/content, never ported by this skill.
-- `.claude/settings.json` `Bash(gh run watch *)` — local convenience permission; port only if wanted.
+Every item in the section files, re-verified against `v2026.10.0`. **PORT** = still
+fork-only, carry it over. **REWORK** = still needed but the instructions are invalid as
+written. **DROP** = upstream covers it, or it no longer applies.
 
-## SKIP (upstream already has these — verified empty `git diff upstream/main..HEAD`)
+### 1.5.1 Section 01 — learning & memory
 
-- Host-sweep `justWoke` grace period (`0743a88`) + `host-sweep-grace.test.ts`.
-- `create_agent` host-side authorization core + `index.ts` registration (`58e018f`); only a
-  small provider-inheritance-removal delta remains fork-side (see `02`/`05` notes — and note
-  per decision #1 we generally keep upstream behavior, so this delta is OPTIONAL).
-- `container/agent-runner/src/mcp-tools/agents.ts` (identical to upstream).
-- `writeOutboundDirect` rw fix — upstream has `eef285b`; fork has equivalent `d8c04b8`. No port needed.
-- pnpm-workspace.yaml supply-chain policy — identical to upstream; **preserve verbatim, never loosen**.
+| Item | Verdict | Why |
+|---|---|---|
+| 1.1 `remember` tool + budgets | **DROP / redesign** | Upstream ships file-based memory the agent edits directly, which removes the reason the fork's host round-trip existed. Adopt upstream's `memory/` tree; carry forward only the char-budget *discipline* (2200 / 1375) as guidance text in `memory/system/definition.md`. Read `docs/memory.md` first. |
+| 1.2 `search_history` (FTS5) | **PORT (rework)** | 0 upstream files. `registerDeliveryAction` survives (7 files), so the round-trip pattern is still viable — but the reply write must move from `session-db.ts` to `src/mailbox/`, and the `host-sweep.ts` indexer hook point has changed. |
+| 1.3 task-outcome log | **PORT (rework)** | `task_outcomes` / `recordTaskOutcome`: 0 upstream. `getMessageForRetry` still exists (4 files) — re-check its home and signature before extending. |
+| 1.4 `learn-skill`, `reporting`, weekly-reflection template | **PORT** | Upstream `container/skills/` holds only `agent-browser`, `frontend-engineer`, `self-customize`, `welcome`. Check upstream's new host-side `learn` skill for overlap with `learn-skill` first. |
+| 1.5 migrations 020/021 | **PORT (renumber)** | Renumber to 026+; keep upstream's async runner shape. |
 
-## Verification checklist (per-feature, when reapplying)
+### 1.5.2 Section 02 — channels
 
-After Phase 2, confirm: every new module is registered in its barrel (`src/modules/index.ts`,
-`container/agent-runner/src/mcp-tools/index.ts`); migrations run cleanly on a fresh DB; host
-build + `pnpm test` green; container typecheck + `bun test` green; container image builds;
-live `#nanoclaw-introspection` round-trip returns a reply.
+| Item | Verdict | Why |
+|---|---|---|
+| Pinned versions | **REWORK** | `chat` is `4.29.0` upstream, exact-pinned by BREAKING. Discard the fork's 4.26.0 list. |
+| 2.1 bridge: multimodal, reactions, blocks/card | **PORT (rework)** | Still fork-only, but `src/channels/chat-sdk-bridge.ts` gained upstream suites (agent-mode, dm-thread, inbound-policy, membership, raw-text) — re-apply onto the new file, don't diff-paste. |
+| 2.1 approval-card actor byline | **DROP** | Upstream has it: `src/channels/chat-sdk-bridge-byline.test.ts` ships at this tag. |
+| 2.2 Slack `send_blocks` + `postBlocks` | **PORT (rework)** | Still fork-only, but BREAKING #4 reworked the Slack experience (per-agent provisioned apps, agent spawning) and added `slack-a2a-rooms`, `slack-agent-flow`, `migrate-slack-agents`. Read upstream `slack.ts` before applying. |
+| 2.3 WhatsApp spill + `classifyConnectionClose` + Baileys v7 | **PORT** | Still fork-only. |
+| `slack-formatting` / `whatsapp-formatting` skills | **DROP** | Ship with their channel skills now. |
+
+### 1.5.3 Section 03 — multimodal & reactions
+
+**All PORT** — verified 0 upstream files for every piece: `multimodal.ts`,
+`ImageContentBlock` / `supportsMultimodalContent`, `query_reactions`, `pdf-extract.ts`,
+`transcription.ts`, the `reactions` container skill. The only caveat is that
+`providers/claude.ts`, `poll-loop.ts` and `formatter.ts` have moved on upstream, so apply
+by intent.
+
+### 1.5.4 Section 04 — container env & build
+
+| Item | Verdict | Why |
+|---|---|---|
+| 4.1 per-group `env` + reserved-key guard | **PORT (rework step 5)** | 0 upstream files. The `container-runner.ts` edit must be redone against the session-driver seam. |
+| 4.2 Dockerfile Gmail/GCal MCP layer | **PORT** | Upstream keeps `cli-tools.json` + `install-cli-tools.sh`, so the layer still slots in — but adopt upstream's pins (`BUN_VERSION=1.4.0`, `PNPM_VERSION=10.34.5`, `NPM_VERSION=10.9.9`), not the fork's. |
+| `add-gmail-tool` / `add-gcal-tool` skills | **PORT (newly identified)** | Not in upstream's skill set — these are fork-local and the section files never listed them. |
+| 4.3 `capabilities`, `status`, `pdf-reader`, `email-sending` skills | **PORT** | No upstream equivalents. |
+| `onecli-gateway` container skill | **DROP** | Comes from `/add-onecli`. |
+| `vercel-cli` container skill | **DROP** | Comes from `/add-vercel`. |
+
+### 1.5.5 Section 05 — health, ops & defaults
+
+| Item | Verdict | Why |
+|---|---|---|
+| 5.1 `respond` host-responder gate | **PORT (rework)** | `HOST_RESPONDER`: 0 upstream. Build on `src/slash-command.ts` helpers; `command-gate.ts`, `router.ts`, `delivery.ts`, `host-sweep.ts` all moved. |
+| 5.2 `/health` + systemd watchdog + `/status` | **PORT** | 0 upstream. `src/liveness.ts` is session-claim liveness, not host health — no overlap. |
+| 5.3 `/usage` + `ncl usage` | **PORT** | 0 upstream. |
+| 5.4 default model Opus 4.7 (migration 017) | **DROP — replaced by config** | Upstream reads `NANOCLAW_DEFAULT_MODEL` (`src/config.ts:47`) and applies it as the per-group fallback (`src/container-config.ts:380`). Set `NANOCLAW_DEFAULT_MODEL=claude-opus-4-7` in `.env`; drop the migration and the hardcoded constant. Honours the standing Opus-default rule with less code. |
+| 5.5 per-channel `reply_mode` | **PORT (renumber)** | 0 upstream; add as new migrations after 025, keeping upstream's `instance` column. |
+| 5.6 OneCLI identifier `oc-` sanitization | **PORT (check first)** | 0 upstream at top level, but OneCLI code now lives in `.claude/skills/add-onecli/payload/src/gateway-providers/` — check there before re-adding. |
+| 5.7 `create_agent` provider-inheritance removal | **DROP** | Already recommended as skip; unchanged. |
+
+### 1.5.6 Section 06 — infra fixes & config
+
+| Item | Verdict | Why |
+|---|---|---|
+| 6.1 `<internal>` tag stripping | **PORT** | `stripInternalTags` exists in upstream `formatter.ts` but `mcp-tools/core.ts` does not call it. |
+| 6.2 symlink shadow-dir fix | **PORT (rework)** | No `isSymbolicLink` handling upstream. High-risk file. |
+| 6.3 install-slug de-`v2` | **PORT — load-bearing** | Upstream still emits `-v2-` infixes. Without this, a rebuilt install's unit/image names become `nanoclaw-v2-583cc1c4`, breaking continuity with the running `nanoclaw-583cc1c4` service. |
+| 6.4 mount-security test port | **DROP** | Upstream ships `src/modules/mount-security/index.test.ts`. |
+| 6.5 `/update-nanoclaw` diagnostics opt-out | **DROP** | Upstream removed Step 0a, Step 7.9 and the Diagnostics section; there is no `diagnostics.md`. |
+| 6.6 package.json pins | **REWORK** | See decision #2 — no OneCLI dep upstream; channel deps come from their skills at upstream's pins. `pnpm-workspace.yaml` stays verbatim, never loosened. |
+| 6.7 misc config (`.gitignore`, husky, settings) | **PORT (selective)** | Unchanged. |
+| 6.8 Paul Graham essay scripts | **PORT (optional)** | Only if recreating that group. |
+| 6.9 docs | **PORT** | Unchanged, but retarget prose naming `claude-md-compose` → `project-doc-compose`. |
+
+## 1.6 Section 07 — fork work since the June rebuild
+
+**42 fork-local commits** (`1c9ff93c..HEAD`) post-date every section file and are not
+documented anywhere. These are a real part of the customization set and must be extracted
+before the replay. Inventory and classification: `07-since-june-rebuild.md`.
+
+## 1.7 Order of operations
+
+Validate with `pnpm run build && pnpm test` after each numbered stage.
+
+1. **Checkout + skills** — clean `v2026.10.0`; run `/add-onecli` (pins the gateway this host
+   already runs), then `/add-whatsapp`, `/add-slack`, `/add-resend`.
+2. **DB migrations** — renumber every fork migration to 026+, convert bodies to the async
+   `DbDriver` shape, register in upstream's runner.
+3. **Host standalone modules** — the files with no upstream conflict (`search-index*`,
+   `task-outcomes`, `pdf-extract`, `transcription`, `health*`, `watchdog`, `usage`,
+   `onecli-identifier`, `modules/search/*`). Re-verify each path still has no upstream
+   counterpart before copying.
+4. **Host edits to upstream files** — rewrite against the new seams: mailbox, `DbDriver`,
+   session-driver, `host-lifecycle`, `project-doc-compose`.
+5. **Channels** — re-apply the §02 modifications on top of the installed adapters.
+6. **Container agent-runner** — §03 multimodal/reactions, §6.1 stripping.
+7. **Container build surface** — Dockerfile MCP layer, container skills (porting only the
+   four-plus-two that survive the matrix).
+8. **§7 items** — the 42 commits, per `07-since-june-rebuild.md`.
+9. **Config** — `.env` gains `NANOCLAW_DEFAULT_MODEL=claude-opus-4-7`; misc config from §6.7.
+10. **Validate + live round-trip** — host build + tests, container typecheck + `bun test`,
+    container image build, then post into `#nanoclaw-introspection` (Slack `C0AMETJFW9X`)
+    and confirm a reply lands.
+
+## 1.8 Round-trip tool architecture
+
+Still accurate in shape, and still required for `search_history` (the container cannot open
+the host's index DB). Container MCP tool writes a `system` action row to `outbound.db` → the
+host delivery layer handles the action and writes a deterministically-named reply
+(`search-resp-<id>`) into the inbound mailbox with `trigger=0` (no re-wake) → the container
+polls `findResponseById` until it arrives. **Both halves must be ported or the tool times
+out after 30s.**
+
+Two changes: the inbound write goes through `src/mailbox/` rather than
+`src/db/session-db.ts`, and this pattern is **no longer needed for memory** — upstream mounts
+the group's `memory/` directory into the container so the agent writes it directly.
+
+## 1.9 Do not port
+
+Install-specific one-offs and already-applied data migrations:
+
+- `scripts/ft-kickoff.ts`, `scripts/init-ft-channel.ts` — one-off `#financial-times`
+  bootstrap with hardcoded IDs. Use `/manage-channels`.
+- `scripts/close-non-winner-sessions.ts`, `scripts/externalize-task-prompts.ts` — one-shot,
+  already applied.
+- `scripts/setup-ritsya-job-search.ts` — one-off group create. Use `/manage-channels`.
+- `groups/**`, `data/**`, `store/**`, `.env`, `journal/**` — install data and content.
+- `.claude/settings.json` `Bash(gh run watch *)` — local convenience permission.
+
+## 1.10 Verification checklist
+
+After Phase 2: every new module registered in its barrel (`src/modules/index.ts`,
+`container/agent-runner/src/mcp-tools/index.ts`); migrations run cleanly on a fresh DB in
+numeric order; host build + `pnpm test` green; container typecheck + `bun test` green;
+container image builds; the running service name still matches (§6.3); a live
+`#nanoclaw-introspection` round-trip returns a reply; and a gateway credential-injection
+probe returns `injections_applied=1` (see `docs/onecli-upgrades.md` §1.3).

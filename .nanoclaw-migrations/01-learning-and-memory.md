@@ -1,5 +1,14 @@
 # Section 01 — Learning & Memory Layer
 
+> **REFRESH 2026-11-02 — read `index.md` §1.3 and §1.5.1 first; they override this file.**
+> §1.1 `remember` is **DROPPED**: upstream now mounts `groups/<folder>/memory/` into the
+> container and the agent edits it with ordinary file tools, so the host round-trip this
+> section builds has no reason to exist. Read `docs/memory.md` at the target tag.
+> §1.2–§1.4 still **PORT**, but `src/db/session-db.ts` no longer exists (use `src/mailbox/`),
+> `composeGroupClaudeMd` is now `composeGroupProjectDoc` in `project-doc-compose.ts`, and DB
+> access is async behind `DbDriver`. §1.5: upstream occupies migrations 001–025, so renumber
+> to **026+**.
+
 The fork's flagship subsystem (Hermes-inspired). Five capabilities, each with a host
 side and (for remember/search) a container side. Read the "Round-trip tool
 architecture" note in `index.md` first.

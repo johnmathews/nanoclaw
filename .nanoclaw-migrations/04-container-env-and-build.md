@@ -1,5 +1,14 @@
 # Section 04 — Per-Group Container Env, Dockerfile & Container Skills
 
+> **REFRESH 2026-11-02 — read `index.md` §1.5.4 first.**
+> §4.1 still **PORT**, but step 5 (`container-runner.ts`) must be redesigned against the new
+> session-driver seam, not pasted. §4.2 still applies — upstream keeps `cli-tools.json` +
+> `install-cli-tools.sh` — but adopt upstream's pins (`BUN_VERSION=1.4.0`,
+> `PNPM_VERSION=10.34.5`, `NPM_VERSION=10.9.9`). §4.3: port `capabilities`, `status`,
+> `pdf-reader`, `email-sending`; **drop** `onecli-gateway` (ships with `/add-onecli`) and
+> `vercel-cli` (ships with `/add-vercel`). **Newly identified, missing from this file:** the
+> `add-gmail-tool` and `add-gcal-tool` **skills** are fork-local and must be ported too.
+
 > Recover bodies with `git show 971239a:<path>`.
 
 ---
