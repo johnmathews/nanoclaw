@@ -26,6 +26,10 @@ import { migration022 } from './022-messaging-group-detached.js';
 import { migration023 } from './023-approvals-instance.js';
 import { migration024 } from './024-host-coordination.js';
 import { migration025 } from './025-container-config-speed.js';
+import { migration026 } from './026-reply-mode.js';
+import { migration027 } from './027-reply-mode-channel-default.js';
+import { migration028 } from './028-container-config-env.js';
+import { migration029 } from './029-task-outcomes.js';
 
 interface MigrationBase {
   version: number;
@@ -93,6 +97,10 @@ export const migrations: Migration[] = [
   migration023,
   migration024,
   migration025,
+  migration026,
+  migration027,
+  migration028,
+  migration029,
 ];
 
 /**
