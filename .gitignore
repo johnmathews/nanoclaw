@@ -48,9 +48,6 @@ nanoclaw-v1-archive/
 # Local screenshots (scratch, not repo content)
 screenshots/
 
-# Syncthing folder marker
-.stfolder
-
 # Local journal viewer sidecar (e.g. mkdocs-awesome-pages)
 journal/.pages
 

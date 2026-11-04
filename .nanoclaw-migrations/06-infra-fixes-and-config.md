@@ -116,7 +116,7 @@ pins for reference: `@chat-adapter/slack@4.26.0`, `@resend/chat-sdk-adapter@0.1.
 ## 6.7 Misc config (port selectively)
 
 - **`.gitignore`** (commits `c212b90`/`c727439`/`7d0a2a4`/`e3f9250`/`84ff8ed`): port only the
-  portable patterns — `screenshots/`, `.stfolder`, `.engineering-team/`. Do NOT port v1-migration
+  portable patterns — `screenshots/`, `.engineering-team/`. (The `.stfolder` entry was dropped 2026-11-04: Syncthing is no longer used on this host.) Do NOT port v1-migration
   artifacts (`nanoclaw-v1-backup-*.tar.gz`, `nanoclaw-v1-archive/`, `journal/.pages`) or the
   install-specific FT confidentiality comment block.
 - **`.husky/pre-commit`** (commit `2bae1b7`): make executable —
