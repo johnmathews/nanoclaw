@@ -4,8 +4,10 @@
  * Thin orchestrator: init DB, run migrations, start channel adapters,
  * start delivery polls, start sweep, handle shutdown.
  */
+import path from 'path';
+
 import { backfillContainerConfigs } from './backfill-container-configs.js';
-import { CENTRAL_DB_PATH } from './config.js';
+import { CENTRAL_DB_PATH, DATA_DIR } from './config.js';
 import { enforceStartupBackoff, resetCircuitBreaker } from './circuit-breaker.js';
 import {
   abortGatewaySessionObservers,
@@ -14,6 +16,7 @@ import {
   stopGatewaySessionsForUnavailability,
 } from './container-runner.js';
 import { closeDb, initDb } from './db/connection.js';
+import { initSearchIndexDb } from './db/search-index-db.js';
 import { runMigrations } from './db/migrations/index.js';
 import { getSessionDriver } from './drivers/index.js';
 import { startActiveDeliveryPoll, startSweepDeliveryPoll, setDeliveryAdapter, stopDeliveryPolls } from './delivery.js';
@@ -86,6 +89,15 @@ async function main(): Promise<void> {
   // 1. Init central DB
   const db = await initDb(CENTRAL_DB_PATH, { role: 'host' });
   await runMigrations(db, undefined, { mode: 'auto' });
+
+  // Fork feature: FTS5 index backing search_history. Separate DB file from the
+  // central one to avoid lock contention. Failure is non-fatal — search_history
+  // degrades to "unavailable" but the host runs.
+  try {
+    initSearchIndexDb(path.join(DATA_DIR, 'v2-index.db'));
+  } catch (err) {
+    log.error('Failed to init search index DB — search_history disabled', { err });
+  }
   log.info('Central DB ready', { dialect: db.dialect });
 
   // 1b. Backfill container_configs from legacy container.json files.

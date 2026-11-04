@@ -34,6 +34,7 @@ import fs from 'fs';
 import { getSessionClaim } from './db/coordination.js';
 import { getSession, isTaskThread, updateSession } from './db/sessions.js';
 import { getAgentGroup } from './db/agent-groups.js';
+import { indexSessionBestEffort } from './search-index-hook.js';
 import { log } from './log.js';
 import { heartbeatPath, withExistingMailboxSession } from './session-manager.js';
 import { getContainerStartedAtMs, isContainerRunning, killContainer } from './container-runner.js';
@@ -123,6 +124,9 @@ export async function reconcileSession(sessionId: string): Promise<void> {
   const session = await getSession(sessionId);
   if (!session || session.status !== 'active') return;
   await reconcileActiveSession(session);
+  // Fork feature: keep the search_history index current. Deliberately after
+  // the reconcile above and non-load-bearing — see search-index-hook.ts.
+  await indexSessionBestEffort(session.agent_group_id, session.id);
 }
 
 async function reconcileActiveSession(session: Session): Promise<void> {
