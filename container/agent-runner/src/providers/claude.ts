@@ -19,7 +19,7 @@ import {
 // read the SDK's on-disk .jsonl, which no other provider has.
 import { archiveClaudeTranscript, rotateClaudeContinuation } from './claude-history.js';
 import { registerProvider } from './provider-registry.js';
-import type { AgentProvider, AgentQuery, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
+import type { AgentProvider, AgentQuery, ContentBlock, ProviderEvent, ProviderOptions, QueryInput } from './types.js';
 
 function log(msg: string): void {
   console.error(`[claude-provider] ${msg}`);
@@ -72,13 +72,18 @@ export { SDK_DISALLOWED_TOOLS, TOOL_ALLOWLIST } from './claude-config.js';
 
 interface SDKUserMessage {
   type: 'user';
-  message: { role: 'user'; content: string };
+  message: { role: 'user'; content: string | ContentBlock[] };
   parent_tool_use_id: null;
   session_id: string;
 }
 
 /**
  * Push-based async iterable for streaming user messages to the Claude SDK.
+ *
+ * `push()` sends a plain-text turn; `pushBlocks()` sends a content-block turn
+ * for image attachments. They are deliberately separate SDKUserMessages so the
+ * SDK delivers two consecutive user turns — text first, then images — rather
+ * than one mixed turn.
  */
 class MessageStream {
   private queue: SDKUserMessage[] = [];
@@ -89,6 +94,17 @@ class MessageStream {
     this.queue.push({
       type: 'user',
       message: { role: 'user', content: text },
+      parent_tool_use_id: null,
+      session_id: '',
+    });
+    this.waiting?.();
+  }
+
+  pushBlocks(blocks: ContentBlock[]): void {
+    if (blocks.length === 0) return;
+    this.queue.push({
+      type: 'user',
+      message: { role: 'user', content: blocks },
       parent_tool_use_id: null,
       session_id: '',
     });
@@ -209,6 +225,8 @@ const CLAUDE_CODE_AUTO_COMPACT_WINDOW = process.env.CLAUDE_CODE_AUTO_COMPACT_WIN
 const STALE_SESSION_RE = /no conversation found|ENOENT.*\.jsonl|session.*not found/i;
 
 export class ClaudeProvider implements AgentProvider {
+  readonly supportsMultimodalContent = true;
+
   private assistantName?: string;
   private mcp: ReturnType<typeof resolveClaudeMcpServers>;
   private inference: ReturnType<typeof resolveClaudeInference>;
@@ -429,6 +447,7 @@ export class ClaudeProvider implements AgentProvider {
 
     return {
       push: (msg) => stream.push(msg),
+      pushBlocks: (blocks) => stream.pushBlocks(blocks),
       end: () => stream.end(),
       events: translateEvents(),
       abort: () => {

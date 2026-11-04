@@ -31,6 +31,7 @@ import {
 } from './formatter.js';
 import { stripHarnessTagArtifacts } from './harness-tag-strip.js';
 import { isUploadTraceCommand, uploadTrace } from './upload-trace.js';
+import { extractImageBlocks } from './multimodal.js';
 import type { AgentProvider, AgentQuery, ProviderEvent, ProviderExchange } from './providers/types.js';
 import type { ProviderRuntimeContract } from './provider-contracts/registry.js';
 
@@ -262,6 +263,24 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
     const abortActiveQuery = () => query.abort();
     if (config.signal?.aborted) abortActiveQuery();
     else config.signal?.addEventListener('abort', abortActiveQuery, { once: true });
+    /**
+     * Deliver image attachments as a separate content-block user turn.
+     *
+     * Text first, images second: the SDK takes a content-block array on a user
+     * message, and keeping them as two turns means a provider without
+     * multimodal support simply never receives the second one. Gated on the
+     * capability flag, so a non-multimodal provider no-ops and the image still
+     * reaches the agent as the formatter's reference to its path.
+     */
+    const pushImageBlocks = (rows: MessageInRow[], label: string): void => {
+      if (!config.provider.supportsMultimodalContent) return;
+      const blocks = extractImageBlocks(rows);
+      if (blocks.length === 0) return;
+      log(`Pushing ${blocks.length} ${label} image block(s) into the active query`);
+      query.pushBlocks?.(blocks);
+    };
+    pushImageBlocks(keep, 'initial');
+
     try {
       const result = await processQuery(
         query,
@@ -273,6 +292,7 @@ export async function runPollLoop(config: PollLoopConfig): Promise<void> {
         continuation,
         midTurnCompleteDelivery,
         config.signal,
+        pushImageBlocks,
       );
       if (result.continuation && result.continuation !== continuation) {
         continuation = result.continuation;
@@ -371,6 +391,13 @@ export async function processQuery(
    */
   midTurnCompleteDelivery = false,
   signal?: AbortSignal,
+  /**
+   * Deliver image attachments for a batch of rows as a content-block user
+   * turn. Supplied by the caller, which owns the provider capability and the
+   * rows; absent means no multimodal delivery. See pushImageBlocks in
+   * runPollLoop.
+   */
+  pushImages?: (rows: MessageInRow[], label: string) => void,
 ): Promise<QueryResult> {
   // adoptTurn mutates routing in place; keep the caller's batch route intact.
   routing = { ...routing };
@@ -435,6 +462,7 @@ export async function processQuery(
     publishReplyRoute(routing);
     answering = true;
   };
+
   // A retry is another provider input, behind any follow-ups already pushed.
   // Preserve its original route, prompt and retry guards until it is answered.
   const pushRetry = (prompt: string): void => {
@@ -531,6 +559,7 @@ export async function processQuery(
         log(`Pushing ${keep.length} follow-up message(s) into active query`);
         query.push(prompt);
         archivePrompts.push(prompt);
+        pushImages?.(keep, 'follow-up');
         const next: QueuedTurn = {
           routing: extractRouting(keep),
           unwrappedNudged: false,

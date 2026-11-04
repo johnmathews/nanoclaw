@@ -8,7 +8,29 @@ import type { MemorySessionHookRegistration } from '../memory/session-hook.js';
  */
 export type ProviderSpeed = string;
 
+/** Mime types the Messages API accepts for `type: 'image'`. */
+export type ImageMediaType = 'image/jpeg' | 'image/png' | 'image/gif' | 'image/webp';
+
+export interface ImageContentBlock {
+  type: 'image';
+  source: { type: 'base64'; media_type: ImageMediaType; data: string };
+}
+
+export interface TextContentBlock {
+  type: 'text';
+  text: string;
+}
+
+export type ContentBlock = ImageContentBlock | TextContentBlock;
+
 export interface AgentProvider {
+  /**
+   * Provider accepts image content blocks on a user turn. Absent or false
+   * means the poll loop never builds them, so an image attachment reaches the
+   * agent only as the formatter's text reference to its path.
+   */
+  readonly supportsMultimodalContent?: boolean;
+
   /**
    * Register shared memory through the provider's native session-start
    * mechanism. `memory` is the contract's resolved memory capability (core
@@ -142,6 +164,12 @@ export type McpServerConfig =
 export interface AgentQuery {
   /** Push a follow-up message into the active query. */
   push(message: string): void;
+  /**
+   * Enqueue a user turn carrying content blocks (images). Optional: a provider
+   * without multimodal support simply does not implement it, and the caller
+   * gates on supportsMultimodalContent.
+   */
+  pushBlocks?(blocks: ContentBlock[]): void;
 
   /** Signal that no more input will be sent. */
   end(): void;
