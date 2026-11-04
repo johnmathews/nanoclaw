@@ -16,9 +16,10 @@
  */
 import { createSlackAdapter, type SlackAdapter } from '@chat-adapter/slack';
 
+import { log } from '../log.js';
 import { readEnvFile } from '../env.js';
 import type { ChannelAdapter, ChannelContextDefaults, ChannelDefaults } from './adapter.js';
-import { createChatSdkBridge } from './chat-sdk-bridge.js';
+import { createChatSdkBridge, type PostBlocksFn } from './chat-sdk-bridge.js';
 import { registerChannelAdapter } from './channel-registry.js';
 import { setSlackAuthorIsBotResolver } from './slack-a2a-guard.js';
 import { slackRawTextExtractor } from './slack-raw-text.js';
@@ -165,6 +166,56 @@ export interface SlackBridgeOptions {
  * null when the bot token is missing so the registry surfaces its normal
  * "credentials missing, skipping" warning.
  */
+interface SlackWebClient {
+  chat: {
+    postMessage(args: {
+      channel: string;
+      thread_ts?: string;
+      text: string;
+      blocks?: unknown[];
+      unfurl_links?: boolean;
+      unfurl_media?: boolean;
+    }): Promise<{ ok?: boolean; ts?: string; channel?: string; error?: string }>;
+  };
+}
+
+/**
+ * Build a `postBlocks` function from a Slack adapter instance.
+ *
+ * Reaches into the adapter's private `client` deliberately: the Chat SDK's
+ * postMessage takes AdapterPostableMessage (string | Postable{Raw,Markdown,
+ * Ast,Card}), none of which can carry raw Block Kit. Returns null when the
+ * adapter shape does not match — a future adapter version renaming `client`
+ * then degrades send_blocks to fallbackText instead of crashing delivery.
+ */
+function makeSlackPostBlocks(slackAdapter: unknown): PostBlocksFn | null {
+  const client = (slackAdapter as { client?: SlackWebClient }).client;
+  if (!client?.chat || typeof client.chat.postMessage !== 'function') {
+    log.warn('Slack adapter has no .client.chat.postMessage; send_blocks will fall back to text');
+    return null;
+  }
+  return async (threadId, blocks, fallbackText) => {
+    // threadId is "slack:CHANNEL:THREAD_TS" (or "slack:CHANNEL:" off-thread).
+    // See @chat-adapter/slack decodeThreadId.
+    const parts = threadId.split(':');
+    if (parts.length < 2 || parts[0] !== 'slack') {
+      throw new Error(`postBlocks called with non-Slack threadId: ${threadId}`);
+    }
+    const channel = parts[1];
+    const threadTs = parts.length === 3 && parts[2] ? parts[2] : undefined;
+    const result = await client.chat.postMessage({
+      channel,
+      thread_ts: threadTs,
+      text: fallbackText,
+      blocks,
+      unfurl_links: false,
+      unfurl_media: false,
+    });
+    if (!result.ok) throw new Error(`Slack chat.postMessage failed: ${result.error ?? 'unknown'}`);
+    return { id: result.ts };
+  };
+}
+
 export function createSlackBridge(options: SlackBridgeOptions = {}): ChannelAdapter | null {
   const suffix = options.envKeySuffix ? `_${options.envKeySuffix}` : '';
   const keys = {
@@ -186,8 +237,10 @@ export function createSlackBridge(options: SlackBridgeOptions = {}): ChannelAdap
     mode: appToken ? 'socket' : 'webhook',
   });
   setSlackAuthorIsBotResolver(options.instanceKey ?? 'slack', (userId) => slackAuthorIsBot(slackAdapter, userId));
+  const postBlocks = makeSlackPostBlocks(slackAdapter) ?? undefined;
   const bridge = createChatSdkBridge({
     adapter: slackAdapter,
+    postBlocks,
     extractRawText: slackRawTextExtractor(slackAdapter),
     instance: options.instanceKey, // undefined ⇒ default instance (keyed by channelType)
     concurrency: 'concurrent',

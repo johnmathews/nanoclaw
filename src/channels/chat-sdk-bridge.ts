@@ -22,6 +22,8 @@ import {
   type Message as ChatMessage,
 } from 'chat';
 import { log } from '../log.js';
+import { extractPdfText, isPdfMime, PdfExtractionError } from '../pdf-extract.js';
+import { isTranscribableMime, transcribeAudio, TranscriptionError } from '../transcription.js';
 import { SqliteStateAdapter } from '../state-sqlite.js';
 import { registerWebhookAdapter } from '../webhook-server.js';
 import { normalizeOptions, type NormalizedOption } from './ask-question.js';
@@ -322,6 +324,24 @@ export function registerBridgeInboundPolicy(channelType: string, wrap: BridgeInb
   bridgeInboundPolicies.set(channelType, wrap);
 }
 
+export interface PostBlocksResult {
+  /** Platform message id (Slack thread_ts equivalent). */
+  id?: string;
+}
+
+/**
+ * Optional platform-native raw-Block-Kit poster. Channels that can render raw
+ * Block Kit (currently only Slack) supply this; the bridge calls it for a
+ * `content.type === 'blocks'` outbound. Channels without it fall back to
+ * posting `fallbackText`.
+ *
+ * The bridge deliberately does not translate Block Kit JSON into the Chat
+ * SDK's abstract Card primitives: the send_blocks contract is verbatim raw
+ * blocks, and translating loses load-bearing features (checkboxes,
+ * multi-select, datepickers, accessory layouts) that Card cannot express.
+ */
+export type PostBlocksFn = (threadId: string, blocks: unknown[], fallbackText: string) => Promise<PostBlocksResult>;
+
 export interface ChatSdkBridgeConfig {
   adapter: Adapter;
   /**
@@ -336,6 +356,11 @@ export interface ChatSdkBridgeConfig {
   concurrency?: ConcurrencyStrategy;
   /** Bot token for authenticating forwarded Gateway events (required for interaction handling). */
   botToken?: string;
+  /**
+   * Optional platform-native raw-Block-Kit poster. Supplied by the Slack
+   * channel; absent on others. Used to deliver `content.type === 'blocks'`.
+   */
+  postBlocks?: PostBlocksFn;
   /** Platform-specific reply context extraction. */
   extractReplyContext?: ReplyContextExtractor;
   /**
@@ -426,6 +451,133 @@ function terminalApprovalMessage(spec: TerminalApprovalCard) {
   };
 }
 
+export interface ReactionInboundInput {
+  emoji: string;
+  rawEmoji: string;
+  added: boolean;
+  targetMessageId: string;
+  threadId: string;
+  userId: string;
+  userName: string;
+  now: () => Date;
+  idGen: () => string;
+}
+
+/**
+ * Synthetic chat-sdk inbound for a reaction event, so a reaction threads
+ * through the router exactly like any other message. The text is
+ * human-readable; the structured `reaction` payload is preserved so the
+ * container's `query_reactions` tool can filter on targetMessageId and added.
+ */
+export function buildReactionInbound(input: ReactionInboundInput): InboundMessage {
+  const verb = input.added ? 'reacted' : 'removed reaction';
+  const text = `[${input.userName} ${verb} ${input.emoji} on message ${input.targetMessageId}]`;
+  return {
+    id: input.idGen(),
+    kind: 'chat-sdk',
+    content: {
+      text,
+      sender: input.userName,
+      senderId: input.userId,
+      reaction: {
+        emoji: input.emoji,
+        rawEmoji: input.rawEmoji,
+        added: input.added,
+        targetMessageId: input.targetMessageId,
+        threadId: input.threadId,
+        userId: input.userId,
+      },
+    },
+    timestamp: input.now().toISOString(),
+    isMention: false,
+    isGroup: true,
+  };
+}
+
+export interface Ncv2InboundInput {
+  actionId: string; // already stripped of the "ncv2:" prefix
+  value: string;
+  userId: string;
+  userName: string;
+  messageId: string;
+  now: () => Date;
+  idGen: () => string;
+}
+
+/**
+ * Synthetic chat-sdk inbound for an `ncv2:` button click. The namespace is
+ * what lets the bridge tell "interaction aimed at this agent" from any other
+ * actionId on the platform without an installation-wide list. isMention is
+ * true: a click is a direct address and should wake the agent.
+ */
+export function buildNcv2Inbound(input: Ncv2InboundInput): InboundMessage {
+  const text = input.value
+    ? `(button clicked) action_id="${input.actionId}" value="${input.value}" by ${input.userName}`
+    : `(button clicked) action_id="${input.actionId}" by ${input.userName}`;
+  return {
+    id: input.idGen(),
+    kind: 'chat-sdk',
+    content: {
+      text,
+      sender: input.userName,
+      senderId: input.userId,
+      action: {
+        actionId: input.actionId,
+        value: input.value,
+        userId: input.userId,
+        messageId: input.messageId,
+      },
+    },
+    timestamp: input.now().toISOString(),
+    isMention: true,
+    isGroup: true,
+  };
+}
+
+/**
+ * Transcribe a voice attachment and stamp the result onto the attachment entry.
+ *
+ * Never throws: a transcription failure records `transcriptionError` and the
+ * attachment still reaches the agent by path, so a flaky speech API degrades
+ * the message rather than dropping it.
+ *
+ * Exported for tests. Production callers go through `messageToInbound`.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function maybeTranscribe(entry: Record<string, any>, buffer: Buffer): Promise<void> {
+  const mime = typeof entry.mimeType === 'string' ? entry.mimeType : '';
+  if (!isTranscribableMime(mime)) return;
+  const filename = (typeof entry.name === 'string' && entry.name) || 'voice';
+  try {
+    const result = await transcribeAudio(buffer, filename, mime);
+    entry.transcription = result.text;
+  } catch (err) {
+    const msg = err instanceof TranscriptionError ? err.message : err instanceof Error ? err.message : String(err);
+    entry.transcriptionError = msg;
+    log.warn('Voice transcription failed', { filename, mime, err: msg });
+  }
+}
+
+/**
+ * Run host-side `pdftotext` on a PDF attachment and stamp the result onto the
+ * attachment entry. Same error contract as `maybeTranscribe`.
+ *
+ * Exported for tests. Production callers go through `messageToInbound`.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function maybePdfExtract(entry: Record<string, any>, buffer: Buffer): Promise<void> {
+  const mime = typeof entry.mimeType === 'string' ? entry.mimeType : '';
+  if (!isPdfMime(mime)) return;
+  try {
+    const text = await extractPdfText(buffer);
+    entry.extractedText = text;
+  } catch (err) {
+    const msg = err instanceof PdfExtractionError ? err.message : err instanceof Error ? err.message : String(err);
+    entry.pdfExtractionError = msg;
+    log.warn('PDF extraction failed', { filename: entry.name, mime, err: msg });
+  }
+}
+
 export function splitForLimit(text: string, limit: number): string[] {
   if (text.length <= limit) return [text];
   const chunks: string[] = [];
@@ -504,11 +656,19 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
           height: (att as unknown as Record<string, unknown>).height,
         };
         if (att.fetchData) {
+          let buffer: Buffer | null = null;
           try {
-            const buffer = await att.fetchData();
+            buffer = await att.fetchData();
             entry.data = buffer.toString('base64');
           } catch (err) {
             log.warn('Failed to download attachment', { type: att.type, err });
+          }
+          // Host-side preprocessing: the container has no pdftotext and no
+          // transcription credential, and both results are small text the
+          // agent can read inline instead of fetching the blob.
+          if (buffer) {
+            await maybeTranscribe(entry, buffer);
+            await maybePdfExtract(entry, buffer);
           }
         }
         enriched.push(entry);
@@ -650,6 +810,53 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
         await setupConfig.onInbound(channelId, thread.id, await messageToInbound(message, false, true));
       });
 
+      // Reactions land as chat-sdk inbound rows so they thread through the
+      // router like any other message. A bare reaction carries no @-mention,
+      // so a trigger-required channel accumulates it as context and it rides
+      // along when something else wakes the agent.
+      if (typeof chat.onReaction === 'function') {
+        chat.onReaction(async (event) => {
+          try {
+            const reactor = event.user as { userId?: string; fullName?: string; userName?: string } | undefined;
+            const userId = reactor?.userId || '';
+            // Self-reaction filter. chat-sdk exposes no bot-identity field
+            // uniformly, so this relies on the SDK not firing onReaction for
+            // the bot's own reactions (Slack does not). Skipping empty userId
+            // is the belt-and-braces half: without it, the agent reacting to
+            // its own message could loop.
+            if (!userId) return;
+            const userName = reactor?.fullName ?? reactor?.userName ?? userId;
+            const channelId = adapter.channelIdFromThreadId(event.threadId);
+            await setupConfig.onInbound(
+              channelId,
+              event.threadId,
+              buildReactionInbound({
+                emoji: String(event.emoji),
+                rawEmoji: event.rawEmoji ?? String(event.emoji),
+                added: event.added !== false,
+                targetMessageId: event.messageId,
+                threadId: event.threadId,
+                userId,
+                userName,
+                now: () => new Date(),
+                idGen: () => `rxn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              }),
+            );
+          } catch (err) {
+            log.error('Failed to route reaction inbound', {
+              adapter: adapter.name,
+              messageId: event.messageId,
+              emoji: String(event.emoji),
+              err,
+            });
+          }
+        });
+      } else {
+        log.info('Adapter does not expose chat.onReaction; skipping reaction subscription', {
+          adapter: adapter.name,
+        });
+      }
+
       // Agent-mode assistant context: cache the latest "what the user is
       // viewing" per (channel, user). The installed chat core (4.29.0)
       // dispatches both the legacy assistant_thread_started and the
@@ -684,6 +891,36 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
       // Handle button clicks (ask_user_question)
       chat.onAction(async (event) => {
         if (await dispatchQuestionAction(event, adapter, instanceKey)) return;
+        // `ncv2:` button clicks route back to the agent as an inbound message,
+        // namespaced so the bridge can tell them from any other actionId on
+        // the platform. Checked before the ncq: approval handling below.
+        if (event.actionId.startsWith('ncv2:')) {
+          const actionId = event.actionId.slice('ncv2:'.length);
+          const userId = event.user?.userId || '';
+          const userName =
+            (event.user as { fullName?: string; userName?: string } | undefined)?.fullName ??
+            (event.user as { userName?: string } | undefined)?.userName ??
+            (userId || 'unknown');
+          const channelId = adapter.channelIdFromThreadId(event.threadId);
+          try {
+            await setupConfig.onInbound(
+              channelId,
+              event.threadId,
+              buildNcv2Inbound({
+                actionId,
+                value: event.value ?? '',
+                userId,
+                userName,
+                messageId: event.messageId,
+                now: () => new Date(),
+                idGen: () => `act-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              }),
+            );
+          } catch (err) {
+            log.error('Failed to route ncv2 action', { actionId, err });
+          }
+          return;
+        }
         if (!event.actionId.startsWith('ncq:')) return;
         const parts = event.actionId.split(':');
         if (parts.length < 3) return;
@@ -898,6 +1135,29 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
       // callback button would have nowhere to land. URL actions render as link buttons.
       // The runner filters these against LINK_ACTION_SCHEMA before writing the row;
       // the checks below still stand because any producer can write this payload.
+      // Raw Slack Block Kit (send_blocks). Slack-only: that channel supplies
+      // config.postBlocks, which reaches the underlying WebClient directly.
+      // Other channels post fallbackText so the agent's intent surfaces
+      // somehow rather than the message being silently lost.
+      if (content.type === 'blocks' && Array.isArray(content.blocks)) {
+        const blocks = content.blocks as unknown[];
+        const fallbackText = ((content.fallbackText as string) || '').trim();
+        if (config.postBlocks) {
+          try {
+            const r = await config.postBlocks(tid, blocks, fallbackText);
+            return r?.id;
+          } catch (err) {
+            log.error('postBlocks failed; falling back to fallbackText', { err });
+          }
+        }
+        if (!fallbackText) {
+          log.warn('send_blocks payload has empty fallbackText and no postBlocks path; skipping');
+          return;
+        }
+        const result = await adapter.postMessage(tid, { markdown: transformText(fallbackText) });
+        return result?.id;
+      }
+
       if (content.type === 'card' && content.card && typeof content.card === 'object') {
         const cardSpec = content.card as Record<string, unknown>;
         const title = (cardSpec.title as string) || '';
