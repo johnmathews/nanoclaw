@@ -10,6 +10,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { findByName, getAllDestinations } from '../destinations.js';
+import { stripInternalTags } from '../formatter.js';
 import { getMessageIdBySeq, getRoutingBySeq, writeMessageOut } from '../db/messages-out.js';
 import { getCurrentInReplyTo, getCurrentReplyRoute } from '../db/session-state.js';
 import { resolveDestinationThread } from '../db/session-routing.js';
@@ -85,6 +86,15 @@ export const sendMessage: McpToolDefinition = {
     if (!to) return err(`to is required. Options: ${destinationList()}`);
     if (!text) return err('text is required');
 
+    // <internal> marks scratchpad that is logged but not sent. Without this
+    // strip the raw tags leak to the channel; if the whole body is internal,
+    // nothing should be posted at all rather than an empty message.
+    const body = stripInternalTags(text);
+    if (!body) {
+      log('send_message: body empty after stripping <internal> — nothing sent');
+      return ok('Nothing sent — the message body was entirely <internal> scratchpad.');
+    }
+
     const routing = resolveRouting(to);
     if ('error' in routing) return err(routing.error);
 
@@ -96,7 +106,7 @@ export const sendMessage: McpToolDefinition = {
       platform_id: routing.platform_id,
       channel_type: routing.channel_type,
       thread_id: routing.thread_id,
-      content: JSON.stringify({ text }),
+      content: JSON.stringify({ text: body }),
     });
 
     log(`send_message: #${seq} → ${routing.resolvedName}`);
@@ -145,7 +155,7 @@ export const sendFile: McpToolDefinition = {
       platform_id: routing.platform_id,
       channel_type: routing.channel_type,
       thread_id: routing.thread_id,
-      content: JSON.stringify({ text: (args.text as string) || '', files: [filename] }),
+      content: JSON.stringify({ text: stripInternalTags((args.text as string) || ''), files: [filename] }),
     });
 
     log(`send_file: ${id} → ${routing.resolvedName} (${filename})`);
@@ -171,6 +181,14 @@ export const editMessage: McpToolDefinition = {
     const text = args.text as string;
     if (!seq || !text) return err('messageId and text are required');
 
+    // Same rule as send_message: an edit whose body is entirely scratchpad
+    // would otherwise blank the posted message.
+    const body = stripInternalTags(text);
+    if (!body) {
+      log('edit_message: body empty after stripping <internal> — nothing edited');
+      return ok('Nothing edited — the replacement body was entirely <internal> scratchpad.');
+    }
+
     const platformId = getMessageIdBySeq(seq);
     if (!platformId) return err(`Message #${seq} not found`);
 
@@ -186,7 +204,7 @@ export const editMessage: McpToolDefinition = {
       platform_id: routing.platform_id,
       channel_type: routing.channel_type,
       thread_id: routing.thread_id,
-      content: JSON.stringify({ operation: 'edit', messageId: platformId, text }),
+      content: JSON.stringify({ operation: 'edit', messageId: platformId, text: body }),
     });
 
     log(`edit_message: #${seq} → ${platformId}`);

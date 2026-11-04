@@ -13,7 +13,7 @@ import fs from 'fs';
 
 import { initTestSessionDb, closeSessionDb, getInboundDb, getOutboundDb } from '../mailbox/sqlite/connection.js';
 import { getUndeliveredMessages } from '../db/messages-out.js';
-import { sendFile, sendMessage } from './core.js';
+import { editMessage, sendFile, sendMessage } from './core.js';
 
 /**
  * Publish the reply stamp the way the poll loop does: a direct write to
@@ -203,5 +203,56 @@ describe('send_message / send_file — thread for a channel destination', () => 
     publishReplyRoute({ inReplyTo: 'in-1', channelType: 'discord', platformId: 'chan-9', threadId: 'discord-thread' });
 
     expect(await sendBoth()).toEqual([null, null]);
+  });
+});
+
+describe('<internal> stripping in outbound tools', () => {
+  // The tags mark scratchpad that is logged but not sent. Unstripped they leak
+  // to the channel; and a body that is ENTIRELY scratchpad must send nothing
+  // rather than an empty message, which on Slack posts a blank line.
+  beforeEach(() => {
+    seedBoundThread('slack', 'C1', null);
+    seedChannelDestination('general', 'slack', 'C1');
+  });
+
+  it('strips internal tags from a sent message', async () => {
+    await sendMessage.handler({ to: 'general', text: 'visible <internal>hidden</internal> tail' });
+    const [out] = getUndeliveredMessages();
+    const content = JSON.parse(out.content) as { text: string };
+    expect(content.text).not.toContain('hidden');
+    expect(content.text).not.toContain('<internal>');
+    expect(content.text).toContain('visible');
+  });
+
+  it('sends nothing when the body is entirely internal', async () => {
+    const res = await sendMessage.handler({ to: 'general', text: '<internal>just thinking</internal>' });
+    expect(String(res.content[0].text)).toContain('Nothing sent');
+    expect(getUndeliveredMessages()).toHaveLength(0);
+  });
+
+  it('strips internal tags from a file caption', async () => {
+    // sendFile copies into /workspace/outbox, which does not exist on a host
+    // test runner — stub the three fs calls the way this file's sendFile suite
+    // already does.
+    const spies = [
+      spyOn(fs, 'existsSync').mockReturnValue(true),
+      spyOn(fs, 'mkdirSync').mockReturnValue(undefined),
+      spyOn(fs, 'copyFileSync').mockReturnValue(undefined),
+    ];
+    try {
+      await sendFile.handler({ to: 'general', path: '/tmp/f.txt', text: 'cap <internal>no</internal>' });
+      const out = getUndeliveredMessages().at(-1)!;
+      const content = JSON.parse(out.content) as { text: string };
+      expect(content.text).toContain('cap');
+      expect(content.text).not.toContain('<internal>');
+    } finally {
+      for (const spy of spies) spy.mockRestore();
+    }
+  });
+
+  it('does not blank a posted message when an edit body is entirely internal', async () => {
+    seedInbound('m-edit', 'slack', 'C1', null);
+    const res = await editMessage.handler({ messageId: 2, text: '<internal>nope</internal>' });
+    expect(String(res.content[0].text)).toContain('Nothing edited');
   });
 });
