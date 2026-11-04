@@ -45,7 +45,7 @@ June.
 | **Container runtime moved behind a session-driver seam** (BREAKING). New `src/drivers/`, `src/guard/`, `src/provider-contracts/`. | §4.1 step 5, §6.2, and the telemetry fix (§7) all edit `container-runner.ts` and must be redesigned, not pasted. |
 | **`src/claude-md-compose.ts` → `src/project-doc-compose.ts`** (BREAKING), exporting `composeGroupProjectDoc`, `DEFAULT_PROJECT_DOC`, `renderBaseInstructions`. | Any `composeGroupClaudeMd` import must be retargeted. |
 | **Host modules use one lifecycle registry** — `src/host-lifecycle.ts` (BREAKING). | Modules importing `onShutdown()`/`getShutdownCallbacks()` from `response-registry.js` must move. |
-| **Migrations now run 001–025.** Upstream owns 016–025 with *different* content than the fork's 016–021. | **Every fork migration must be renumbered to 026+.** See §1.5 of `01-learning-and-memory.md` for the relative order. |
+| **Migrations now run 001–025.** Upstream owns 016–025 with *different* content than the fork's 016–021. | Renumber fork migration **files** to 026+ for tidiness — but this is **not** the collision risk the June guide claimed. The ledger keys on `name`, not `version`: see §1.11, verified empirically. |
 | **Credential gateways install through skills** (BREAKING). Upstream `package.json` has **no** `@onecli-sh/sdk` dependency; OneCLI lives in `.claude/skills/add-onecli/`. | Supersedes locked decision #2 — see §1.4 below. |
 | **Chat SDK + adapters pinned to `4.29.0`** exactly (BREAKING). Fork used 4.26.0. | Use upstream's pin, never the fork's. |
 | **`slack-formatting` / `whatsapp-formatting` container skills moved to the `channels` branch** (BREAKING); they install with their channel. | Do **not** port the fork's copies. |
@@ -160,8 +160,9 @@ Validate with `pnpm run build && pnpm test` after each numbered stage.
 
 1. **Checkout + skills** — clean `v2026.10.0`; run `/add-onecli` (pins the gateway this host
    already runs), then `/add-whatsapp`, `/add-slack`, `/add-resend`.
-2. **DB migrations** — renumber every fork migration to 026+, convert bodies to the async
-   `DbDriver` shape, register in upstream's runner.
+2. **DB migrations** — convert bodies to the async `DbDriver` shape and register in
+   upstream's runner, **keeping each migration's `name` string byte-identical** to what the
+   live ledger already records (§1.11). Version numbers are only ordering hints; pick 026+.
 3. **Host standalone modules** — the files with no upstream conflict (`search-index*`,
    `task-outcomes`, `pdf-extract`, `transcription`, `health*`, `watchdog`, `usage`,
    `onecli-identifier`, `modules/search/*`). Re-verify each path still has no upstream
@@ -212,3 +213,72 @@ numeric order; host build + `pnpm test` green; container typecheck + `bun test` 
 container image builds; the running service name still matches (§6.3); a live
 `#nanoclaw-introspection` round-trip returns a reply; and a gateway credential-injection
 probe returns `injections_applied=1` (see `docs/onecli-upgrades.md` §1.3).
+
+## 1.11 Migration ledger — verified, and not the risk we thought
+
+**Tested 2026-11-02/04 against copies of the live `data/v2.db`. The live database was never
+touched.** This replaces the June guide's claim that "migration numbering is the single
+biggest collision risk".
+
+Upstream's runner selects pending migrations **by `name`, not by `version`** — its own comment
+says so, and the behaviour is confirmed:
+
+> *Uniqueness is keyed on `name`, not `version`. … `version` stays on the Migration object as
+> an ordering hint within the barrel array; the stored `version` column is auto-assigned at
+> insert time as an applied-order number.*
+
+So the fork's drifted numbering is irrelevant. The live ledger holds 22 rows whose numbers
+diverge from upstream's from version 5 onward, but whose **names** line up: 16 are upstream
+migrations under different numbers, 6 are fork-only.
+
+### 1.11.1 What the experiment showed
+
+| Run | Result |
+|---|---|
+| Empty DB + upstream migrations (reference) | 23 applied, 173 columns |
+| **Copy of the live DB** + upstream migrations (candidate) | **exactly 7 applied**, 29 ledger rows, 186 columns |
+
+The 7 that ran are precisely the ones missing by name: `wiring-threads-override`,
+`container-config-timezone`, `approval-question-render-metadata`,
+`messaging-group-detached-at`, `approvals-instance`, `host-coordination`,
+`container-config-speed`. Nothing re-ran; nothing was skipped.
+
+Schema diff, candidate vs reference:
+
+- **Missing from candidate: nothing.** All 173 upstream columns present — no upstream
+  migration was silently skipped, which was the feared failure.
+- **Extra in candidate: exactly the fork's 13 columns** — `container_configs.env`,
+  `.memory_budget_chars`, `.user_budget_chars`, `messaging_groups.reply_mode`, and the
+  9-column `task_outcomes` table.
+
+Data survived unchanged (agent_groups 15, messaging_groups 17, sessions 78, users 6,
+user_roles 2, container_configs 15, messaging_group_agents 14, agent_destinations 13),
+`pragma integrity_check` = ok, `pragma foreign_key_check` = no violations.
+
+### 1.11.2 Consequences for stage 2
+
+1. **No ledger surgery.** Point upstream code at the existing `data/v2.db` and it applies the
+   7 it needs. No hand-stamping, no renumbering of existing rows.
+2. **Migration `name` strings are load-bearing — do not "tidy" them.** A kept fork migration
+   whose name still matches the ledger is correctly skipped on this install and still runs on
+   a fresh one. Rename it and the live DB re-runs it, where
+   `ALTER TABLE … ADD COLUMN reply_mode` fails on the already-present column. Names to
+   preserve byte-for-byte: `reply-mode`, `reply-mode-channel-default`, `container-config-env`,
+   `task-outcomes`.
+3. **Dropped fork migrations leave inert residue.** `default-model-opus` and `memory-budgets`
+   are being dropped (§1.5.5, §1.5.1), but their ledger rows and the
+   `memory_budget_chars` / `user_budget_chars` columns stay in the live DB. Harmless —
+   unreferenced columns with defaults. Cleaning them up is optional and needs a table
+   recreate, so not worth it.
+4. **`onlyBuiltDependencies` differs from the fork's.** Upstream lists `esbuild`,
+   `protobufjs`, `sharp` — **not** `better-sqlite3`, which §6.6 claimed was identical to
+   upstream. better-sqlite3 13.0.3 resolves from a prebuild and works without a build script
+   (verified). Take upstream's list as-is; do not re-add better-sqlite3 without sign-off.
+
+### 1.11.3 Clean-upstream baseline
+
+`v2026.10.0` in an isolated worktree: `pnpm install --frozen-lockfile` + `pnpm run build`
+clean, and **3559/3559 tests green**. One caveat: under this host's ambient `umask 002`, a
+single `group-skills.test.ts` case fails because it hardcodes mode `644` while files land
+`664`. Run the suite with `umask 022` — or treat that one failure as the known baseline.
+Nothing in `materializeTemplateSkills` is actually broken.
