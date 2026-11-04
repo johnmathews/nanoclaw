@@ -119,7 +119,11 @@ replaced 016 with reply-mode and stripped the instance column — do NOT do that
    `ALTER TABLE messaging_groups ADD COLUMN reply_mode TEXT NOT NULL DEFAULT 'thread'`.
 2. Add the channel-default migration at the next number after that:
    `UPDATE messaging_groups SET reply_mode = 'channel' WHERE reply_mode != 'channel'`.
-3. `src/db/schema.ts`: add `reply_mode TEXT NOT NULL DEFAULT 'channel'` to the `messaging_groups`
+3. ~~`src/db/schema.ts`~~ **OBSOLETE (verified 2026-11-04):** upstream's `schema.ts` says
+   "Actual creation is done by migrations — do not use this at runtime", documents only 10
+   tables and already omits every migration-added table (`container_configs`,
+   `delivery_attempts`, `agent_message_policies`). Nothing imports it. Leave it alone rather
+   than half-updating it. The original instruction was: add `reply_mode` to the `messaging_groups`
    CREATE TABLE (LEAVE upstream's `instance` column in place).
 4. `src/db/messaging-groups.ts`: add `reply_mode` to `createMessagingGroup` INSERT (default
    `'channel'`) and to the `updateMessagingGroup` Pick. Keep upstream's instance-aware lookups.
