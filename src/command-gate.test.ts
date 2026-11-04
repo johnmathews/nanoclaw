@@ -158,3 +158,47 @@ describe('gate and runner agree on command names', () => {
     expect(await gateCommand(alias, 'telegram:1', 'ag-1')).toEqual({ action: 'filter' });
   });
 });
+
+describe('host-responder commands (/status, /usage)', () => {
+  // The renderers themselves are covered by health-snapshot.test.ts and
+  // usage.test.ts; what matters here is the gate's classification. Admin
+  // gating is the security-relevant half — the output names channels,
+  // sessions and account utilization, so a non-admin must be denied rather
+  // than served.
+  it('serves an admin with a renderer instead of passing to the container', async () => {
+    await seedUser('u-admin');
+    await grantRole({ user_id: 'u-admin', role: 'admin', agent_group_id: null, granted_by: null, granted_at: now() });
+    for (const command of ['/status', '/usage']) {
+      const gate = await gateCommand(command, 'u-admin', 'ag-1');
+      expect(gate.action, command).toBe('respond');
+      if (gate.action !== 'respond') throw new Error('unreachable');
+      expect(gate.command).toBe(command);
+      expect(typeof gate.render).toBe('function');
+    }
+  });
+
+  it('denies a non-admin', async () => {
+    await seedUser('u-plain');
+    for (const command of ['/status', '/usage']) {
+      expect(await gateCommand(command, 'u-plain', 'ag-1'), command).toEqual({ action: 'deny', command });
+    }
+  });
+
+  it('denies an unidentified sender', async () => {
+    expect(await gateCommand('/status', null, 'ag-1')).toEqual({ action: 'deny', command: '/status' });
+  });
+
+  it('is scoped by agent group like any admin command', async () => {
+    await seedUser('u-scoped');
+    await grantRole({ user_id: 'u-scoped', role: 'admin', agent_group_id: 'ag-1', granted_by: null, granted_at: now() });
+    expect((await gateCommand('/status', 'u-scoped', 'ag-1')).action).toBe('respond');
+    expect(await gateCommand('/status', 'u-scoped', 'ag-2')).toEqual({ action: 'deny', command: '/status' });
+  });
+
+  it('leaves ordinary messages and unknown commands alone', async () => {
+    await seedUser('u-admin2');
+    await grantRole({ user_id: 'u-admin2', role: 'admin', agent_group_id: null, granted_by: null, granted_at: now() });
+    expect(await gateCommand('what is the status?', 'u-admin2', 'ag-1')).toEqual({ action: 'pass' });
+    expect(await gateCommand('/statuses', 'u-admin2', 'ag-1')).toEqual({ action: 'pass' });
+  });
+});

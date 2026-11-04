@@ -575,6 +575,39 @@ async function deliverToAgent(
       log.info('Admin command denied by gate', { command: gate.command, userId, agentGroupId: agent.agent_group_id });
       return;
     }
+    if (gate.action === 'respond') {
+      // Fork feature: the host answers /status and /usage itself. Rendered off
+      // the hot path -- snapshotHealth walks every session's mailbox and
+      // getUsageText makes a network call, and the inbound row is already
+      // accounted for, so a slow or failing renderer must not stall routing or
+      // get the message retried. A failure still gets an answer in the
+      // channel; silence would read as the command being ignored.
+      const command = gate.command;
+      const addr = deliveryAddr;
+      void (async () => {
+        let text: string;
+        try {
+          text = await gate.render();
+        } catch (err) {
+          log.warn('Host-responder command failed', { command, err });
+          text = `Could not render ${command} — see host logs.`;
+        }
+        try {
+          await writeOutboundDirect(session.agent_group_id, session.id, {
+            id: `respond-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            kind: 'chat',
+            platformId: addr.platformId,
+            channelType: addr.channelType,
+            threadId: addr.threadId,
+            content: JSON.stringify({ text }),
+          });
+        } catch (err) {
+          log.error('Failed to write host-responder reply', { command, err });
+        }
+      })();
+      log.info('Host-responder command served', { command, userId, agentGroupId: agent.agent_group_id });
+      return;
+    }
   }
 
   if (wake) {
