@@ -34,6 +34,7 @@ import fs from 'fs';
 import { getSessionClaim } from './db/coordination.js';
 import { getSession, isTaskThread, updateSession } from './db/sessions.js';
 import { getAgentGroup } from './db/agent-groups.js';
+import { recordTaskOutcome } from './db/task-outcomes.js';
 import { indexSessionBestEffort } from './search-index-hook.js';
 import { log } from './log.js';
 import { heartbeatPath, withExistingMailboxSession } from './session-manager.js';
@@ -316,6 +317,18 @@ function resetStuckProcessingRows(
         sessionId: session.id,
         reason,
       });
+      // Fork feature: persist WHY, not just that it failed. Fire-and-forget
+      // with its own catch — this function is sync and four callers depend on
+      // that, and an audit write must never hold up (or break) the reset that
+      // frees the session. The handler is itself a no-op pre-migration.
+      void recordTaskOutcome({
+        agentGroupId: session.agent_group_id,
+        sessionId: session.id,
+        messageId: msg.id,
+        seriesId: msg.seriesId,
+        kind: msg.kind,
+        reason,
+      }).catch((err) => log.warn('Recording task outcome failed', { messageId: msg.id, err }));
     } else {
       const backoffMs = BACKOFF_BASE_MS * Math.pow(2, msg.tries);
       const backoffSec = Math.floor(backoffMs / 1000);

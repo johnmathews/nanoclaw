@@ -45,6 +45,13 @@ export interface MessageRetry {
   id: string;
   tries: number;
   processAfter: string | null;
+  /**
+   * messages_in.kind — lets a consumer tell a scheduled-task failure from a
+   * chat one. Read by the task-outcome log in reconcile-session.
+   */
+  kind: string | null;
+  /** Recurring-task series id, so repeated failures of one series tie together. */
+  seriesId: string | null;
 }
 
 export interface ProcessingClaim {
