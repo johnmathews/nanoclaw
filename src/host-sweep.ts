@@ -132,6 +132,14 @@ export function startHostSweep(): void {
   void sweep();
 }
 
+/**
+ * Is the host sweep live? Read by the fork's /health + /status snapshot; the
+ * `running` flag is module-private.
+ */
+export function isHostSweepRunning(): boolean {
+  return running;
+}
+
 export function stopHostSweep(): void {
   running = false;
   registerReconcileEnqueue(null);

@@ -134,6 +134,15 @@ let activePolling = false;
 let sweepPolling = false;
 
 /**
+ * Both delivery polls live? Read by the fork's /health + /status snapshot as
+ * the "message loop running" signal. Exported here rather than inferred from
+ * the outside because these flags are module-private.
+ */
+export function getDeliveryPollsRunning(): boolean {
+  return activePolling && sweepPolling;
+}
+
+/**
  * Callbacks fired when the delivery adapter is first set (and again if it's
  * replaced). Lets modules that need the adapter at boot (e.g. approvals →
  * gateway approval handlers) hook in without core calling into the module directly.
