@@ -480,6 +480,7 @@ describe('container configs', () => {
       cli_scope: 'global',
       timezone: null,
       speed: null,
+      env: '{}',
       updated_at: now(),
     });
     const row = await getContainerConfig('ag-full');

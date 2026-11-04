@@ -43,6 +43,8 @@ export interface ContainerConfigRow {
    */
   runtime_tier?: string | null;
   updated_at: string;
+  /** Per-group operator env, JSON object. Reserved keys are refused at set time and filtered at spawn. */
+  env: string;
 }
 
 /** Every unknown_sender_policy value a messaging group can hold. */

@@ -24,7 +24,7 @@ import {
   INSTALL_SLUG,
   TIMEZONE,
 } from './config.js';
-import { CONTAINER_PLUGINS_DIR, materializeContainerJson } from './container-config.js';
+import { CONTAINER_PLUGINS_DIR, filterContainerEnv, materializeContainerJson } from './container-config.js';
 import { getContainerConfig } from './db/container-configs.js';
 import { updateContainerConfigScalars } from './db/container-configs.js';
 import { CONTAINER_RUNTIME_BIN } from './container-runtime.js';
@@ -1279,11 +1279,43 @@ export function mergeMounts(composed: MountSpec[], contributed: MountSpec[]): Mo
  * with argv assembly removed: the host says what a session *is*, the driver
  * says how it is realized.
  */
+/**
+ * Switches off the bundled Claude Code binary's non-essential outbound traffic
+ * (telemetry, error reporting, auto-update). Its telemetry posts to
+ * http-intake.logs.us5.datadoghq.com and api.datadoghq.com, which this install
+ * does not use: with an egress-locked gateway each attempt is a refused
+ * connection plus a gateway WARN, a few hundred a day across agent groups.
+ *
+ * The names are read out of the shipped binary rather than taken from docs --
+ * see the test. A provider SDK bump that renames them brings the traffic back.
+ */
+export const CLAUDE_CODE_QUIET_ENV: Record<string, string> = {
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+  DISABLE_TELEMETRY: '1',
+  DISABLE_ERROR_REPORTING: '1',
+};
+
 export function composeSessionSpec(input: ComposeSessionSpecInput): SessionSpec {
   const { agentGroup, session, containerName, mounts, containerConfig, contribution, gateway, mailboxEnvironment } =
     input;
 
+  // Per-group operator env goes in the operator lane, with reserved names
+  // stripped: those would redirect egress or the trust store around the
+  // credential gateway, which the spec's admission policy does not screen for
+  // because no secret appears in the value. Placed BEFORE TZ/HOME and the
+  // mailbox vars so even a filter regression cannot clobber host wiring, and
+  // the gateway's own vars ride the separate contributed lane, which wins.
+  const operatorEnv = filterContainerEnv(containerConfig.env);
+  if (operatorEnv.skipped.length > 0) {
+    log.warn('Per-group env entries refused as reserved', {
+      agentGroupId: agentGroup.id,
+      skipped: operatorEnv.skipped,
+    });
+  }
+
   const env: Record<string, string> = {
+    ...operatorEnv.env,
+    ...CLAUDE_CODE_QUIET_ENV,
     TZ: containerConfig.timezone ?? TIMEZONE,
     ...mailboxEnvironment,
   };

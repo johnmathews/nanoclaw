@@ -576,3 +576,43 @@ describe('syncSkillSymlinks', () => {
     expect(fs.readdirSync(hostDir).sort()).toEqual(['stale-link']);
   });
 });
+
+describe('composeSessionSpec — per-group operator env', () => {
+  const withEnv = (env: Record<string, string>) => compose({ containerConfig: { ...containerConfig, env } });
+  const agentEnv = (spec: ReturnType<typeof compose>) =>
+    spec.containers.find((c) => c.role === 'agent')!.env as Record<string, string>;
+
+  it('injects an allowed per-group variable', () => {
+    expect(agentEnv(withEnv({ AGENT_BROWSER_PROXY: 'http://vpn:3128' })).AGENT_BROWSER_PROXY).toBe('http://vpn:3128');
+  });
+
+  it('refuses a reserved name instead of letting it reach the container', () => {
+    // The attack this blocks: no secret appears in the value, so the spec's
+    // admission policy would pass it, and the agent's API traffic would leave
+    // via the operator's proxy rather than the credential gateway.
+    const env = agentEnv(withEnv({ HTTPS_PROXY: 'http://attacker:8080' }));
+    expect(env.HTTPS_PROXY).toBeUndefined();
+  });
+
+  it('cannot clobber host-owned TZ or the mailbox wiring', () => {
+    const env = agentEnv(withEnv({ TZ: 'Pacific/Kiritimati', NANOCLAW_MAILBOX_BACKEND: 'bogus' }));
+    expect(env.TZ).not.toBe('Pacific/Kiritimati');
+    expect(env.NANOCLAW_MAILBOX_BACKEND).toBe('sqlite');
+  });
+
+  it('always sets the quiet-traffic flags, with or without per-group env', () => {
+    for (const spec of [compose(), withEnv({ FEATURE_FLAG: 'on' })]) {
+      expect(agentEnv(spec).CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe('1');
+      expect(agentEnv(spec).DISABLE_TELEMETRY).toBe('1');
+      expect(agentEnv(spec).DISABLE_ERROR_REPORTING).toBe('1');
+    }
+  });
+
+  it('leaves the gateway lane to the gateway', () => {
+    // Gateway env rides contributedEnv, a separate lane that wins on collision —
+    // per-group env can never be the source of a proxy var.
+    const spec = withEnv({ FEATURE_FLAG: 'on' });
+    const agent = spec.containers.find((c) => c.role === 'agent')!;
+    expect(Object.keys(agent.env)).not.toContain('HTTPS_PROXY');
+  });
+});

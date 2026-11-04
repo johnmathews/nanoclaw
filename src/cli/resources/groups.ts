@@ -2,11 +2,12 @@ import { connectGatewayAccount } from '../../gateway-connections.js';
 import { randomUUID } from 'crypto';
 
 import {
+  isReservedContainerEnv,
   mcpServerPluginOwner,
   parseMcpServerConfig,
-  validateMcpServerName,
   type AdditionalMountConfig,
   type McpServerConfig,
+  validateMcpServerName,
 } from '../../container-config.js';
 import { buildAgentGroupImage, killContainer } from '../../container-runner.js';
 import { requestWake } from '../../request-wake.js';
@@ -591,6 +592,52 @@ registerResource({
           removed: { apt: apt || null, npm: npm || null },
           note: 'Image rebuild required for package changes to take effect.',
         };
+      },
+    },
+    'config set-env': {
+      access: 'approval',
+      description:
+        'Set a per-group container env var. Takes effect on the next container start. Use --id <group-id> --key <NAME> --value <value>.',
+      handler: async (args) => {
+        const id = args.id as string;
+        if (!id) throw new Error('--id is required');
+        const key = args.key as string | undefined;
+        const value = args.value as string | undefined;
+        if (!key) throw new Error('--key is required');
+        if (value === undefined) throw new Error('--value is required (use unset-env to remove)');
+
+        // Refused here as well as at spawn. Rejecting at set time means the
+        // operator gets told, rather than silently having the entry dropped
+        // later; these names would redirect the container's egress or trust
+        // store around the credential gateway.
+        if (isReservedContainerEnv(key)) {
+          throw new Error(`${key} is reserved by the host/gateway wiring and cannot be set per group`);
+        }
+
+        const row = await getContainerConfig(id);
+        if (!row) throw new Error(`No container config for group: ${id}`);
+        const env = JSON.parse(row.env ?? '{}') as Record<string, string>;
+        env[key] = value;
+        await updateContainerConfigJson(id, 'env', env);
+        return { set: key, note: 'Takes effect when the group next starts a container.' };
+      },
+    },
+    'config unset-env': {
+      access: 'approval',
+      description: 'Remove a per-group container env var. Use --id <group-id> --key <NAME>.',
+      handler: async (args) => {
+        const id = args.id as string;
+        if (!id) throw new Error('--id is required');
+        const key = args.key as string | undefined;
+        if (!key) throw new Error('--key is required');
+
+        const row = await getContainerConfig(id);
+        if (!row) throw new Error(`No container config for group: ${id}`);
+        const env = JSON.parse(row.env ?? '{}') as Record<string, string>;
+        if (!(key in env)) return { removed: null, note: `${key} was not set` };
+        delete env[key];
+        await updateContainerConfigJson(id, 'env', env);
+        return { removed: key, note: 'Takes effect when the group next starts a container.' };
       },
     },
     'config add-mount': {

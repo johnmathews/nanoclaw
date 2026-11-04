@@ -190,7 +190,13 @@ describe('host-responder commands (/status, /usage)', () => {
 
   it('is scoped by agent group like any admin command', async () => {
     await seedUser('u-scoped');
-    await grantRole({ user_id: 'u-scoped', role: 'admin', agent_group_id: 'ag-1', granted_by: null, granted_at: now() });
+    await grantRole({
+      user_id: 'u-scoped',
+      role: 'admin',
+      agent_group_id: 'ag-1',
+      granted_by: null,
+      granted_at: now(),
+    });
     expect((await gateCommand('/status', 'u-scoped', 'ag-1')).action).toBe('respond');
     expect(await gateCommand('/status', 'u-scoped', 'ag-2')).toEqual({ action: 'deny', command: '/status' });
   });

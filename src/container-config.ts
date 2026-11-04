@@ -259,6 +259,71 @@ export interface ContainerConfig {
   timezone?: string;
   /** Session isolation tier for the group's containers; absent = the composer's default ('container'). */
   runtimeTier?: 'container' | 'vm';
+  /**
+   * Per-group operator env, injected into the agent container at spawn. Lets an
+   * operator set variables read by tools the agent runs (AGENT_BROWSER_* for a
+   * proxied browser, say) without a code change. Reserved keys are refused at
+   * set time and filtered again here — see isReservedContainerEnv.
+   */
+  env?: Record<string, string>;
+}
+
+/**
+ * Env names an operator may never set per-group.
+ *
+ * This is NOT the same protection as the spec's admission policy, which
+ * refuses secret-SHAPED env and credential VALUES (drivers/types.ts). These
+ * names carry innocuous-looking values whose effect is to redirect the
+ * container's egress or its trust store — pointing HTTPS_PROXY elsewhere, or
+ * adding a CA — which would route API traffic around the credential gateway
+ * without any secret ever appearing in the environment. Nothing in the
+ * admission policy would notice.
+ *
+ * Matched by EXACT name, not substring, so namespaced tool variables like
+ * AGENT_BROWSER_PROXY stay settable — that one is the feature's main use.
+ */
+const RESERVED_ENV_EXACT = new Set([
+  'TZ',
+  'HOME',
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'NO_PROXY',
+  'FTP_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'all_proxy',
+  'no_proxy',
+  'ftp_proxy',
+  'NODE_EXTRA_CA_CERTS',
+  'SSL_CERT_FILE',
+  'SSL_CERT_DIR',
+  'CURL_CA_BUNDLE',
+  'REQUESTS_CA_BUNDLE',
+  'DENO_CERT',
+]);
+
+/** Is this env name reserved for the host/gateway wiring? */
+export function isReservedContainerEnv(key: string): boolean {
+  return RESERVED_ENV_EXACT.has(key);
+}
+
+/**
+ * Split per-group operator env into what may be injected and what was refused.
+ * The fork returned argv `-e` pairs; the host now describes a session as a spec
+ * and the driver realizes it, so this returns the record the spec carries.
+ */
+export function filterContainerEnv(env: Record<string, string> | undefined): {
+  env: Record<string, string>;
+  skipped: string[];
+} {
+  const out: Record<string, string> = {};
+  const skipped: string[] = [];
+  for (const [key, value] of Object.entries(env ?? {})) {
+    if (isReservedContainerEnv(key)) skipped.push(key);
+    else out[key] = value;
+  }
+  return { env: out, skipped };
 }
 
 /**
@@ -383,6 +448,7 @@ export function configFromDb(row: ContainerConfigRow, group: AgentGroup): Contai
     ...speedFields(parseContainerSpeed(row.speed) ?? (FAST_MODE ? 'fast' : undefined)),
     timezone: row.timezone && isValidTimezone(row.timezone) ? row.timezone : undefined,
     runtimeTier: parseRuntimeTier(row.runtime_tier, group.name),
+    env: JSON.parse(row.env ?? '{}') as Record<string, string>,
   };
 }
 
