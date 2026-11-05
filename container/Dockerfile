@@ -54,6 +54,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         libxshmfence1 \
         ca-certificates \
         curl \
+        poppler-utils \
         git \
         tini \
         unzip \
@@ -114,6 +115,14 @@ RUN npm install -g npm@${NPM_VERSION}
 
 # Global Node CLIs the agent invokes at runtime live in cli-tools.json so a
 # skill can add one with a json-merge instead of editing this Dockerfile.
+#
+# Three entries there are not CLIs the agent calls directly:
+#   - the Gmail and Google Calendar MCP servers, which the agent reaches as MCP
+#     tools (credentials are injected per request by the gateway, never baked).
+#   - zod-to-json-schema, pinned to 3.22.5 as a direct global to hold back a
+#     resolution bug: gmail-mcp@1.1.11 leaves it unpinned, pnpm then picks
+#     >=3.25, and that imports `zod/v3` — a subpath absent from the zod 3.24.x
+#     resolved alongside it. Re-check this pin if the Gmail MCP is bumped.
 # install-cli-tools.sh installs each via pnpm (pinned), writing the per-tool
 # only-built-dependencies opt-ins it reads from the manifest.
 COPY cli-tools.json install-cli-tools.sh /tmp/
