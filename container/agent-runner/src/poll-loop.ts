@@ -407,6 +407,12 @@ export async function processQuery(
   // Once-per-turn guard for the task-run "<message> block was not delivered"
   // nudge — mirrors unwrappedNudged for chat turns.
   let taskBlockNudged = false;
+  // Once-per-turn guard for the silent-turn nudge. Carried on QueuedTurn like
+  // the other two, so a turn that is queued behind a retry keeps its own
+  // guard — and, because routing is rebound per turn, a task tick can never
+  // inherit a chat turn's state. (The fork patched exactly that as a latching
+  // bug; upstream's turn model makes it structurally impossible.)
+  let silentNudged = false;
   // How many <message> blocks were delivered from 'text' events this turn
   // (chat runs, mid-turn delivery providers only). A frame-local count, never
   // keyed by content: it feeds the result door's nudge decision ("did this
@@ -453,12 +459,14 @@ export async function processQuery(
     routing: RoutingContext;
     unwrappedNudged: boolean;
     taskBlockNudged: boolean;
+    silentNudged: boolean;
   };
   const queuedTurns: QueuedTurn[] = [];
   const adoptTurn = (next: QueuedTurn): void => {
     Object.assign(routing, next.routing);
     unwrappedNudged = next.unwrappedNudged;
     taskBlockNudged = next.taskBlockNudged;
+    silentNudged = next.silentNudged;
     publishReplyRoute(routing);
     answering = true;
   };
@@ -467,7 +475,7 @@ export async function processQuery(
   // Preserve its original route, prompt and retry guards until it is answered.
   const pushRetry = (prompt: string): void => {
     query.push(prompt);
-    queuedTurns.push({ routing: { ...routing }, unwrappedNudged, taskBlockNudged });
+    queuedTurns.push({ routing: { ...routing }, unwrappedNudged, taskBlockNudged, silentNudged });
     archivePrompts.push(archivePrompts[0] ?? initialPrompt);
   };
 
@@ -564,6 +572,7 @@ export async function processQuery(
           routing: extractRouting(keep),
           unwrappedNudged: false,
           taskBlockNudged: false,
+          silentNudged: false,
         };
         if (answering) queuedTurns.push(next);
         else adoptTurn(next);
@@ -637,6 +646,12 @@ export async function processQuery(
         markCompleted(initialBatchIds);
         const resultText = event.text ?? '';
         const failed = event.isError === true;
+        // Set inside the content branch below; read by the silent-turn check
+        // after it. A genuinely empty, non-failed result skips that branch
+        // entirely — which is precisely the turn that needs nudging — so these
+        // cannot live inside it.
+        let resultRetried = false;
+        let resultFailed = false;
         if (resultText || failed) {
           const { hasUnwrapped, taskBlocks } = await dispatchResultText(resultText, routing, {
             midTurnSent,
@@ -678,6 +693,10 @@ export async function processQuery(
           // turn's mid-turn sent count. If a reply already went out as a
           // mid-turn block, the unwrapped tail stays in the scratchpad log.
           const willRetryWrapping = !failed && hasUnwrapped && !unwrappedNudged;
+          // Consumed by the silent-turn check below, which must evaluate even
+          // when this branch does not run at all.
+          resultRetried = willRetryWrapping || willRetryTaskBlocks;
+          resultFailed = failed;
           notifyExchangeComplete(onExchangeComplete, {
             prompt: archivePrompts[0] ?? initialPrompt,
             result: archivedResult,
@@ -706,6 +725,41 @@ export async function processQuery(
           // user prompt at their own position in the FIFO queue.
           archivePrompts.shift();
         } else archivePrompts.shift();
+        // Silent-turn recovery. A turn can end having delivered NOTHING:
+        // empty final text, or a body that was entirely <internal> and
+        // stripped to nothing. For a task or system trigger that is often
+        // correct — delivered by email, posted mid-turn, or a reconnect ack
+        // needing no action. For a human chat message it is a dropped reply:
+        // the user sees silence and has to poke the chat with "?".
+        //
+        // Evaluated outside the content branch above on purpose: an empty,
+        // non-failed result never enters it. Gated on the other two nudges so
+        // one turn never gets two coaxes stacked, and capped at one per turn.
+        const silentTurn =
+          !resultFailed &&
+          routing.expectsReply &&
+          !silentNudged &&
+          !resultRetried &&
+          midTurnSent === 0 &&
+          !chatRowWrittenSince(turnStartSeq);
+        if (silentTurn) {
+          silentNudged = true;
+          log('Silent turn on a chat message — nudging the agent to reply');
+          // Deliberately factual, not permissive. An earlier, softer wording
+          // ("you may stay silent") let the model rationalise an
+          // <internal>-only turn as a false alarm and stay quiet — it
+          // typically insists it "already sent via send_message". When this
+          // fires we know nothing was written, so the assertion is always true
+          // and there is nothing to argue with.
+          pushRetry(
+            `<system>Delivery check: the outbound log for this turn is EMPTY — nothing reached the user. ` +
+              `If you believe you already sent a reply (e.g. via send_message), that send did NOT record a delivery, ` +
+              `or it answered an earlier message and the user's latest message is still unanswered. This is not a false alarm. ` +
+              `Reply to the user's most recent message now, wrapped in <message to="name">...</message>. ` +
+              `Do not respond with only <internal> — that delivers nothing.</system>`,
+          );
+        }
+
         // Turn boundary: reset the per-turn sent count after the result's
         // nudge decision has used it. A nudge retry re-counts via its own
         // text events before the retry result, so resetting on every result

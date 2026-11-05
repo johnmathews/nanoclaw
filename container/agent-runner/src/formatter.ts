@@ -172,6 +172,17 @@ export interface RoutingContext {
   taskRun: boolean;
   /** Every non-echo row that woke this turn is a failure notice. */
   failureNoticeWake?: boolean;
+  /**
+   * A human chat message is waiting on an answer in this batch.
+   *
+   * Not simply `!taskRun`: a system row (on-wake, a reconnect ack, a webhook)
+   * legitimately completes in silence, and so does a task that delivers by
+   * email. Only a `chat`/`chat-sdk` row means a person is watching for a
+   * reply — which is what lets the silent-turn nudge fire without coaxing
+   * background work into chattering. Cross-session echo rows are excluded:
+   * they are ambient context from another conversation, not a question here.
+   */
+  expectsReply: boolean;
 }
 
 /**
@@ -199,6 +210,7 @@ export function extractRouting(messages: MessageInRow[]): RoutingContext {
     taskRun: messages.some((m) => m.kind === 'task') && messages.every((m) => m.kind === 'task' || isSessionEcho(m)),
     // Accumulated trigger=0 context rides along but did not wake the turn.
     failureNoticeWake: waking.length > 0 && waking.every(isFailureNotice),
+    expectsReply: nonEcho.some((m) => m.kind === 'chat' || m.kind === 'chat-sdk'),
   };
 }
 
