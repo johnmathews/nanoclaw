@@ -56,3 +56,7 @@ docs/maintainer-guide.md
 docs/drafts/
 forks.md
 .worktrees/
+
+# Local tooling output
+screenshots/
+.engineering-team/
