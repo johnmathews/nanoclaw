@@ -18,7 +18,7 @@ import { createSlackAdapter, type SlackAdapter } from '@chat-adapter/slack';
 
 import { log } from '../log.js';
 import { readEnvFile } from '../env.js';
-import type { ChannelAdapter, ChannelContextDefaults, ChannelDefaults } from './adapter.js';
+import type { ChannelAdapter, ChannelDefaults } from './adapter.js';
 import { createChatSdkBridge, type PostBlocksFn } from './chat-sdk-bridge.js';
 import { registerChannelAdapter } from './channel-registry.js';
 import { setSlackAuthorIsBotResolver } from './slack-a2a-guard.js';

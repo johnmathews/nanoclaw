@@ -11,7 +11,9 @@ import type { HealthData } from './health.js';
 import { log } from './log.js';
 
 export function startHealthServer(port: number, getHealth: () => HealthData | Promise<HealthData>): http.Server {
-  const server = http.createServer(async (req, res) => {
+  // The handler is async (snapshotHealth awaits the DbDriver) and catches
+  // everything itself, so the void wrapper drops a promise that never rejects.
+  const handle = async (req: http.IncomingMessage, res: http.ServerResponse): Promise<void> => {
     if (req.method === 'GET' && req.url === '/health') {
       try {
         // snapshotHealth is async since the DbDriver port (stage 4c).
@@ -31,6 +33,9 @@ export function startHealthServer(port: number, getHealth: () => HealthData | Pr
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Not found' }));
     }
+  };
+  const server = http.createServer((req, res) => {
+    void handle(req, res);
   });
 
   // A bind failure (port taken) must not crash the host: without a listener,
