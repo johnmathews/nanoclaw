@@ -25,8 +25,9 @@ import { setSlackAuthorIsBotResolver } from './slack-a2a-guard.js';
 import { slackRawTextExtractor } from './slack-raw-text.js';
 
 /**
- * Dedicated bot app on a threaded platform. group threads:true keeps
- * mention-sticky bounded — engagement sticks per-thread, not forever.
+ * Dedicated bot app on a threaded platform. Fork: both contexts default to
+ * unthreaded, top-level replies (see the declaration below); upstream's group
+ * default was threads:true + per-thread sessions.
  * dm.threads:false is a deliberate policy choice, not a capability limit:
  * Slack users can open sub-threads inside a DM, but by default the agent
  * replies top-level and all DM sub-threads collapse into the one DM session.
@@ -54,19 +55,24 @@ export const SLACK_DEFAULTS: ChannelDefaults = {
     engageMode: 'pattern',
     engagePattern: '.',
     threads: false,
-    sessionMode: 'per-thread',
+    // Fork: 'shared', not upstream's 'per-thread'. A per-thread sessionMode
+    // is stamped as threads=1 on every new wiring (resolveWiringDefaults),
+    // which would thread DM replies; this install replies top-level.
+    sessionMode: 'shared',
     unknownSenderPolicy: 'decline_notify',
   },
   group: {
+    // Declared mention-sticky, but resolveWiringDefaults coerces it to plain
+    // 'mention' while threads are off (stickiness is keyed per thread).
     engageMode: 'mention-sticky',
-    threads: true,
-    // D29: group conversations are per-thread too — Slack channels
-    // materialize a thread per top-level message, and ambient context
-    // (same-mg fan + channel-timeline backfill) is the continuity layer.
-    // Creation-time stamp like dm.sessionMode; existing wirings never flip.
-    // Canvas-comment shadow channels deliberately stay shared (wired
-    // explicitly in room-canvas, the documented D29 exception).
-    sessionMode: 'per-thread',
+    // Fork: unthreaded by default (upstream: threads true + sessionMode
+    // 'per-thread', its D29). This install's Slack channels reply top-level
+    // in the channel root -- the behaviour the fork's per-channel reply_mode
+    // gave before Phase 2. Both fields must change: a per-thread sessionMode
+    // is stamped as threads=1 on new wirings regardless of `threads`.
+    // Per wiring, `ncl wirings update <id> --threads true` re-enables threads.
+    threads: false,
+    sessionMode: 'shared',
     unknownSenderPolicy: 'request_approval',
   },
   mentions: 'platform',
