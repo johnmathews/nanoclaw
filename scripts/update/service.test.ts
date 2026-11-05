@@ -87,7 +87,7 @@ afterEach(() => {
 describe('service-mode detection and control', () => {
   it('detects and controls a user systemd unit', async () => {
     const root = temp();
-    const name = `nanoclaw-v2-${slug(root)}`;
+    const name = `nanoclaw-${slug(root)}`;
     const { env, calls, home } = makeEnv('linux', {
       [`systemctl --user is-active ${name}`]: { ok: true },
     });
@@ -116,7 +116,7 @@ describe('service-mode detection and control', () => {
 
   it('bootstraps an unloaded launchd plist instead of relying on kickstart alone', () => {
     const root = temp();
-    const name = `com.nanoclaw-v2-${slug(root)}`;
+    const name = `com.nanoclaw-${slug(root)}`;
     const { env, calls, home } = makeEnv('darwin', {
       [`launchctl print gui/1000/${name}`]: { ok: false, status: 113, stderr: 'Could not find service' },
     });
@@ -217,7 +217,7 @@ describe('liveness probes: running / stopped / probe failed', () => {
   // reported complete against the stale host. Exit 3 is the only "stopped".
   function userUnit(): { root: string; name: string; probeKey: string } {
     const root = temp();
-    const name = `nanoclaw-v2-${slug(root)}`;
+    const name = `nanoclaw-${slug(root)}`;
     return { root, name, probeKey: `systemctl --user is-active ${name}` };
   }
   function writeUserUnit(home: string, name: string): void {
@@ -293,7 +293,7 @@ describe('liveness probes: running / stopped / probe failed', () => {
 
   it('launchd: 113 (not loaded) is stopped, 112 (no domain, e.g. SSH without a GUI session) refuses', () => {
     const root = temp();
-    const name = `com.nanoclaw-v2-${slug(root)}`;
+    const name = `com.nanoclaw-${slug(root)}`;
     const key = `launchctl print gui/1000/${name}`;
     const notLoaded = makeEnv('darwin', { [key]: { ok: false, status: 113, stderr: 'Could not find service' } });
     fs.mkdirSync(path.join(notLoaded.home, 'Library', 'LaunchAgents'), { recursive: true });
@@ -349,7 +349,7 @@ describe('liveness probes: running / stopped / probe failed', () => {
   });
   it('verifyServiceHealth polls through a transient probe failure and reports a persistent one at the timeout', async () => {
     const root = temp();
-    const name = `nanoclaw-v2-${slug(root)}`;
+    const name = `nanoclaw-${slug(root)}`;
     const key = `systemctl --user is-active ${name}`;
     const { env, home } = makeEnv('linux', {
       [`${path.join(root, 'bin', 'ncl')} groups list`]: { ok: true },
@@ -574,7 +574,7 @@ describe('drain and health gates', () => {
 
   it('requires active process state, the ncl socket, and a successful CLI probe', async () => {
     const root = temp();
-    const name = `nanoclaw-v2-${slug(root)}`;
+    const name = `nanoclaw-${slug(root)}`;
     const { env, home } = makeEnv('linux', {
       [`systemctl --user is-active ${name}`]: { ok: true },
       [`${path.join(root, 'bin', 'ncl')} groups list`]: { ok: true },

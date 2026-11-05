@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { getInstallSlug } from './install-slug.js';
+import { getContainerImageBase, getInstallSlug, getLaunchdLabel, getSystemdUnit } from './install-slug.js';
 
 afterEach(() => {
   delete process.env.NANOCLAW_INSTALL_ID;
@@ -24,5 +24,18 @@ describe('getInstallSlug', () => {
       process.env.NANOCLAW_INSTALL_ID = bad;
       expect(() => getInstallSlug('/some/checkout'), bad).toThrow(/NANOCLAW_INSTALL_ID/);
     }
+  });
+});
+
+// Fork §6.3: no `-v2-` infix. The running unit on this install is
+// `nanoclaw-583cc1c4` and its image `nanoclaw-agent-583cc1c4`; reintroducing
+// the infix would point restarts and spawns at names that don't exist.
+describe('install-derived names', () => {
+  it('carry no v2 infix and match the live install', () => {
+    const root = '/srv/apps/nanoclaw';
+    expect(getInstallSlug(root)).toBe('583cc1c4');
+    expect(getSystemdUnit(root)).toBe('nanoclaw-583cc1c4');
+    expect(getLaunchdLabel(root)).toBe('com.nanoclaw-583cc1c4');
+    expect(getContainerImageBase(root)).toBe('nanoclaw-agent-583cc1c4');
   });
 });

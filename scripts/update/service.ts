@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { getInstallSlug } from '../../src/install-slug.js';
+import { getInstallSlug, getLaunchdLabel, getSystemdUnit } from '../../src/install-slug.js';
 
 export interface RunOptions {
   /** Kill the subprocess and fail the call after this long. Unset = no bound. */
@@ -198,9 +198,8 @@ export function withRecordedNohupHost(
 }
 
 export function detectService(projectRoot: string, env: ServiceEnvironment): ServiceHandle {
-  const slug = getInstallSlug(projectRoot);
   if (env.platform === 'darwin') {
-    const name = `com.nanoclaw-v2-${slug}`;
+    const name = getLaunchdLabel(projectRoot);
     const definition = path.join(env.home, 'Library', 'LaunchAgents', `${name}.plist`);
     if (fs.existsSync(definition)) {
       return {
@@ -221,7 +220,7 @@ export function detectService(projectRoot: string, env: ServiceEnvironment): Ser
   }
 
   if (env.platform === 'linux') {
-    const name = `nanoclaw-v2-${slug}`;
+    const name = getSystemdUnit(projectRoot);
     const userDefinition = path.join(env.home, '.config', 'systemd', 'user', `${name}.service`);
     const systemDefinition = `/etc/systemd/system/${name}.service`;
     if (fs.existsSync(userDefinition)) {

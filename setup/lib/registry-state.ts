@@ -229,7 +229,7 @@ export function readRegistryHost(): string | undefined {
 }
 
 export interface AgentImageInspection {
-  /** The local tag inspected — `nanoclaw-agent-v2-<slug>:latest`. */
+  /** The local tag inspected — `nanoclaw-agent-<slug>:latest`. */
   ref: string;
   /** Local image ID (`sha256:…` over the config blob). Absent when not present. */
   id?: string;

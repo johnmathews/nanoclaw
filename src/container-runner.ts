@@ -387,7 +387,7 @@ async function spawnContainer(session: Session): Promise<void> {
   // buildMounts and buildContainerArgs so side effects (mkdir, etc.) fire once.
   const { provider, contribution, surfaces } = await resolveProviderContribution(session, agentGroup, containerConfig);
 
-  const containerName = `nanoclaw-v2-${agentGroup.folder}-${Date.now()}`;
+  const containerName = `nanoclaw-${agentGroup.folder}-${Date.now()}`;
   const mounts = await buildMounts(agentGroup, session, containerConfig, provider, contribution, surfaces);
   const mailboxEnvironment = await mailbox.runnerEnvironment(mailboxKey);
 

@@ -3,9 +3,9 @@
 # Source this file after $PROJECT_ROOT is set:
 #
 #   source "$PROJECT_ROOT/setup/lib/install-slug.sh"
-#   label=$(launchd_label)        # com.nanoclaw-v2-<slug>
-#   unit=$(systemd_unit)          # nanoclaw-v2-<slug>
-#   image=$(container_image_base) # nanoclaw-agent-v2-<slug>
+#   label=$(launchd_label)        # com.nanoclaw-<slug>
+#   unit=$(systemd_unit)          # nanoclaw-<slug>
+#   image=$(container_image_base) # nanoclaw-agent-<slug>
 #
 # Slug is sha1(PROJECT_ROOT)[:8] — must match the TS helper exactly so both
 # halves of setup name things consistently.
@@ -25,13 +25,13 @@ _nanoclaw_install_slug() {
 }
 
 launchd_label() {
-  printf 'com.nanoclaw-v2-%s' "$(_nanoclaw_install_slug)"
+  printf 'com.nanoclaw-%s' "$(_nanoclaw_install_slug)"
 }
 
 systemd_unit() {
-  printf 'nanoclaw-v2-%s' "$(_nanoclaw_install_slug)"
+  printf 'nanoclaw-%s' "$(_nanoclaw_install_slug)"
 }
 
 container_image_base() {
-  printf 'nanoclaw-agent-v2-%s' "$(_nanoclaw_install_slug)"
+  printf 'nanoclaw-agent-%s' "$(_nanoclaw_install_slug)"
 }
