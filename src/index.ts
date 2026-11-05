@@ -4,6 +4,7 @@
  * Thin orchestrator: init DB, run migrations, start channel adapters,
  * start delivery polls, start sweep, handle shutdown.
  */
+import http from 'http';
 import path from 'path';
 
 import { backfillContainerConfigs } from './backfill-container-configs.js';
@@ -29,6 +30,9 @@ import { getGatewayProvider } from './gateway-providers/index.js';
 import { routeInbound } from './router.js';
 import { log } from './log.js';
 import { enforceUpgradeTripwire } from './upgrade-state.js';
+import { snapshotHealth } from './health-snapshot.js';
+import { startHealthServer } from './health-server.js';
+import { initWatchdog, type Watchdog } from './watchdog.js';
 
 // Response registry lives in response-registry.ts to break the
 // circular import cycle: src/index.ts imports src/modules/index.js for side
@@ -72,6 +76,12 @@ import {
 } from './channels/channel-registry.js';
 
 let stopGatewayAvailabilityMonitor: (() => void) | undefined;
+let healthServer: http.Server | null = null;
+let watchdog: Watchdog | null = null;
+let watchdogTimer: NodeJS.Timeout | null = null;
+
+const DEFAULT_HEALTH_PORT = 3002;
+const WATCHDOG_TICK_MS = 2000;
 
 async function main(): Promise<void> {
   log.info('NanoClaw starting');
@@ -213,12 +223,36 @@ async function main(): Promise<void> {
   // 9. Start the `ncl` CLI socket server (data/ncl.sock).
   await startCliServer();
 
+  // 10. Start the /health HTTP endpoint (loopback only).
+  const healthPort = parseInt(process.env.HEALTH_PORT || String(DEFAULT_HEALTH_PORT), 10);
+  healthServer = startHealthServer(healthPort, snapshotHealth);
+
+  // 11. systemd watchdog — sd_notify READY=1 + 2s WATCHDOG ticks. The live
+  // unit is Type=notify with WatchdogSec=30s, so without this systemd times
+  // the start out. Returns null when NOTIFY_SOCKET is absent (upstream's
+  // Type=simple unit, dev mode) — a no-op there.
+  watchdog = initWatchdog();
+  if (watchdog) {
+    const wd = watchdog;
+    watchdogTimer = setInterval(() => wd.tick(), WATCHDOG_TICK_MS);
+    watchdogTimer.unref();
+  }
+
   log.info('NanoClaw running');
 }
 
 /** Graceful shutdown. */
 async function shutdown(signal: string): Promise<void> {
   log.info('Shutdown signal received', { signal });
+  if (watchdogTimer) {
+    clearInterval(watchdogTimer);
+    watchdogTimer = null;
+  }
+  watchdog?.close();
+  if (healthServer) {
+    await new Promise<void>((resolve) => healthServer!.close(() => resolve()));
+    healthServer = null;
+  }
   hostAbortController.abort();
   stopGatewayAvailabilityMonitor?.();
   await stopGatewayApprovalCoordinator();

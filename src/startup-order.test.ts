@@ -52,6 +52,9 @@ vi.mock('./delivery.js', () => ({
   setDeliveryAdapter: vi.fn(),
   stopDeliveryPolls: vi.fn(),
 }));
+vi.mock('./health-server.js', () => ({ startHealthServer: vi.fn(() => null) }));
+vi.mock('./health-snapshot.js', () => ({ snapshotHealth: vi.fn() }));
+vi.mock('./watchdog.js', () => ({ initWatchdog: () => null }));
 vi.mock('./host-sweep.js', () => ({ startHostSweep: vi.fn(), stopHostSweep: vi.fn() }));
 vi.mock('./host-lifecycle.js', () => ({ startHostModules: vi.fn(), stopHostModules: vi.fn() }));
 vi.mock('./router.js', () => ({ routeInbound: state.routeInbound }));
