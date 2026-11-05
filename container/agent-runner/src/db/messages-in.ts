@@ -111,3 +111,8 @@ export function findCliResponse(requestId: string): MessageInRow | undefined {
   const message = getAgentMailbox().operations.findCliResponse(requestId);
   return message && messageRow(message);
 }
+
+/** Host-synthesised reaction rows, newest first. See query_reactions. */
+export function findReactionRows(limit: number): MessageInRow[] {
+  return getAgentMailbox().operations.findReactionRows(limit).map(messageRow);
+}

@@ -49,6 +49,16 @@ export interface MailboxOperations {
   getMessageIn(id: string): InboundMessage | undefined;
   findQuestionResponse(questionId: string): InboundMessage | undefined;
   findCliResponse(requestId: string): InboundMessage | undefined;
+  /**
+   * Inbound rows the host synthesised for reaction events, newest first.
+   *
+   * Reactions are not a structural concept in the runner — they arrive as
+   * ordinary chat-sdk rows with a `reaction` object inside their content JSON
+   * (host side: chat-sdk-bridge.buildReactionInbound). This read exists so the
+   * query_reactions tool does not have to reach past the mailbox for raw SQL.
+   * Scoped to this session's own mailbox by construction.
+   */
+  findReactionRows(limit: number): InboundMessage[];
   writeMessageOut(message: OutboundMessageDraft): Promise<number>;
   getMessageIdBySeq(sequence: number): string | null;
   getRoutingBySeq(sequence: number): SessionRouting | null;

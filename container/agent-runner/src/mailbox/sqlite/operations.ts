@@ -114,6 +114,26 @@ export function sqliteFindQuestionResponse(questionId: string): MessageInRow | u
   }
 }
 
+export function sqliteFindReactionRows(limit: number): MessageInRow[] {
+  const inbound = openInboundDb();
+  try {
+    // LIKE on the serialized content rather than a column: the host writes
+    // reactions as ordinary chat-sdk rows, so there is nothing to index on.
+    // Status is deliberately unfiltered — a reaction the agent has already
+    // processed is still a fact about the conversation.
+    return inbound
+      .prepare(
+        `SELECT * FROM messages_in
+          WHERE kind = 'chat-sdk' AND content LIKE '%"reaction":%'
+          ORDER BY timestamp DESC
+          LIMIT ?`,
+      )
+      .all(limit) as MessageInRow[];
+  } finally {
+    inbound.close();
+  }
+}
+
 export function sqliteFindCliResponse(requestId: string): MessageInRow | undefined {
   const inbound = openInboundDb();
   try {

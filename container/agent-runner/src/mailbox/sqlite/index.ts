@@ -26,6 +26,7 @@ import {
   sqliteSetState,
   sqliteTimestamp,
   sqliteWriteMessageOut,
+  sqliteFindReactionRows,
 } from './operations.js';
 import type { MessageInRow } from '../../db/messages-in.js';
 import type { MessageOutRow } from '../../db/messages-out.js';
@@ -143,6 +144,10 @@ export class SqliteAgentMailbox implements AgentMailbox {
   findCliResponse(requestId: string): InboundMessage | undefined {
     const row = sqliteFindCliResponse(requestId);
     return row && inboundMessage(row);
+  }
+
+  findReactionRows(limit: number): InboundMessage[] {
+    return sqliteFindReactionRows(limit).map(inboundMessage);
   }
 
   async writeMessageOut(message: Parameters<MailboxOperations['writeMessageOut']>[0]): Promise<number> {
