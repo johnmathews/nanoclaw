@@ -26,11 +26,7 @@ import {
   getMessagingGroupForOwnDestination,
 } from './db/messaging-groups.js';
 import { clearDeliveryAttempt, getDeliveryAttempt, recordDeliveryAttempt } from './db/coordination.js';
-import {
-  ChannelDisconnectedError,
-  PermanentDeliveryError,
-  classifyDeliveryError,
-} from './channels/delivery-errors.js';
+import { ChannelDisconnectedError, PermanentDeliveryError, classifyDeliveryError } from './channels/delivery-errors.js';
 import { runGuarded, type DeliveryGuardSpec, type GuardedDeliveryHandler } from './delivery-guard.js';
 import { isUnguarded, type Unguarded } from './guard/index.js';
 import { mapConcurrent } from './concurrency.js';
@@ -141,7 +137,11 @@ async function failDelivery(
     await withExistingMailboxSession(agentGroupId, session.id, (mailbox) => mailbox.markDeliveryFailed(msg.id));
     await clearAttemptRow(msg.id);
   } catch (markErr) {
-    log.error('Failed to record permanent delivery failure', { messageId: msg.id, sessionId: session.id, err: markErr });
+    log.error('Failed to record permanent delivery failure', {
+      messageId: msg.id,
+      sessionId: session.id,
+      err: markErr,
+    });
   }
   try {
     await surfaceDeliveryFailure(agentGroupId, session, msg, err);
@@ -173,11 +173,7 @@ async function surfaceDeliveryFailure(
     /* non-JSON or opaque content — omit the preview */
   }
   const reason =
-    err instanceof PermanentDeliveryError && err.reason
-      ? err.reason
-      : err instanceof Error
-        ? err.message
-        : String(err);
+    err instanceof PermanentDeliveryError && err.reason ? err.reason : err instanceof Error ? err.message : String(err);
   const dest = msg.channelType ? `${msg.channelType}${msg.platformId ? `/${msg.platformId}` : ''}` : 'the channel';
   const text =
     `⚠️ System notice: a message you sent could NOT be delivered to ${dest} and the user did not receive it ` +
