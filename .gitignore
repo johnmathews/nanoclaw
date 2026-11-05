@@ -60,3 +60,8 @@ forks.md
 # Local tooling output
 screenshots/
 .engineering-team/
+
+# Key material and credential files (fork)
+*.pem
+*.key
+credentials.json

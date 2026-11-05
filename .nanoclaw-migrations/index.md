@@ -1,5 +1,7 @@
 # 1. NanoClaw migration guide — Phase 2 onto v2026.10.0
 
+**Status:** closed 2026-11-05 (executed; live since 2026-11-05 22:26 CET — outcome in §1.12). **Last updated:** 2026-11-05. **Supersedes:** `index-2026-06-15-executed.md`.
+
 Refreshed: **2026-11-02**. Verified against upstream tag **`v2026.10.0`** (2026-10-09).
 Fork HEAD at refresh: `e35bb0dd`. Merge-base with upstream: `acbb1144b` (2026-06-15).
 

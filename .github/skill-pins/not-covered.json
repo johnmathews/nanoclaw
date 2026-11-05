@@ -8,6 +8,48 @@
       "why": "installs whatever version is newest; pin an exact version so it can be tracked"
     },
     {
+      "pin": "CALENDAR_MCP_VERSION=2.6.1",
+      "kind": "binary (Dockerfile ARG)",
+      "source": ".claude/skills/add-gcal-tool/SKILL.md",
+      "why": "a download pinned by version; no Dependabot ecosystem reads it"
+    },
+    {
+      "pin": "@cocal/google-calendar-mcp@${CALENDAR_MCP_VERSION}",
+      "kind": "unpinned npm install",
+      "source": ".claude/skills/add-gcal-tool/SKILL.md",
+      "why": "installs whatever version is newest; pin an exact version so it can be tracked"
+    },
+    {
+      "pin": "CLAUDE_CODE_VERSION=2.1.154",
+      "kind": "binary (Dockerfile ARG)",
+      "source": ".claude/skills/add-gmail-tool/SKILL.md",
+      "why": "a download pinned by version; no Dependabot ecosystem reads it"
+    },
+    {
+      "pin": "AGENT_BROWSER_VERSION=latest",
+      "kind": "binary (Dockerfile ARG)",
+      "source": ".claude/skills/add-gmail-tool/SKILL.md",
+      "why": "a download pinned by version; no Dependabot ecosystem reads it"
+    },
+    {
+      "pin": "VERCEL_VERSION=52.2.1",
+      "kind": "binary (Dockerfile ARG)",
+      "source": ".claude/skills/add-gmail-tool/SKILL.md",
+      "why": "a download pinned by version; no Dependabot ecosystem reads it"
+    },
+    {
+      "pin": "BUN_VERSION=1.3.12",
+      "kind": "binary (Dockerfile ARG)",
+      "source": ".claude/skills/add-gmail-tool/SKILL.md",
+      "why": "a download pinned by version; no Dependabot ecosystem reads it"
+    },
+    {
+      "pin": "GMAIL_MCP_VERSION=1.1.11",
+      "kind": "binary (Dockerfile ARG)",
+      "source": ".claude/skills/add-gmail-tool/SKILL.md",
+      "why": "a download pinned by version; no Dependabot ecosystem reads it"
+    },
+    {
       "pin": "rust:1.93.0-alpine",
       "kind": "container image (Dockerfile FROM)",
       "source": ".claude/skills/add-iron-proxy/assets/managed-proxy.Dockerfile",
