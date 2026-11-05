@@ -31,6 +31,7 @@ import type { Migration } from './index.js';
 export const migration016: Migration = {
   version: 16,
   name: 'messaging-group-instance',
+  sqliteOnly: true,
   disableForeignKeys: true,
   up: (db: Database.Database) => {
     // Idempotency guard per the 012 pattern.
@@ -48,12 +49,11 @@ export const migration016: Migration = {
         unknown_sender_policy TEXT NOT NULL DEFAULT 'strict',
         created_at            TEXT NOT NULL,
         denied_at             TEXT,
-        reply_mode            TEXT NOT NULL DEFAULT 'thread',
         UNIQUE(channel_type, platform_id, instance)
       );
       INSERT INTO messaging_groups_new
-        (id, channel_type, platform_id, instance, name, is_group, unknown_sender_policy, created_at, denied_at, reply_mode)
-        SELECT id, channel_type, platform_id, channel_type, name, is_group, unknown_sender_policy, created_at, denied_at, reply_mode
+        (id, channel_type, platform_id, instance, name, is_group, unknown_sender_policy, created_at, denied_at)
+        SELECT id, channel_type, platform_id, channel_type, name, is_group, unknown_sender_policy, created_at, denied_at
           FROM messaging_groups;
       DROP TABLE messaging_groups;
       ALTER TABLE messaging_groups_new RENAME TO messaging_groups;

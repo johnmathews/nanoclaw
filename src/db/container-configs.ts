@@ -1,18 +1,6 @@
+import { DEFAULT_AGENT_PROVIDER } from '../config.js';
 import type { ContainerConfigRow } from '../types.js';
 import { getDb } from './connection.js';
-
-/**
- * Default model for new agent groups. Quality > speed: every group gets the
- * top Opus tier unless the operator explicitly sets `model` via
- * `ncl groups config update` or the self-mod tooling. NULL is no longer a
- * valid state — leaving model unset would silently fall back to the SDK's
- * default (currently a Sonnet variant), which we don't want.
- */
-export const DEFAULT_MODEL = 'claude-opus-4-7';
-
-/** Default per-group memory budgets (chars). Hermes-proven; mirror migration 021. */
-export const DEFAULT_MEMORY_BUDGET = 2200;
-export const DEFAULT_USER_BUDGET = 1375;
 
 const SCALAR_COLUMNS = new Set([
   'provider',
@@ -22,50 +10,71 @@ const SCALAR_COLUMNS = new Set([
   'assistant_name',
   'max_messages_per_prompt',
   'cli_scope',
-  'memory_budget_chars',
-  'user_budget_chars',
+  'timezone',
+  'speed',
 ]);
 const JSON_COLUMNS = new Set(['skills', 'mcp_servers', 'packages_apt', 'packages_npm', 'additional_mounts', 'env']);
 
-export function getContainerConfig(agentGroupId: string): ContainerConfigRow | undefined {
-  return getDb().prepare('SELECT * FROM container_configs WHERE agent_group_id = ?').get(agentGroupId) as
-    | ContainerConfigRow
-    | undefined;
+export async function getContainerConfig(agentGroupId: string): Promise<ContainerConfigRow | undefined> {
+  return getDb().get<ContainerConfigRow>('SELECT * FROM container_configs WHERE agent_group_id = ?', agentGroupId);
 }
 
-export function getAllContainerConfigs(): ContainerConfigRow[] {
-  return getDb().prepare('SELECT * FROM container_configs').all() as ContainerConfigRow[];
+export async function getAllContainerConfigs(): Promise<ContainerConfigRow[]> {
+  return getDb().all<ContainerConfigRow>('SELECT * FROM container_configs');
 }
 
 /** Insert a new config row. Caller must supply all JSON fields (use defaults for empty). */
-export function createContainerConfig(config: ContainerConfigRow): void {
-  getDb()
-    .prepare(
-      `INSERT INTO container_configs (
+export async function createContainerConfig(config: ContainerConfigRow): Promise<void> {
+  await getDb().run(
+    `INSERT INTO container_configs (
         agent_group_id, provider, model, effort, image_tag, assistant_name,
         max_messages_per_prompt, skills, mcp_servers, packages_apt, packages_npm,
-        additional_mounts, env, memory_budget_chars, user_budget_chars, updated_at
+        additional_mounts, cli_scope, timezone, speed, env, updated_at
       ) VALUES (
         @agent_group_id, @provider, @model, @effort, @image_tag, @assistant_name,
         @max_messages_per_prompt, @skills, @mcp_servers, @packages_apt, @packages_npm,
-        @additional_mounts, @env, @memory_budget_chars, @user_budget_chars, @updated_at
+        @additional_mounts, @cli_scope, @timezone, @speed, @env, @updated_at
       )`,
-    )
-    .run(config);
+    config,
+  );
 }
 
-/** Create an empty config row with sensible defaults. Idempotent — no-ops if row exists. */
-export function ensureContainerConfig(agentGroupId: string): void {
-  getDb()
-    .prepare(
-      `INSERT OR IGNORE INTO container_configs (agent_group_id, model, updated_at)
-       VALUES (?, ?, ?)`,
-    )
-    .run(agentGroupId, DEFAULT_MODEL, new Date().toISOString());
+/**
+ * Create a config row if one doesn't exist, stamping the provider. Idempotent —
+ * no-ops if the row already exists, so an existing group's provider is never
+ * overwritten (load-bearing: this is how the global default stays "new groups
+ * only" for groups that already have a row).
+ *
+ * An absent `provider` takes the instance default (`DEFAULT_AGENT_PROVIDER`);
+ * `claude` and an absent value that resolves to claude are stored as NULL — the
+ * column means "follows the built-in default", matching pre-feature rows.
+ */
+export async function ensureContainerConfig(agentGroupId: string, provider?: string | null): Promise<void> {
+  // Single chokepoint for the instance default: a fresh row with no explicit
+  // provider is stamped with DEFAULT_AGENT_PROVIDER, so every new-group creation
+  // path inherits it without each having to remember. INSERT OR IGNORE keeps an
+  // EXISTING row untouched — so this stays "new groups only" for any group that
+  // already has a config row (backfillContainerConfigs seeds one for every group
+  // at host startup; a non-claude default would only reach a row-less *legacy*
+  // group if a creation script reused it before that first backfill ran). Callers
+  // that know the provider (subagent → parent's, spawn → resolved) pass it
+  // explicitly and override the default.
+  // `claude` (the built-in default) and casing normalize to NULL/lowercase so the
+  // column matches what resolution lowercases to.
+  const normalized = (provider ?? DEFAULT_AGENT_PROVIDER).toLowerCase();
+  const stamped = normalized && normalized !== 'claude' ? normalized : null;
+  await getDb().run(
+    `INSERT INTO container_configs (agent_group_id, provider, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT (agent_group_id) DO NOTHING`,
+    agentGroupId,
+    stamped,
+    new Date().toISOString(),
+  );
 }
 
 /** Update scalar fields on a config row. Only touches fields present in `updates`. */
-export function updateContainerConfigScalars(
+export async function updateContainerConfigScalars(
   agentGroupId: string,
   updates: Partial<
     Pick<
@@ -77,11 +86,11 @@ export function updateContainerConfigScalars(
       | 'assistant_name'
       | 'max_messages_per_prompt'
       | 'cli_scope'
-      | 'memory_budget_chars'
-      | 'user_budget_chars'
+      | 'timezone'
+      | 'speed'
     >
   >,
-): void {
+): Promise<void> {
   const fields: string[] = [];
   const values: Record<string, unknown> = { agent_group_id: agentGroupId };
 
@@ -97,24 +106,25 @@ export function updateContainerConfigScalars(
   fields.push('updated_at = @updated_at');
   values.updated_at = new Date().toISOString();
 
-  getDb()
-    .prepare(`UPDATE container_configs SET ${fields.join(', ')} WHERE agent_group_id = @agent_group_id`)
-    .run(values);
+  await getDb().run(`UPDATE container_configs SET ${fields.join(', ')} WHERE agent_group_id = @agent_group_id`, values);
 }
 
-/** Overwrite a JSON column wholesale. Used for skills, mcp_servers, packages_*, additional_mounts, env. */
-export function updateContainerConfigJson(
+/** Overwrite a JSON column wholesale. Used for skills, mcp_servers, packages_*, additional_mounts. */
+export async function updateContainerConfigJson(
   agentGroupId: string,
   column: 'skills' | 'mcp_servers' | 'packages_apt' | 'packages_npm' | 'additional_mounts' | 'env',
   value: unknown,
-): void {
+): Promise<void> {
   if (!JSON_COLUMNS.has(column)) throw new Error(`Invalid JSON column: ${column}`);
   const now = new Date().toISOString();
-  getDb()
-    .prepare(`UPDATE container_configs SET ${column} = ?, updated_at = ? WHERE agent_group_id = ?`)
-    .run(JSON.stringify(value), now, agentGroupId);
+  await getDb().run(
+    `UPDATE container_configs SET ${column} = ?, updated_at = ? WHERE agent_group_id = ?`,
+    JSON.stringify(value),
+    now,
+    agentGroupId,
+  );
 }
 
-export function deleteContainerConfig(agentGroupId: string): void {
-  getDb().prepare('DELETE FROM container_configs WHERE agent_group_id = ?').run(agentGroupId);
+export async function deleteContainerConfig(agentGroupId: string): Promise<void> {
+  await getDb().run('DELETE FROM container_configs WHERE agent_group_id = ?', agentGroupId);
 }

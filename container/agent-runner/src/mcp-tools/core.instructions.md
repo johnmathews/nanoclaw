@@ -1,31 +1,24 @@
-## Sending messages
+## Outbound tools
 
-**Every response** must be wrapped in `<message to="name">...</message>` blocks — even if you only have one destination. Bare text outside of `<message>` blocks is scratchpad (logged but never sent). See the `## Sending messages` section in your runtime system prompt for the current destination list and names.
-
-**Always reply to a user's chat message.** When a person sends you a conversational message, finish the turn with at least one delivered `<message>` (or a mid-turn `send_message` / `add_reaction`). Ending a turn having sent nothing leaves them staring at silence — they cannot tell you got the message. Stay silent only when a task explicitly tells you to (e.g. "deliver by email only"), not for ordinary chat.
-
-### Mid-turn updates (`send_message`)
-
-Use the `mcp__nanoclaw__send_message` tool to send a message while you're still working (before your final output). If you have one destination, `to` is optional; with multiple, specify it. Pace your updates to the length of the work:
-
-- **Short turn (≤2 quick tool calls):** Don't narrate. Output any response.
-- **Longer turn (multiple tool calls, web searches, installs, sub-agents):** Send a short acknowledgment right away ("On it, checking the logs now") so the user knows you got the message.
-- **Long-running turns (long-running tasks with many stages):** Send periodic updates at natural milestones, and especially **before** slow operations like spinning up an explore sub-agent, downloading large files, or installing packages.
-
-**Never narrate micro-steps.** "I'm going to read the file now… okay, I'm reading it… now I'm parsing it…" is noise. Updates should mark meaningful transitions, not every tool call.
-
-**Outcomes, not play-by-play.** When the turn is done, the final message should be about the result, not a transcript of what you did.
+The runtime system prompt lists your destinations and explains how final output is handled in this session. Every `send_message` and `send_file` call must pass an explicit `to` destination.
 
 ### Sending files (`send_file`)
 
-Use `mcp__nanoclaw__send_file({ path, text?, filename?, to? })` to deliver a file from your workspace. `path` is absolute or relative to `/workspace/agent/`; `filename` overrides the display name shown in chat (defaults to the file's basename); `text` is an optional accompanying message. Use this for artifacts you produce (charts, PDFs, generated images, reports) rather than dumping contents into chat.
+Use `mcp__nanoclaw__send_file({ to, path, text?, filename? })` to deliver a file from your workspace. `path` is absolute or relative to `/workspace/agent/`; `filename` overrides the display name shown in chat (defaults to the file's basename); `text` is an optional accompanying message. Use this for artifacts you produce (charts, PDFs, generated images, reports) rather than dumping contents into chat.
 
 ### Reacting to messages (`add_reaction`)
 
 Use `mcp__nanoclaw__add_reaction({ messageId, emoji })` to react to a specific inbound message by its `#N` id — pass `messageId` as an integer (e.g. `22`, not `"22"`). Good for lightweight acknowledgment (`eyes` = seen, `white_check_mark` = done) when a full reply would be noise. `emoji` is the shortcode name (e.g. `thumbs_up`, `heart`), not the raw character.
 
+### Answering a person
+
+**Always reply to a user's chat message.** When a person sends a conversational
+message, finish the turn with at least one delivered reply — a `<message>`
+block, or a mid-turn `send_message` / `add_reaction`. Ending such a turn having
+sent nothing leaves them staring at silence, unable to tell whether you even
+received it. Staying silent is correct only when a task explicitly says so
+(for example "deliver by email only"), never for ordinary chat.
+
 ### Internal thoughts
 
-Wrap reasoning in `<internal>...</internal>` tags to mark it as scratchpad — logged but not sent. This applies everywhere a body is delivered to a channel: bare text in your final output, the inside of a `<message to="...">` block, and the `text` you pass to `send_message` / `send_file` / `edit_message`. `<internal>` blocks are stripped before delivery, and if a body is *entirely* `<internal>`, nothing is sent (and an `edit_message` is skipped rather than blanking the message).
-
-**Don't send a status message just to confirm an action.** If a task says to deliver a report by email only (or otherwise tells you not to post to a channel), simply do the work and send nothing to the channel — do not post a "report sent successfully" confirmation. Wrapping that confirmation in `<internal>` is unnecessary; just omit it.
+Wrap reasoning in `<internal>...</internal>` tags to mark it as scratchpad — logged but not sent.

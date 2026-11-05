@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 
-import { initTestSessionDb, closeSessionDb, getInboundDb } from './db/connection.js';
+import { initTestSessionDb, closeSessionDb, getInboundDb } from './mailbox/sqlite/connection.js';
 import { getUndeliveredMessages } from './db/messages-out.js';
 import { getPendingMessages } from './db/messages-in.js';
 import type { MessageInRow } from './db/messages-in.js';
@@ -67,11 +67,6 @@ describe('poll loop — /upload-trace command', () => {
 
 async function runPollLoopWithTimeout(provider: MockProvider, signal: AbortSignal, timeoutMs: number): Promise<void> {
   return Promise.race([
-    // The signal MUST be threaded into runPollLoop — without it the loop's
-    // `signal?.aborted` check never fires, so controller.abort() only settles
-    // the race while the real loop runs forever, polling the shared session DB
-    // into every later test file and stealing their pending messages. This was
-    // the source of the cross-file "unable to open database file" pollution.
     runPollLoop({ provider, providerName: 'mock', cwd: '/tmp', signal }),
     new Promise<void>((_, reject) => {
       signal.addEventListener('abort', () => reject(new Error('aborted')));

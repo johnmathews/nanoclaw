@@ -1,25 +1,30 @@
 /**
- * search_history MCP tool (learning & memory feature #2).
+ * `search_history` MCP tool — the container half of the round-trip whose host
+ * half is src/modules/search/ (stage 4a).
  *
  * Full-text search over this agent group's own conversation history: past user
- * messages, your past replies, and archived conversation transcripts. Useful
- * for "have we discussed X before?", recalling a past decision, or the weekly
- * reflection pass.
+ * messages, the agent's past replies, and archived conversation transcripts.
  *
- * The host owns the search index (data/v2-index.db) and the container can't
- * open it, so this is a round-trip tool — same shape as `remember`: write a
- * `search_history` system action to outbound.db, poll inbound.db for the
- * host's reply. Results are always scoped to your own agent group by the host.
+ * The host owns the search index (data/v2-index.db) and the container cannot
+ * open it, so the tool writes a `search_history` system action to the outbound
+ * mailbox and polls inbound for the host's reply. The reply id is deterministic
+ * (`search-resp-<requestId>`) and the row is `kind: 'system'`, which the poll
+ * loop never hands to the agent (poll-loop.ts filters system rows), so it
+ * waits here for the tool instead of being consumed as a turn. Results are
+ * scoped to the calling agent group by the host; nothing here can widen that.
  */
-import { findResponseById, markCompleted } from '../db/messages-in.js';
+import { setTimeout as sleep } from 'node:timers/promises';
+
+import { getMessageIn, markCompleted } from '../db/messages-in.js';
 import { writeMessageOut } from '../db/messages-out.js';
-import { getSessionRouting } from '../db/session-routing.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
 
-const POLL_TIMEOUT_MS = 30_000;
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 50;
+
+/** Mutable so tests can shorten the wait; production values are fixed here. */
+export const searchHistoryTiming = { timeoutMs: 30_000, pollMs: 500 };
 
 function log(msg: string): void {
   console.error(`[mcp-tools] ${msg}`);
@@ -35,10 +40,6 @@ function ok(text: string) {
 
 function err(text: string) {
   return { content: [{ type: 'text' as const, text: `Error: ${text}` }], isError: true };
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 interface SearchHit {
@@ -61,7 +62,7 @@ const SOURCE_LABELS: Record<string, string> = {
   conversation: 'transcript',
 };
 
-function formatResults(query: string, results: SearchHit[]): string {
+export function formatResults(query: string, results: SearchHit[]): string {
   if (results.length === 0) return `No matches for "${query}".`;
   const lines = results.map((r) => {
     const who = SOURCE_LABELS[r.source] ?? r.source;
@@ -71,14 +72,20 @@ function formatResults(query: string, results: SearchHit[]): string {
   return `${results.length} match${results.length === 1 ? '' : 'es'} for "${query}":\n${lines.join('\n')}`;
 }
 
+export function clampLimit(raw: unknown): number {
+  let limit = typeof raw === 'number' ? Math.trunc(raw) : DEFAULT_LIMIT;
+  if (!Number.isFinite(limit) || limit < 1) limit = DEFAULT_LIMIT;
+  return Math.min(limit, MAX_LIMIT);
+}
+
 export const searchHistory: McpToolDefinition = {
   tool: {
     name: 'search_history',
     description:
-      'Full-text search over THIS agent group\'s own conversation history: past user messages, your past replies, and archived conversation transcripts. ' +
+      "Full-text search over THIS agent group's own conversation history: past user messages, your past replies, and archived conversation transcripts. " +
       'Use it to check whether something was discussed before, recall a past decision or fact, or gather context for a reflection. ' +
-      'Results are always limited to your own group — you cannot see other groups\' conversations. ' +
-      'Pass `query` (supports plain words; FTS5 operators like OR and "exact phrase" also work) and optionally `limit` (default 10, max 50). ' +
+      "Results are always limited to your own group — you cannot see other groups' conversations. " +
+      'Pass `query` (plain words; FTS5 operators like OR and "exact phrase" also work) and optionally `limit` (default 10, max 50). ' +
       'Returns ranked snippets with their source and date. Recent in-session context is already in your prompt — use this for older or compacted history.',
     inputSchema: {
       type: 'object' as const,
@@ -89,45 +96,49 @@ export const searchHistory: McpToolDefinition = {
       required: ['query'],
     },
   },
-  async handler(args) {
-    const query = (args.query as string) ?? '';
+  async handler(args, context) {
+    const query = typeof args.query === 'string' ? args.query : '';
     if (!query.trim()) return err('search_history requires a non-empty `query`');
-    let limit = typeof args.limit === 'number' ? Math.trunc(args.limit) : DEFAULT_LIMIT;
-    if (!Number.isFinite(limit) || limit < 1) limit = DEFAULT_LIMIT;
-    if (limit > MAX_LIMIT) limit = MAX_LIMIT;
+    const limit = clampLimit(args.limit);
 
     const requestId = generateId();
-    const r = getSessionRouting();
-
-    writeMessageOut({
+    await writeMessageOut({
       id: requestId,
       kind: 'system',
-      platform_id: r.platform_id,
-      channel_type: r.channel_type,
-      thread_id: r.thread_id,
       content: JSON.stringify({ action: 'search_history', requestId, query, limit }),
     });
-
     log(`search_history: "${query}" limit=${limit} (${requestId})`);
 
-    const deadline = Date.now() + POLL_TIMEOUT_MS;
+    const responseId = `search-resp-${requestId}`;
+    const deadline = Date.now() + searchHistoryTiming.timeoutMs;
     while (Date.now() < deadline) {
-      const resp = findResponseById(`search-resp-${requestId}`);
+      if (context?.signal.aborted) return err('search_history cancelled');
+      const resp = getMessageIn(responseId);
       if (resp) {
         markCompleted([resp.id]);
-        const frame = JSON.parse(resp.content).frame as SearchFrame;
-        if (frame.ok) return ok(formatResults(query, frame.results ?? []));
-        if (frame.error === 'index_unavailable') {
+        let frame: SearchFrame;
+        try {
+          frame = (JSON.parse(resp.content) as { frame: SearchFrame }).frame;
+        } catch {
+          return err('search_history got an unreadable reply from the host');
+        }
+        if (frame?.ok) return ok(formatResults(query, frame.results ?? []));
+        if (frame?.error === 'index_unavailable') {
           return err('Conversation search is not available right now (index not ready).');
         }
-        if (frame.error === 'empty_query') return err('search_history requires a non-empty `query`');
-        return err(`search_history failed: ${frame.error ?? 'unknown'}`);
+        if (frame?.error === 'empty_query') return err('search_history requires a non-empty `query`');
+        return err(`search_history failed: ${frame?.error ?? 'unknown'}`);
       }
-      await sleep(500);
+      try {
+        await sleep(searchHistoryTiming.pollMs, undefined, { signal: context?.signal });
+      } catch (e) {
+        if (context?.signal.aborted) return err('search_history cancelled');
+        throw e;
+      }
     }
 
     log(`search_history timeout: ${requestId}`);
-    return err('search_history timed out waiting for the host (30s).');
+    return err(`search_history timed out waiting for the host (${Math.round(searchHistoryTiming.timeoutMs / 1000)}s).`);
   },
 };
 

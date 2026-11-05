@@ -9,6 +9,14 @@ export interface AgentGroup {
   created_at: string;
 }
 
+/**
+ * A provider-declared speed tier name (`inference.speedTiers` on the provider's
+ * host contract; `standard` | `fast` for Claude). Validated at `ncl groups
+ * config update --speed` time against the group's provider, then stored and
+ * passed through by core as an opaque token.
+ */
+export type ContainerSpeed = string;
+
 /** Per-agent-group container runtime config. Source of truth in the DB;
  *  materialized to `groups/<folder>/container.json` at spawn time. */
 export interface ContainerConfigRow {
@@ -24,14 +32,24 @@ export interface ContainerConfigRow {
   packages_apt: string; // JSON: string[]
   packages_npm: string; // JSON: string[]
   additional_mounts: string; // JSON: AdditionalMountConfig[]
-  env: string; // JSON: Record<string, string> — extra container env (-e flags)
   cli_scope: string; // 'disabled' | 'group' | 'global'
-  memory_budget_chars: number; // hard char cap on MEMORY.md (remember tool)
-  user_budget_chars: number; // hard char cap on USER.md (remember tool)
+  timezone: string | null; // IANA id; NULL = follow the install-global timezone
+  speed: ContainerSpeed | null; // NULL = install/provider default
+  /**
+   * Session isolation tier ('container' | 'vm') — see SessionSpec.runtimeTier.
+   * Optional on the TS type because the trunk schema does not carry the
+   * column: a deployment whose driver realizes more than one tier adds it,
+   * and `SELECT *` rows surface it here. Absent means the default tier.
+   */
+  runtime_tier?: string | null;
   updated_at: string;
+  /** Per-group operator env, JSON object. Reserved keys are refused at set time and filtered at spawn. */
+  env: string;
 }
 
-export type UnknownSenderPolicy = 'strict' | 'request_approval' | 'public';
+/** Every unknown_sender_policy value a messaging group can hold. */
+export const UNKNOWN_SENDER_POLICIES = ['strict', 'request_approval', 'decline_notify', 'public'] as const;
+export type UnknownSenderPolicy = (typeof UNKNOWN_SENDER_POLICIES)[number];
 
 export interface MessagingGroup {
   id: string;
@@ -59,22 +77,14 @@ export interface MessagingGroup {
    */
   denied_at?: string | null;
   /**
-   * Reply behavior on threaded platforms (currently Slack only).
-   *
-   * - `'thread'` (default): reply in the originating thread.
-   * - `'channel'`: reply in the channel root regardless of where the inbound
-   *   message landed. Delivery strips the per-message thread_id and the
-   *   bridge falls back to the messaging_group's platform_id.
-   *
-   * Optional on the TS type so pre-migration-016 callers that build
-   * MessagingGroup objects in code (fixtures, etc.) don't need to update;
-   * the column itself defaults to `'thread'` in SQLite.
+   * When set, our own bot has LEFT the platform channel this row maps to
+   * (written by a channel membership module, migration 022) — the wiring
+   * survives, but delivery/typing should skip the row until the bot rejoins
+   * (which clears it). Optional on the TS type per the denied_at convention.
    */
-  reply_mode?: ReplyMode;
+  detached_at?: string | null;
   created_at: string;
 }
-
-export type ReplyMode = 'thread' | 'channel';
 
 // ── Identity & privilege ──
 
@@ -142,6 +152,15 @@ export interface MessagingGroupAgent {
   ignored_message_policy: IgnoredMessagePolicy;
   session_mode: 'shared' | 'per-thread' | 'agent-shared';
   priority: number;
+  /**
+   * Per-wiring thread-policy override (migration 019). NULL = inherit the
+   * channel adapter's declared default for the wiring's context (DM vs
+   * group); 1/0 = explicit override, hard-ANDed with the adapter's raw
+   * capability at router fanout (resolveThreadPolicy). Optional on the TS
+   * type per the denied_at convention so pre-migration fixtures don't need
+   * updating.
+   */
+  threads?: number | null;
   created_at: string;
 }
 
@@ -160,7 +179,7 @@ export interface Session {
 // ── Session DB entities ──
 
 export type MessageInKind = 'chat' | 'chat-sdk' | 'task' | 'webhook' | 'system';
-export type MessageInStatus = 'pending' | 'processing' | 'completed' | 'failed';
+export type MessageInStatus = 'pending' | 'processing' | 'completed' | 'failed' | 'cancelled';
 
 export interface MessageIn {
   id: string;
@@ -207,6 +226,10 @@ export interface PendingQuestion {
 
 // ── Pending approvals (central DB) ──
 
+/** Every status a pending_approvals row can hold. */
+export const PENDING_APPROVAL_STATUSES = ['pending', 'approved', 'rejected', 'expired', 'awaiting_reason'] as const;
+export type PendingApprovalStatus = (typeof PENDING_APPROVAL_STATUSES)[number];
+
 export interface PendingApproval {
   approval_id: string;
   session_id: string | null;
@@ -217,15 +240,24 @@ export interface PendingApproval {
   agent_group_id: string | null;
   channel_type: string | null;
   platform_id: string | null;
+  /**
+   * Adapter instance the card was delivered through (migration 023). NULL
+   * reads as the default instance (= channel_type). Delivery dispatch is
+   * exact-key, so any follow-up edit to the card must address the identity
+   * that posted it, not just the platform.
+   */
+  instance: string | null;
   platform_message_id: string | null;
   /**
-   * For OneCLI credential rows, the gateway's request TTL. For a module
+   * For gateway approval rows, the provider request TTL. For a module
    * approval held by "Reject with reason…", the deadline after which the
    * host sweep finalizes a plain reject (set by markApprovalAwaitingReason).
    */
   expires_at: string | null;
-  status: 'pending' | 'approved' | 'rejected' | 'expired' | 'awaiting_reason';
+  status: PendingApprovalStatus;
   title: string;
+  /** Original approval-card body, retained when the card reaches a terminal state. */
+  question: string;
   options_json: string;
   /** When set, only this exact user may resolve the approval. */
   approver_user_id: string | null;

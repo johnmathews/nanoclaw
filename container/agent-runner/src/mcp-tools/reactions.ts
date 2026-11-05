@@ -1,31 +1,31 @@
 /**
- * `query_reactions` MCP tool. Lives in its own module so the multimodal /
- * reactions port keeps an upstream-clean `core.ts` — see ./reactions.instructions.md
- * for the agent-facing usage notes.
+ * `query_reactions` MCP tool.
  *
- * Reactions arrive as chat-sdk rows synthesised by
- * `chat-sdk-bridge.buildReactionInbound` on the host. The agent-runner side
- * does not understand reactions structurally — they're plain `messages_in`
- * rows with a `reaction` field inside `content` JSON. This tool reads those
- * rows out of the session's inbound DB for the agent.
+ * Reactions are not a structural concept in the runner: the host synthesises
+ * them as ordinary chat-sdk inbound rows carrying a `reaction` object in their
+ * content JSON (chat-sdk-bridge.buildReactionInbound). This tool reads those
+ * rows back and presents them.
  *
- * The query is per-session by construction (only reactions on messages in
- * this session's thread are routed here by the host), so there's no
- * cross-session leakage.
+ * Scoped to this session's own mailbox by construction — only reactions on
+ * messages in this session's thread are routed here — so there is no
+ * cross-session read to guard against.
  *
- * Optional filter: `target_message_id` returns only reactions on that
- * specific platform message id (e.g. the agent's own reply ts on Slack).
- * Without it, returns the most recent N reactions across the session.
- *
- * Each row's `added` field is preserved verbatim so callers can recover
- * the live emoji set (an add followed by a remove for the same emoji is
- * a net-zero). Callers requiring "currently set" semantics should fold
- * the list themselves; the SDK can't infer it without re-fetching state
- * from the platform.
+ * `added` is preserved verbatim rather than folded into a "currently set"
+ * view: an add followed by a remove of the same emoji is a net-zero, and
+ * collapsing that here would quietly invent state. A caller that wants the
+ * live set should fold the list itself, or re-read it from the platform.
  */
-import { getInboundDb } from '../db/connection.js';
+import { findReactionRows } from '../db/messages-in.js';
 import { registerTools } from './server.js';
 import type { McpToolDefinition } from './types.js';
+
+const DEFAULT_LIMIT = 50;
+const MAX_LIMIT = 500;
+/**
+ * Rows are filtered in JS after the SQL LIMIT, so over-fetch: a target filter
+ * can discard most of what the query returned.
+ */
+const OVERFETCH = 4;
 
 function ok(text: string) {
   return { content: [{ type: 'text' as const, text }] };
@@ -35,11 +35,22 @@ function err(text: string) {
   return { content: [{ type: 'text' as const, text: `Error: ${text}` }], isError: true };
 }
 
+interface ReactionEntry {
+  id: string;
+  timestamp: string;
+  emoji: string;
+  rawEmoji: string;
+  added: boolean;
+  targetMessageId: string;
+  userId: string;
+  userName: string;
+}
+
 export const queryReactions: McpToolDefinition = {
   tool: {
     name: 'query_reactions',
     description:
-      'List reactions the bridge has captured in this session. Optionally filter by `target_message_id` to inspect a single message.',
+      'List reactions captured in this session. Optionally filter by `target_message_id` to inspect one message.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -49,46 +60,28 @@ export const queryReactions: McpToolDefinition = {
         },
         limit: {
           type: 'integer',
-          description: 'Max rows to return (default 50, max 500).',
+          description: `Max rows to return (default ${DEFAULT_LIMIT}, max ${MAX_LIMIT}).`,
         },
       },
     },
   },
   async handler(args) {
     const targetMessageId = typeof args.target_message_id === 'string' ? args.target_message_id : undefined;
-    const limitArg = typeof args.limit === 'number' ? args.limit : 50;
-    const limit = Math.max(1, Math.min(500, Math.floor(limitArg)));
+    const requested = typeof args.limit === 'number' ? args.limit : DEFAULT_LIMIT;
+    const limit = Math.max(1, Math.min(MAX_LIMIT, Math.floor(requested)));
 
-    let rows: Array<{ id: string; timestamp: string; content: string }>;
+    let rows;
     try {
-      const db = getInboundDb();
-      const sql = `SELECT id, timestamp, content
-                   FROM messages_in
-                   WHERE kind = 'chat-sdk'
-                     AND content LIKE '%"reaction":%'
-                   ORDER BY timestamp DESC
-                   LIMIT ?`;
-      rows = db.prepare(sql).all(limit * 4) as typeof rows;
+      rows = findReactionRows(limit * OVERFETCH);
     } catch (e) {
-      return err(`Failed to read inbound DB: ${e instanceof Error ? e.message : String(e)}`);
+      return err(`Failed to read the mailbox: ${e instanceof Error ? e.message : String(e)}`);
     }
 
-    interface ReactionEntry {
-      id: string;
-      timestamp: string;
-      emoji: string;
-      rawEmoji: string;
-      added: boolean;
-      targetMessageId: string;
-      userId: string;
-      userName: string;
-    }
     const entries: ReactionEntry[] = [];
-
-    for (const r of rows) {
+    for (const row of rows) {
       let parsed: Record<string, unknown>;
       try {
-        parsed = JSON.parse(r.content) as Record<string, unknown>;
+        parsed = JSON.parse(row.content) as Record<string, unknown>;
       } catch {
         continue;
       }
@@ -100,8 +93,8 @@ export const queryReactions: McpToolDefinition = {
       if (targetMessageId && reaction.targetMessageId !== targetMessageId) continue;
 
       entries.push({
-        id: r.id,
-        timestamp: r.timestamp,
+        id: row.id,
+        timestamp: row.timestamp,
         emoji: String(reaction.emoji ?? ''),
         rawEmoji: String(reaction.rawEmoji ?? reaction.emoji ?? ''),
         added: reaction.added !== false,

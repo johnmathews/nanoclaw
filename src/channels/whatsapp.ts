@@ -39,14 +39,21 @@ import {
 import type { GroupMetadata, WAMessageKey, WAMessage, WASocket } from '@whiskeysockets/baileys';
 
 import { isSafeAttachmentName } from '../attachment-safety.js';
-import { ChannelDisconnectedError } from './delivery-errors.js';
-import { ASSISTANT_HAS_OWN_NUMBER, ASSISTANT_NAME } from '../config.js';
+import {} from '../config.js';
 import { readEnvFile } from '../env.js';
 import { log } from '../log.js';
+import { ChannelDisconnectedError } from './delivery-errors.js';
 import { maybePdfExtract, maybeTranscribe } from './chat-sdk-bridge.js';
 import { registerChannelAdapter } from './channel-registry.js';
 import { normalizeOptions, type NormalizedOption } from './ask-question.js';
-import type { ChannelAdapter, ChannelSetup, ConversationInfo, InboundMessage, OutboundMessage } from './adapter.js';
+import type {
+  ChannelAdapter,
+  ChannelDefaults,
+  ChannelSetup,
+  ConversationInfo,
+  InboundMessage,
+  OutboundMessage,
+} from './adapter.js';
 
 const baileysLogger = pino({ level: 'silent' });
 
@@ -102,12 +109,6 @@ const GROUP_METADATA_CACHE_TTL_MS = 60_000; // 1 min for outbound sends
 const SENT_MESSAGE_CACHE_MAX = 256;
 const RECONNECT_DELAY_MS = 5000;
 const PENDING_QUESTIONS_MAX = 64;
-/** Hard ceiling on a single sock.sendMessage. A WhatsApp socket can go
- *  "zombie" — connection==='open' (so `connected` is true) but the server has
- *  stopped acking — leaving sendMessage hung indefinitely. That stalls the
- *  host's per-session delivery until an unrelated inbound revives the socket.
- *  Normal sends complete in well under a second; 15s only trips on a dead pipe. */
-const SEND_TIMEOUT_MS = 15_000;
 
 /** Normalize an option label to a slash command: "Approve" → "/approve" */
 function optionToCommand(option: string): string {
@@ -226,22 +227,79 @@ export function isBotMentionedInGroup(
   botLidUser: string | undefined,
 ): boolean {
   if (!botPhoneJid && !botLidUser) return false;
-  const mentionedJids: string[] = [
-    ...(normalized.extendedTextMessage?.contextInfo?.mentionedJid ?? []),
-    ...(normalized.imageMessage?.contextInfo?.mentionedJid ?? []),
-    ...(normalized.videoMessage?.contextInfo?.mentionedJid ?? []),
-    ...(normalized.documentMessage?.contextInfo?.mentionedJid ?? []),
-  ];
   const botLidJid = botLidUser ? `${botLidUser}@lid` : undefined;
-  return mentionedJids.some((jid) => {
+  return collectMentionedJids(normalized).some((jid) => {
     if (!jid) return false;
     const bare = jid.split(':')[0];
     return bare === botPhoneJid || bare === botLidJid;
   });
 }
 
+function collectMentionedJids(normalized: MentionContextSource): string[] {
+  return [
+    ...(normalized.extendedTextMessage?.contextInfo?.mentionedJid ?? []),
+    ...(normalized.imageMessage?.contextInfo?.mentionedJid ?? []),
+    ...(normalized.videoMessage?.contextInfo?.mentionedJid ?? []),
+    ...(normalized.documentMessage?.contextInfo?.mentionedJid ?? []),
+  ];
+}
+
 /**
- * Compute `InboundMessage.isMention` for a WhatsApp message:
+ * Whether the message carries any mention pill at all, for anyone.
+ * Gates the typed-mention fallback below: when a pill exists, the `@`
+ * text in the body belongs to whoever was pilled, and text-matching it
+ * against the bot's names would false-fire on a group member whose
+ * name matches the assistant's.
+ */
+export function hasMentionPills(normalized: MentionContextSource): boolean {
+  return collectMentionedJids(normalized).length > 0;
+}
+
+function escapeRegex(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Fallback detection for typed @-mentions of the bot in a group (#3085).
+ * Only the autocomplete pill carries `contextInfo.mentionedJid`, and the
+ * pill can only target the bot's contact name — a user who types
+ * `@<name>` and hits send produces plain text that
+ * `isBotMentionedInGroup` can never match, so mention-mode wirings
+ * silently ignore the message.
+ *
+ * Matches `@<assistant name>` and `@<bot phone number>` in the text,
+ * case-insensitive. The boundaries deliberately diverge from the
+ * chat-sdk `detectMention` shape (`@name\b`): its ASCII `\b` never
+ * matches after a name ending in an accented or CJK letter (`@José`,
+ * `@小助手`), and its missing leading guard false-fires on emails and
+ * URL paths (`ethan@sprout.com`, `x.com/@sprout/...`). Here the
+ * trailing boundary is Unicode-aware, and the char before `@` must not
+ * be a letter, digit, `_`, `@`, `/`, or `.`.
+ *
+ * Known limitation: only the full name matches. Typing the first word
+ * of a multi-word assistant name (`@Autónomos` for "Autónomos Expert")
+ * does not count — matching name prefixes would false-fire too easily.
+ *
+ * Callers must gate this on `!hasMentionPills(...)` (see that helper)
+ * and on dedicated mode: on a shared number the assistant's name in
+ * text can be ordinary human conversation about the assistant.
+ */
+export function isBotTypedMention(text: string, assistantName: string, botPhoneJid: string | undefined): boolean {
+  const botPhoneUser = botPhoneJid?.split('@')[0];
+  return [assistantName, botPhoneUser]
+    .filter((name): name is string => !!name)
+    .some((name) => new RegExp(`(?<![\\p{L}\\p{N}_@/.])@${escapeRegex(name)}(?![\\p{L}\\p{N}_])`, 'iu').test(text));
+}
+
+/**
+ * Compute `InboundMessage.isMention` for a WhatsApp message.
+ *
+ * Shared-number mode (operator's personal number): NOTHING is a mention.
+ * DMs are addressed to the human, and a group tag of the owner's JID/LID
+ * tags the human — treating either as a bot mention would auto-create
+ * messaging groups and fire approval cards for ordinary human traffic.
+ *
+ * Dedicated mode (bot has its own number):
  *   - DMs are always mentions (router auto-engages on the bot's behalf).
  *   - Group messages are mentions only when the bot is explicitly tagged.
  *
@@ -249,25 +307,115 @@ export function isBotMentionedInGroup(
  * `InboundMessage` field is `isMention?: boolean` and downstream code
  * treats `undefined` differently than an explicit `false` (#2560).
  */
-export function computeIsMention(isGroup: boolean, botMentionedInGroup: boolean): true | undefined {
+export function computeIsMention(shared: boolean, isGroup: boolean, botMentionedInGroup: boolean): true | undefined {
+  if (shared) return undefined;
   if (!isGroup) return true;
   return botMentionedInGroup ? true : undefined;
 }
 
 /**
- * Decide what to do with the auth state when the Baileys socket closes.
+ * Normalize a tag of the bot's LID into `@<assistant name>` so mention text
+ * matches name-pattern triggers. Dedicated mode only: on a shared number the
+ * LID belongs to the human owner, and rewriting a friend's tag of the owner
+ * into the assistant's name would make name-pattern wirings false-fire on
+ * every such tag.
+ */
+export function rewriteBotLidMention(
+  content: string,
+  shared: boolean,
+  botLidUser: string | undefined,
+  assistantName: string,
+): string {
+  if (shared || !botLidUser || !content.includes(`@${botLidUser}`)) return content;
+  return content.replace(`@${botLidUser}`, `@${assistantName}`);
+}
+
+/**
+ * Append a visible note for media that failed to download, so the agent knows
+ * something was sent rather than silently losing the attachment — or the whole
+ * message, when an uncaptioned image would otherwise be dropped by the
+ * empty-message guard. Returns `content` unchanged when nothing failed.
+ */
+export function appendMediaFailureNote(content: string, failures: string[]): string {
+  if (failures.length === 0) return content;
+  const note = failures.map((t) => `[${t} could not be downloaded]`).join(' ');
+  return content ? `${content}\n${note}` : note;
+}
+
+/**
+ * Build an inbound attachment entry from downloaded bytes.
  *
- * - `reconnect` — transient close; spin up a new socket on the same creds.
- * - `wipe`      — server-side logout (reason 401 / loggedOut); creds are
- *                 invalidated by WhatsApp, keeping them on disk only causes
- *                 a 401 loop on next start.
- * - `preserve`  — graceful host shutdown, or any other non-logout close
- *                 during shutdown. Creds remain valid; the next start
- *                 reconnects without re-pairing.
+ * Exported so the delivery-shape decision is testable without a Baileys
+ * socket: the IO stays in the adapter closure, this is the part that decides
+ * what the agent actually receives.
+ */
+export async function buildInboundAttachment(
+  type: string,
+  filename: string,
+  mimetype: string | undefined,
+  buffer: Buffer,
+): Promise<WhatsAppInboundAttachment> {
+  const entry: WhatsAppInboundAttachment = {
+    type,
+    name: filename,
+    mimeType: mimetype ?? mimeForType(type),
+    size: buffer.length,
+    // The BYTES, not a host path. The host's attachment spill
+    // (extractAttachmentFiles in session-manager) writes this base64 into the
+    // session's own inbox, which is the only place the container can read:
+    // `attachments/<name>` under DATA_DIR is a host path no agent can open, so
+    // writing there delivered an attachment the agent could see referenced and
+    // never fetch.
+    data: buffer.toString('base64'),
+  };
+  // Host-side preprocessing, same contract as the Chat SDK bridge: neither
+  // call throws, each records its own error on the entry.
+  await maybeTranscribe(entry as unknown as Record<string, unknown>, buffer);
+  await maybePdfExtract(entry as unknown as Record<string, unknown>, buffer);
+  return entry;
+}
+
+/** An inbound WhatsApp attachment, carried as bytes for the host to spill. */
+export interface WhatsAppInboundAttachment {
+  type: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  /** base64 — the host writes this into the session inbox and replaces it with a path. */
+  data: string;
+  transcription?: string;
+  transcriptionError?: string;
+  extractedText?: string;
+  pdfExtractionError?: string;
+}
+
+/** Fallback mime when WhatsApp omits one, so the preprocessors can still dispatch. */
+function mimeForType(type: string): string {
+  switch (type) {
+    case 'image':
+      return 'image/jpeg';
+    case 'video':
+      return 'video/mp4';
+    case 'audio':
+      return 'audio/ogg';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
+/**
+ * What to do when the socket closes: reconnect, wipe the auth state, or leave
+ * it alone.
  *
- * Extracted from the connection.update handler so the wipe decision can be
- * tested in isolation — a regression here once silently invalidated the
- * user's WhatsApp session on every service restart.
+ * Behaviourally identical to the inline expression this replaces — extracted
+ * so the wipe decision is testable on its own. A regression here once
+ * invalidated the user's WhatsApp session on every service restart, which
+ * presents as "scan the QR code again" and cannot be undone, so it is worth a
+ * named function and three assertions rather than a boolean buried in a
+ * handler.
+ *
+ * 'preserve' is the case that matters: a graceful shutdown must NOT be treated
+ * as a logout.
  */
 export function classifyConnectionClose(
   reason: number | undefined,
@@ -299,88 +447,49 @@ function buildMediaMessage(data: Buffer, filename: string, ext: string, caption?
 }
 
 /**
- * Inbound attachment entry shape produced by the WA adapter. `data` is
- * base64; session-manager's extractAttachmentFiles spills it to the session
- * inbox and replaces it with `localPath`. `transcription` / `extractedText`
- * (plus their *Error siblings) are stamped by the maybe* helpers.
+ * Shared vs dedicated number mode. Only an explicit ASSISTANT_HAS_OWN_NUMBER=true
+ * means the bot has its own number (dedicated); anything else — absent, empty,
+ * 'false', any other string — means the bot rides the operator's personal
+ * number (shared). Exported for unit testing the truth table.
  */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export type WhatsAppInboundAttachment = Record<string, any>;
-
-const INBOUND_MEDIA_TYPES = [
-  { key: 'imageMessage', type: 'image', ext: '.jpg', fallbackMime: 'image/jpeg' },
-  { key: 'videoMessage', type: 'video', ext: '.mp4', fallbackMime: 'video/mp4' },
-  { key: 'audioMessage', type: 'audio', ext: '.ogg', fallbackMime: 'audio/ogg' },
-  { key: 'documentMessage', type: 'document', ext: '', fallbackMime: 'application/octet-stream' },
-] as const;
+export function resolveSharedMode(assistantHasOwnNumber: string | undefined): boolean {
+  return assistantHasOwnNumber !== 'true';
+}
 
 /**
- * Download media from an inbound WhatsApp message and produce attachment
- * entries the router can hand to session-manager. Bytes are returned as
- * base64 in `data`; the spill machinery in extractAttachmentFiles writes
- * them to `<sessionDir>/inbox/<messageId>/<filename>` and the container
- * sees them at `/workspace/inbox/<messageId>/<filename>`.
+ * Shared vs dedicated number changes every default, so the declaration is
+ * computed once at module load from the adapter's own env:
+ *  - shared (ASSISTANT_HAS_OWN_NUMBER unset/false): the operator's personal
+ *    number. DMs and group tags address the human, not the bot ('never');
+ *    groups engage on the agent's name ({name} pattern); auto-create stays
+ *    'strict' so strangers DMing the human can never spawn agent state.
+ *  - dedicated: a real bot number. Groups engage on platform mentions —
+ *    'mention', NEVER 'mention-sticky': WhatsApp is non-threaded and sessions
+ *    are never deleted, so sticky would mean engaged-forever.
  *
- * Voice notes are passed through maybeTranscribe; PDFs through
- * maybePdfExtract — same hooks the chat-sdk bridge uses for Slack/etc., so
- * the agent gets inline transcribed/extracted text rather than a path it
- * can't decode.
- *
- * The Baileys downloader is injected so tests can stub it without touching
- * the @whiskeysockets/baileys module surface.
+ * Exported for unit testing both mode literals.
  */
-export async function downloadInboundMedia(
-  msg: WAMessage,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  normalized: any,
-  download: typeof downloadMediaMessage = downloadMediaMessage,
-): Promise<WhatsAppInboundAttachment[]> {
-  const results: WhatsAppInboundAttachment[] = [];
-  for (const { key, type, ext, fallbackMime } of INBOUND_MEDIA_TYPES) {
-    if (!normalized[key]) continue;
-    try {
-      const buffer = await download(msg, 'buffer', {});
-      // documentMessage.fileName is attacker-controlled and rides through
-      // WhatsApp's E2E channel — Meta can't sanitize it server-side. Without
-      // this guard, a `..`-laden fileName escapes the session inbox on the
-      // host side too.
-      const rawFilename: unknown = normalized[key].fileName;
-      const fallback = `${type}-${Date.now()}${ext}`;
-      const filename = typeof rawFilename === 'string' && isSafeAttachmentName(rawFilename) ? rawFilename : fallback;
-      if (typeof rawFilename === 'string' && rawFilename && filename !== rawFilename) {
-        log.warn('Refused unsafe attachment filename — would escape inbox', {
-          rawFilename,
-          replacement: filename,
-        });
+export function computeWhatsappDefaults(shared: boolean): ChannelDefaults {
+  return shared
+    ? {
+        dm: { engageMode: 'pattern', engagePattern: '.', threads: false, unknownSenderPolicy: 'strict' },
+        group: { engageMode: 'pattern', engagePattern: '\\b{name}\\b', threads: false, unknownSenderPolicy: 'strict' },
+        mentions: 'never',
       }
-      // Prefer the mime WhatsApp reports on the payload; fall back to the
-      // media-class default so transcription / multimodal gates still fire
-      // when the field is missing. Audio mimes like `audio/ogg; codecs=opus`
-      // pass isTranscribableMime as-is via its startsWith('audio/') check.
-      const mimeType: string =
-        typeof normalized[key].mimetype === 'string' && normalized[key].mimetype
-          ? normalized[key].mimetype
-          : fallbackMime;
-
-      const entry: WhatsAppInboundAttachment = {
-        type,
-        name: filename,
-        mimeType,
-        size: buffer.length,
-        data: buffer.toString('base64'),
+    : {
+        dm: { engageMode: 'pattern', engagePattern: '.', threads: false, unknownSenderPolicy: 'request_approval' },
+        group: { engageMode: 'mention', threads: false, unknownSenderPolicy: 'request_approval' },
+        mentions: 'platform',
       };
-
-      await maybeTranscribe(entry, buffer);
-      await maybePdfExtract(entry, buffer);
-
-      results.push(entry);
-      log.info('Media downloaded', { type, filename, size: buffer.length, mimeType });
-    } catch (err) {
-      log.warn('Failed to download media', { type, err });
-    }
-  }
-  return results;
 }
+
+// Adapter-internal env: same .env keys as always (setup/channels/whatsapp.ts
+// still writes them), but read here instead of imported from core config —
+// shared-number handling is channel-local.
+const waEnv = readEnvFile(['ASSISTANT_NAME', 'ASSISTANT_HAS_OWN_NUMBER']);
+const ASSISTANT_NAME = waEnv.ASSISTANT_NAME || 'Andy';
+const WHATSAPP_SHARED = resolveSharedMode(waEnv.ASSISTANT_HAS_OWN_NUMBER);
+const WHATSAPP_DEFAULTS: ChannelDefaults = computeWhatsappDefaults(WHATSAPP_SHARED);
 
 registerChannelAdapter('whatsapp', {
   factory: () => {
@@ -397,10 +506,6 @@ registerChannelAdapter('whatsapp', {
     // State
     let sock: WASocket;
     let connected = false;
-    // True once the socket has opened at least once, so we can distinguish the
-    // initial connect from a reconnect and only fire the host re-drive hook on
-    // the latter (nothing has deferred yet on first boot).
-    let everConnected = false;
     let shuttingDown = false;
     let setupConfig: ChannelSetup;
 
@@ -408,6 +513,8 @@ registerChannelAdapter('whatsapp', {
     const lidToPhoneMap: Record<string, string> = {};
     let botLidUser: string | undefined;
     let botPhoneJid: string | undefined;
+
+    // Outgoing queue for messages sent while disconnected
 
     // Sent message cache for retry/re-encrypt requests
     const sentMessageCache = new Map<string, any>();
@@ -428,6 +535,9 @@ registerChannelAdapter('whatsapp', {
     // Group sync tracking
     let lastGroupSync = 0;
     let groupSyncTimerStarted = false;
+
+    // Chats already noted in the shared-mode once-per-chat debug log
+    const sharedModeLoggedChats = new Set<string>();
 
     // First-connect promise
     let resolveFirstOpen: (() => void) | undefined;
@@ -484,19 +594,21 @@ registerChannelAdapter('whatsapp', {
       const cached = groupMetadataCache.get(jid);
       if (cached && cached.expiresAt > Date.now()) return cached.metadata;
 
+      // Return WhatsApp's native group metadata UNMODIFIED. Baileys uses this to
+      // distribute the group sender-key; it also reads `addressingMode` from it.
+      // For LID-addressed groups the participants must keep their native @lid ids
+      // so they match addressingMode='lid'. Translating them to phone JIDs
+      // (previous behavior) left addressingMode='lid' but pn-shaped participant
+      // ids — an inconsistency that desynced sender-key distribution, so member
+      // devices never received the key and group messages stuck on "waiting for
+      // this message". DMs and phone-addressed (small) groups were unaffected.
+      // The LID→phone translation for inbound sender routing happens separately.
       const metadata = await sock.groupMetadata(jid);
-      const participants = await Promise.all(
-        metadata.participants.map(async (p) => ({
-          ...p,
-          id: await translateJid(p.id),
-        })),
-      );
-      const normalized = { ...metadata, participants };
       groupMetadataCache.set(jid, {
-        metadata: normalized,
+        metadata,
         expiresAt: Date.now() + GROUP_METADATA_CACHE_TTL_MS,
       });
-      return normalized;
+      return metadata;
     }
 
     async function syncGroupMetadata(force = false): Promise<void> {
@@ -520,51 +632,83 @@ registerChannelAdapter('whatsapp', {
       }
     }
 
-    /**
-     * Send through the live socket with a hard timeout. On timeout we tear the
-     * stale socket down to force a reconnect (so the zombie self-heals and the
-     * onReconnect re-drive fires) and throw ChannelDisconnectedError so the host
-     * defers and re-drives the message once the channel is back — rather than
-     * hanging this delivery forever.
-     */
-    async function sendViaSocket(
-      jid: string,
-      content: Parameters<WASocket['sendMessage']>[1],
-    ): Promise<Awaited<ReturnType<WASocket['sendMessage']>>> {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const timeout = new Promise<never>((_, reject) => {
-        timer = setTimeout(() => {
-          log.warn('WhatsApp send timed out — tearing down stale socket to force reconnect', { jid });
-          connected = false;
-          try {
-            sock.end(new Error('send timeout'));
-          } catch {
-            /* socket already dead */
+    /** Download media from an inbound message, save to /workspace/attachments/. */
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async function downloadInboundMedia(
+      msg: WAMessage,
+      normalized: any,
+    ): Promise<{
+      attachments: WhatsAppInboundAttachment[];
+      failures: string[];
+    }> {
+      const mediaTypes: Array<{ key: string; type: string; ext: string }> = [
+        { key: 'imageMessage', type: 'image', ext: '.jpg' },
+        { key: 'videoMessage', type: 'video', ext: '.mp4' },
+        { key: 'audioMessage', type: 'audio', ext: '.ogg' },
+        { key: 'documentMessage', type: 'document', ext: '' },
+      ];
+      const results: WhatsAppInboundAttachment[] = [];
+      const failures: string[] = [];
+      for (const { key, type, ext } of mediaTypes) {
+        if (!normalized[key]) continue;
+        try {
+          // Pass reuploadRequest so Baileys can ask WhatsApp to re-upload the
+          // media when the direct CDN fetch fails or the media URL has expired
+          // (common around reconnects). Without it, a "Failed to fetch stream"
+          // is unrecoverable and the attachment is silently lost.
+          const buffer = await downloadMediaMessage(
+            msg,
+            'buffer',
+            {},
+            { reuploadRequest: sock.updateMediaMessage, logger: baileysLogger },
+          );
+          // documentMessage.fileName is attacker-controlled and rides through
+          // WhatsApp's E2E channel — Meta can't sanitize it server-side. Without
+          // this guard, a `..`-laden fileName escapes attachDir on path.join.
+          const rawFilename = normalized[key].fileName;
+          const fallback = `${type}-${Date.now()}${ext}`;
+          const filename = isSafeAttachmentName(rawFilename) ? rawFilename : fallback;
+          if (rawFilename && filename !== rawFilename) {
+            log.warn('Refused unsafe attachment filename — would escape attachments dir', {
+              rawFilename,
+              replacement: filename,
+            });
           }
-          reject(new ChannelDisconnectedError(`WhatsApp send timed out after ${SEND_TIMEOUT_MS}ms — socket stale`));
-        }, SEND_TIMEOUT_MS);
-      });
-      try {
-        return await Promise.race([sock.sendMessage(jid, content), timeout]);
-      } finally {
-        if (timer) clearTimeout(timer);
+          // Return the BYTES, not a host path. The host's attachment spill
+          // (extractAttachmentFiles in session-manager) writes base64 `data`
+          // into the session's own inbox, which is the only place the
+          // container can read: `attachments/<name>` under DATA_DIR is a host
+          // path no agent can open, so writing there delivered an attachment
+          // the agent could see referenced and never fetch.
+          const entry = await buildInboundAttachment(type, filename, normalized[key].mimetype, buffer);
+          results.push(entry);
+          log.info('Media downloaded', { type, filename, bytes: buffer.length });
+        } catch (err) {
+          log.warn('Failed to download media', { type, err });
+          failures.push(type);
+        }
       }
+      return { attachments: results, failures };
     }
 
+    /**
+     * Send, or throw. Never swallow.
+     *
+     * This used to push onto an in-memory queue and return undefined, which
+     * the host read as "delivered": the agent's outbound row was cleared and
+     * the only remaining copy lived in this process, lost on the next
+     * restart. The queue is gone — the host's delivery loop is the durable
+     * retry, and it can only do that job if a failure reaches it.
+     *
+     * Returning normally therefore means the message reached WhatsApp.
+     */
     async function sendRawMessage(jid: string, text: string, mentions?: string[]): Promise<string | undefined> {
-      // Not connected → throw so the host delivery loop defers and re-drives the
-      // message when the socket comes back. Returning here (the old behavior)
-      // made the host mark the message delivered while it was only queued
-      // in-memory — lost on the next restart, never seen by the user.
       if (!connected) {
-        throw new ChannelDisconnectedError(`WhatsApp not connected — cannot send to ${jid}`);
+        throw new ChannelDisconnectedError(`WhatsApp socket is not connected (jid ${jid})`);
       }
-      // Let send errors propagate. The host classifies them (transient → retry,
-      // permanent → surface) — swallowing them here would silently drop the
-      // message while reporting success.
       const payload: { text: string; mentions?: string[] } = { text };
       if (mentions && mentions.length > 0) payload.mentions = mentions;
-      const sent = await sendViaSocket(jid, payload);
+      const sent = await sock.sendMessage(jid, payload);
       if (sent?.key?.id && sent.message) {
         sentMessageCache.set(sent.key.id, sent.message);
         if (sentMessageCache.size > SENT_MESSAGE_CACHE_MAX) {
@@ -601,8 +745,18 @@ registerChannelAdapter('whatsapp', {
         },
       });
 
-      // Request pairing code if phone number is set and not yet registered
-      if (phoneNumber && !state.creds.registered) {
+      // Request pairing code only when there's no paired account yet.
+      //
+      // We can't use `state.creds.registered` here: Baileys 7.x doesn't
+      // reliably flip that flag back to `true` after the post-pair stream
+      // restart (statusCode 515). An already-paired socket would then see
+      // `registered=false` and request a *new* pairing code 3s after the
+      // restart, which the WhatsApp server rejects with 401 and the adapter
+      // wipes the auth directory — re-pair from scratch every restart.
+      //
+      // `state.creds.me` is set as part of the QR / pairing-code handshake
+      // and is the authoritative "this socket has an account" signal.
+      if (phoneNumber && !state.creds.me) {
         setTimeout(async () => {
           try {
             const code = await sock.requestPairingCode(phoneNumber);
@@ -653,11 +807,11 @@ registerChannelAdapter('whatsapp', {
               }, RECONNECT_DELAY_MS);
             });
           } else if (disposition === 'wipe') {
+            // Server-side logout (account unlinked, 401, etc.). Clear auth so
+            // the next start prompts for a fresh pair — stale creds would
+            // 401 again and risk WhatsApp's "can't link new devices now"
+            // cooldown.
             log.info('WhatsApp logged out');
-            // Delete auth credentials immediately. Keeping stale credentials
-            // causes the next service restart to attempt authentication with an
-            // invalidated session, producing a second 401 that can trigger
-            // WhatsApp's re-link cooldown ("can't link new devices now").
             try {
               fs.rmSync(authDir, { recursive: true, force: true });
               fs.mkdirSync(authDir, { recursive: true });
@@ -671,38 +825,21 @@ registerChannelAdapter('whatsapp', {
               resolveFirstOpen = undefined;
             }
           } else {
-            // disposition === 'preserve': graceful shutdown, creds untouched.
-            // A previous version wiped creds here, which meant every service
-            // restart silently invalidated the WA session — the user would
-            // think WhatsApp had logged them out server-side when it was
-            // really the host eating its own credentials.
-            log.info('WhatsApp adapter closing without logout — credentials preserved', {
-              reason,
-              shuttingDown,
-            });
+            // Clean shutdown (shuttingDown=true) or a non-loggedOut disconnect
+            // that won't auto-reconnect. KEEP AUTH — the next process boot
+            // must be able to restore the session. Wiping here turned every
+            // `systemctl restart` into a forced re-pair, which is catastrophic
+            // when the bot phone is not in reach.
+            log.info('WhatsApp adapter stopped (auth preserved)');
             if (rejectFirstOpen) {
-              rejectFirstOpen(new Error(`WhatsApp connection closed (reason=${reason ?? 'undefined'})`));
+              rejectFirstOpen(new Error('WhatsApp adapter shutdown'));
               rejectFirstOpen = undefined;
               resolveFirstOpen = undefined;
             }
           }
         } else if (connection === 'open') {
           connected = true;
-          const isReconnect = everConnected;
-          everConnected = true;
           log.info('Connected to WhatsApp');
-
-          // Reconnect (not first boot) → tell the host to flush any outbound
-          // messages that deferred while the socket was down, right now, instead
-          // of waiting for the next delivery poll / 60s sweep. Replaces the old
-          // in-memory flushOutgoingQueue that this adapter used to run here.
-          if (isReconnect) {
-            try {
-              setupConfig.onReconnect?.();
-            } catch (err) {
-              log.error('onReconnect hook threw', { err });
-            }
-          }
 
           // Clean up pairing code file after successful connection
           try {
@@ -726,6 +863,8 @@ registerChannelAdapter('whatsapp', {
               botLidUser = lidUser;
             }
           }
+
+          // Flush queued messages
 
           // Group sync
           syncGroupMetadata().catch((err) => log.error('Initial group sync failed', { err }));
@@ -783,12 +922,16 @@ registerChannelAdapter('whatsapp', {
               '';
 
             // Normalize bot LID mention → assistant name for trigger matching
-            if (botLidUser && content.includes(`@${botLidUser}`)) {
-              content = content.replace(`@${botLidUser}`, `@${ASSISTANT_NAME}`);
-            }
+            // (dedicated mode only — see rewriteBotLidMention)
+            content = rewriteBotLidMention(content, WHATSAPP_SHARED, botLidUser, ASSISTANT_NAME);
 
             // Download media attachments (images, video, audio, documents)
-            const attachments = await downloadInboundMedia(msg, normalized);
+            const { attachments, failures } = await downloadInboundMedia(msg, normalized);
+
+            // Surface failed downloads as text so the agent knows media was
+            // sent even when it couldn't be fetched — instead of silently
+            // dropping the attachment (or the whole message, if uncaptioned).
+            content = appendMediaFailureNote(content, failures);
 
             // Skip empty protocol messages (no text and no attachments)
             if (!content && attachments.length === 0) continue;
@@ -812,7 +955,7 @@ registerChannelAdapter('whatsapp', {
               if (sentMessageCache.has(msg.key.id || '')) continue;
             }
 
-            const isBotMessage = ASSISTANT_HAS_OWN_NUMBER ? false : content.startsWith(`${ASSISTANT_NAME}:`);
+            const isBotMessage = WHATSAPP_SHARED ? content.startsWith(`${ASSISTANT_NAME}:`) : false;
 
             // Check if this reply answers a pending question via slash command
             const pending = pendingQuestions.get(chatJid);
@@ -836,18 +979,26 @@ registerChannelAdapter('whatsapp', {
             // Detect explicit @-mentions of the bot in groups. Detail in
             // isBotMentionedInGroup(); short version is contextInfo.mentionedJid
             // on text + caption-bearing messages, matched against the bot's
-            // phone JID and LID (#2560).
-            const botMentionedInGroup = isGroup && isBotMentionedInGroup(normalized, botPhoneJid, botLidUser);
+            // phone JID and LID (#2560). Typed `@<name>` text never carries a
+            // pill, so in dedicated mode fall back to text matching when the
+            // message pills nobody (#3085).
+            const botMentionedInGroup =
+              isGroup &&
+              (isBotMentionedInGroup(normalized, botPhoneJid, botLidUser) ||
+                (!WHATSAPP_SHARED &&
+                  !hasMentionPills(normalized) &&
+                  isBotTypedMention(content, ASSISTANT_NAME, botPhoneJid)));
 
             const inbound: InboundMessage = {
               id: msg.key.id || `wa-${Date.now()}`,
               kind: 'chat',
-              // DMs are addressed to the bot by definition. Mark them as
-              // platform-confirmed mentions so the router auto-creates an
-              // approval-required messaging_group when the chat is unknown,
-              // instead of silently dropping. In groups, only an explicit
-              // @-mention counts.
-              isMention: computeIsMention(isGroup, botMentionedInGroup),
+              // Dedicated mode: DMs are addressed to the bot by definition.
+              // Mark them as platform-confirmed mentions so the router
+              // auto-creates an approval-required messaging_group when the
+              // chat is unknown, instead of silently dropping. In groups,
+              // only an explicit @-mention counts. Shared mode: never a
+              // mention — DMs and tags address the human owner.
+              isMention: computeIsMention(WHATSAPP_SHARED, isGroup, botMentionedInGroup),
               isGroup,
               content: {
                 text: content,
@@ -861,6 +1012,17 @@ registerChannelAdapter('whatsapp', {
               },
               timestamp,
             };
+
+            // Discoverability for /debug: in shared mode nothing carries
+            // isMention, so unknown chats never auto-create messaging groups
+            // — traffic can look silently dropped. Note each chat once.
+            if (WHATSAPP_SHARED && chatJid !== botPhoneJid && !sharedModeLoggedChats.has(chatJid)) {
+              sharedModeLoggedChats.add(chatJid);
+              log.debug('Shared-number mode: forwarding chat to router without isMention', {
+                chatJid,
+                isGroup,
+              });
+            }
 
             // WhatsApp doesn't use threads — threadId is null
             setupConfig.onInbound(chatJid, null, inbound);
@@ -880,6 +1042,7 @@ registerChannelAdapter('whatsapp', {
       name: 'whatsapp',
       channelType: 'whatsapp',
       supportsThreads: false,
+      defaults: WHATSAPP_DEFAULTS,
 
       async setup(hostConfig: ChannelSetup) {
         setupConfig = hostConfig;
@@ -948,11 +1111,6 @@ registerChannelAdapter('whatsapp', {
 
         // Send file attachments (first file gets the caption, rest are captionless)
         if (hasFiles) {
-          // Guard before any send so a disconnected socket defers the whole
-          // message (host re-drives it) instead of dropping files one by one.
-          if (!connected) {
-            throw new ChannelDisconnectedError(`WhatsApp not connected — cannot send files to ${platformId}`);
-          }
           let captionUsed = false;
           for (const file of message.files!) {
             try {
@@ -966,7 +1124,7 @@ registerChannelAdapter('whatsapp', {
               }
               const mediaMsg = buildMediaMessage(file.data, file.filename, ext, caption);
               if (captionMentions) mediaMsg.mentions = captionMentions;
-              const sent = await sendViaSocket(platformId, mediaMsg);
+              const sent = await sock.sendMessage(platformId, mediaMsg);
               if (sent?.key?.id && sent.message) {
                 sentMessageCache.set(sent.key.id, sent.message);
               }
@@ -980,7 +1138,7 @@ registerChannelAdapter('whatsapp', {
 
         if (text) {
           const { text: formatted, mentions } = formatWhatsApp(text);
-          const prefixed = ASSISTANT_HAS_OWN_NUMBER ? formatted : `${ASSISTANT_NAME}: ${formatted}`;
+          const prefixed = WHATSAPP_SHARED ? `${ASSISTANT_NAME}: ${formatted}` : formatted;
           return sendRawMessage(platformId, prefixed, mentions);
         }
       },
@@ -1023,4 +1181,5 @@ registerChannelAdapter('whatsapp', {
 
     return adapter;
   },
+  defaults: WHATSAPP_DEFAULTS,
 });

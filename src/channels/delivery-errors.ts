@@ -85,6 +85,14 @@ const PERMANENT_PLATFORM_ERRORS = [
 export function classifyDeliveryError(err: unknown): 'permanent' | 'disconnected' | 'transient' {
   if (err instanceof PermanentDeliveryError) return 'permanent';
   if (err instanceof ChannelDisconnectedError) return 'disconnected';
+  // NOT here: MissingChannelAdapterError. An unregistered adapter means an
+  // adapter factory returned null at startup — missing credentials, a bad
+  // token — which is a configuration fault, not a transient outage. Upstream
+  // deliberately routes it through the bounded retry path so it ends 'failed'
+  // and surfaces, instead of deferring forever behind a growing queue
+  // (src/delivery.test.ts, "#2995"). A socket that is merely down throws
+  // ChannelDisconnectedError from the adapter itself, which is the case this
+  // disposition exists for.
   const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
   if (PERMANENT_PLATFORM_ERRORS.some((code) => msg.includes(code))) return 'permanent';
   return 'transient';

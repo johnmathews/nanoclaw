@@ -11,12 +11,7 @@ import path from 'path';
 import { GROUPS_DIR } from './config.js';
 import type { McpServerConfig, AdditionalMountConfig } from './container-config.js';
 import { getAllAgentGroups } from './db/agent-groups.js';
-import {
-  getContainerConfig,
-  createContainerConfig,
-  DEFAULT_MEMORY_BUDGET,
-  DEFAULT_USER_BUDGET,
-} from './db/container-configs.js';
+import { getContainerConfig, createContainerConfig } from './db/container-configs.js';
 import { log } from './log.js';
 import type { ContainerConfigRow } from './types.js';
 
@@ -31,13 +26,13 @@ interface LegacyContainerJson {
   maxMessagesPerPrompt?: number;
 }
 
-export function backfillContainerConfigs(): void {
-  const groups = getAllAgentGroups();
+export async function backfillContainerConfigs(): Promise<void> {
+  const groups = await getAllAgentGroups();
   let backfilled = 0;
 
   for (const group of groups) {
     // Skip if already has a config row
-    if (getContainerConfig(group.id)) continue;
+    if (await getContainerConfig(group.id)) continue;
 
     // Read legacy container.json from disk
     const filePath = path.join(GROUPS_DIR, group.folder, 'container.json');
@@ -69,14 +64,14 @@ export function backfillContainerConfigs(): void {
       packages_apt: JSON.stringify(legacy.packages?.apt ?? []),
       packages_npm: JSON.stringify(legacy.packages?.npm ?? []),
       additional_mounts: JSON.stringify(legacy.additionalMounts ?? []),
-      env: '{}', // legacy container.json predates per-group env (migration 019)
       cli_scope: 'group',
-      memory_budget_chars: DEFAULT_MEMORY_BUDGET,
-      user_budget_chars: DEFAULT_USER_BUDGET,
+      timezone: null,
+      speed: null,
+      env: '{}',
       updated_at: new Date().toISOString(),
     };
 
-    createContainerConfig(row);
+    await createContainerConfig(row);
     backfilled++;
   }
 

@@ -1,21 +1,40 @@
+/**
+ * container-runner — composition and lifecycle policy.
+ *
+ * What used to be here were source-text assertions: `readFileSync` on this
+ * module plus a regex. They broke on a byte-identical move and stayed green
+ * through a behavior change, so each one is now a behavioral case against the
+ * thing it was really guarding. Argv assertions moved to
+ * `src/drivers/docker-driver.test.ts`, which is where argv now lives.
+ */
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-
+import { CONTAINER_CPU_LIMIT, CONTAINER_MEMORY_LIMIT } from './config.js';
 import type { ContainerConfig } from './container-config.js';
-import { isReservedContainerEnv } from './container-config.js';
-import { _syncSkillSymlinksForTesting, CLAUDE_CODE_QUIET_ENV, resolveProviderName } from './container-runner.js';
+import {
+  armSessionLifecycle,
+  composeSessionSpec,
+  parseMemoryMb,
+  parsePidsLimit,
+  resolveProviderName,
+  syncSkillSymlinks,
+  toMountSpecs,
+  watchGatewayAvailability,
+} from './container-runner.js';
+import type { SupervisedHandle } from './drivers/session-events.js';
+import { resetGatewayProvider } from './gateway-providers/index.js';
+import { log } from './log.js';
+import type { VolumeMount } from './providers/provider-container-registry.js';
+import type { AgentGroup, Session } from './types.js';
 
-function makeConfig(skills: string[] | 'all'): ContainerConfig {
-  return {
-    mcpServers: {},
-    packages: { apt: [], npm: [] },
-    additionalMounts: [],
-    skills,
-  };
-}
+vi.mock('./log.js', () => ({
+  log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), fatal: vi.fn() },
+}));
+
+afterEach(() => resetGatewayProvider());
 
 describe('resolveProviderName', () => {
   it('prefers session over container config', () => {
@@ -41,134 +60,559 @@ describe('resolveProviderName', () => {
   });
 });
 
-describe('buildContainerArgs ordering invariant (structural)', () => {
-  // The OneCLI gateway apply (SDK applyContainerConfig) appends credential-stub
-  // mounts — e.g. the codex auth.json sentinel nested INSIDE our RW
-  // /home/node/.codex mount. Docker applies binds in argument order, so the
-  // stub must land AFTER its parent mount or the parent shadows it and the
-  // agent silently degrades to loginless auth. Driving the real
-  // buildContainerArgs needs a live gateway + container runtime, so this
-  // guards the invariant structurally: the gateway apply must appear after
-  // the volume-mounts loop in the source.
-  it('applies the OneCLI gateway after the volume mounts', () => {
-    const src = fs.readFileSync(path.join(process.cwd(), 'src', 'container-runner.ts'), 'utf-8');
-    const mountsLoop = src.indexOf('for (const mount of mounts)');
-    const gatewayApply = src.indexOf('onecli.applyContainerConfig');
-    expect(mountsLoop).toBeGreaterThan(-1);
-    expect(gatewayApply).toBeGreaterThan(-1);
-    expect(gatewayApply).toBeGreaterThan(mountsLoop);
+const agentGroup: AgentGroup = {
+  id: 'agent-1',
+  name: 'Agent One',
+  folder: 'agent-one',
+  agent_provider: null,
+  created_at: '2026-07-22T00:00:00.000Z',
+} as AgentGroup;
+
+const session: Session = {
+  id: 'session-1',
+  agent_group_id: 'agent-1',
+  messaging_group_id: 'messaging-1',
+  thread_id: null,
+  agent_provider: null,
+  status: 'active',
+  container_status: 'stopped',
+  last_active: null,
+  created_at: '2026-07-22T00:00:00.000Z',
+} as Session;
+
+const containerConfig: ContainerConfig = {
+  mcpServers: {},
+  packages: { apt: [], npm: [] },
+  additionalMounts: [],
+  skills: [],
+} as unknown as ContainerConfig;
+
+const mounts: VolumeMount[] = [
+  {
+    hostPath: '/install/data/v2-sessions/agent-1/session-1',
+    containerPath: '/workspace',
+    readonly: false,
+    mountClass: 'group-state',
+    scope: 'agent-1',
+  },
+  {
+    hostPath: '/install/container/agent-runner/src',
+    containerPath: '/app/src',
+    readonly: true,
+    mountClass: 'install-surface',
+    scope: 'agent-1',
+  },
+];
+
+function compose(
+  overrides: {
+    gateway?: Record<string, unknown>;
+    contribution?: Record<string, unknown>;
+    containerConfig?: ContainerConfig;
+  } = {},
+) {
+  return composeSessionSpec({
+    agentGroup,
+    session,
+    containerName: 'nanoclaw-v2-agent-one-1700000000000',
+    mounts,
+    containerConfig: overrides.containerConfig ?? containerConfig,
+    mailboxEnvironment: { NANOCLAW_MAILBOX_BACKEND: 'sqlite' },
+    contribution: (overrides.contribution ?? {}) as never,
+    gateway: {
+      networkAccess: { endpoint: 'localhost', target: { kind: 'host' } },
+      ...(overrides.gateway ?? {}),
+    } as never,
+  });
+}
+
+function composeWithFolder(folder: string) {
+  return composeSessionSpec({
+    agentGroup: { ...agentGroup, folder },
+    session,
+    containerName: 'nanoclaw-v2-agent-one-1700000000000',
+    mounts,
+    containerConfig,
+    mailboxEnvironment: { NANOCLAW_MAILBOX_BACKEND: 'sqlite' },
+    contribution: {} as never,
+    gateway: { networkAccess: { endpoint: 'localhost', target: { kind: 'host' } } },
+  });
+}
+
+describe('composeSessionSpec', () => {
+  it('carries gateway lineage without overriding reserved host labels', () => {
+    const spec = compose({
+      gateway: {
+        labels: {
+          'provider-channel-id': 'channel-123',
+          'nanoclaw-container-name': 'wrong-runtime',
+        },
+      },
+    });
+    expect(spec.labels['provider-channel-id']).toBe('channel-123');
+    expect(spec.labels['nanoclaw-container-name']).toBe('nanoclaw-v2-agent-one-1700000000000');
+  });
+
+  it('keys the session by install, group and session id', () => {
+    expect(compose().key).toMatchObject({ agentGroupId: 'agent-1', sessionId: 'session-1' });
+  });
+
+  it('routes the model provider contribution onto the contributed lane', () => {
+    // Registry-sourced env is provenance-exempt from the credential-NAME check
+    // — the custom-endpoint provider registers ANTHROPIC_AUTH_TOKEN=placeholder
+    // for the gateway to overwrite on the wire, and composed-lane rules would
+    // deny that install's every spawn.
+    const spec = compose({
+      contribution: { env: { XDG_DATA_HOME: '/workspace/xdg', ANTHROPIC_AUTH_TOKEN: 'placeholder' } },
+    });
+    expect(spec.containers[0].contributedEnv).toMatchObject({
+      XDG_DATA_HOME: '/workspace/xdg',
+      ANTHROPIC_AUTH_TOKEN: 'placeholder',
+    });
+    expect(spec.containers[0].env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+  });
+
+  it('passes non-secret mailbox environment on the composed lane', () => {
+    expect(compose().containers[0].env.NANOCLAW_MAILBOX_BACKEND).toBe('sqlite');
+  });
+
+  it('the gateway contribution fills the contributed lane last and wins a collision', () => {
+    const spec = compose({
+      contribution: { env: { HTTPS_PROXY: 'http://provider:1' } },
+      gateway: { env: { HTTPS_PROXY: 'http://gateway-must-win:15001' } },
+    });
+    expect(spec.containers[0].contributedEnv?.HTTPS_PROXY).toBe('http://gateway-must-win:15001');
+  });
+
+  it('gateway mounts merge collision-free, shadowing a composed mount on the same target', () => {
+    const spec = compose({
+      gateway: {
+        mounts: [
+          {
+            class: 'allowlisted-extra',
+            hostPath: '/tmp/stub',
+            containerPath: '/workspace',
+            mode: 'ro',
+            groupScope: 'agent-1',
+          },
+          {
+            class: 'allowlisted-extra',
+            hostPath: '/tmp/ca.pem',
+            containerPath: '/tmp/gateway-ca.pem',
+            mode: 'ro',
+            groupScope: 'agent-1',
+          },
+        ],
+      },
+    });
+    const targets = spec.containers[0].mounts.map((m) => m.containerPath);
+    expect(targets.filter((t) => t === '/workspace')).toHaveLength(1);
+    expect(spec.containers[0].mounts.find((m) => m.containerPath === '/workspace')?.hostPath).toBe('/tmp/stub');
+    expect(targets).toContain('/tmp/gateway-ca.pem');
+  });
+
+  it('gateway containers ride beside the agent', () => {
+    const spec = compose({
+      gateway: {
+        containers: [{ role: 'egress-proxy', image: 'proxy:1', env: {}, mounts: [] }],
+        networkAccess: { endpoint: 'egress-proxy', target: { kind: 'session-container', role: 'egress-proxy' } },
+      },
+    });
+    expect(spec.containers.map((c) => c.role)).toEqual(['agent', 'egress-proxy']);
+  });
+
+  it('carries the lineage label and stamps the group folder VERBATIM (D9)', () => {
+    // The id→folder mapping lives only in the central DB; carrying the folder
+    // on the session is what lets an admission-side check pin `groups/<folder>`
+    // mounts to the session. Byte-identical to `agentGroup.folder` — drivers
+    // refuse rather than project it, so composition must never pre-mangle it.
+    expect(compose().labels['nanoclaw-container-name']).toBe('nanoclaw-v2-agent-one-1700000000000');
+    expect(compose().labels['nanoclaw-group-folder']).toBe(agentGroup.folder);
+  });
+
+  it('REFUSES a folder that exceeds the 63-byte label cap instead of letting a driver project it', () => {
+    // Admission joins `groups/<folder>` hostPaths to this label by string
+    // concatenation; no admission-side check can invert a hash-suffix
+    // projection, so an unlabelable folder must refuse at composition —
+    // before any driver, where the error can name the real problem instead
+    // of surfacing later as a policy denial blaming the wrong culprit.
+    let thrown: unknown;
+    try {
+      composeWithFolder(`agent-${'x'.repeat(70)}`);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toMatchObject({ kind: 'spec-invalid', retryable: false });
+    expect(String((thrown as Error).message)).toContain('nanoclaw-group-folder');
+    expect(String((thrown as Error).message)).toContain('rename the group folder');
+  });
+
+  it('REFUSES a folder outside the label-value charset, even a short one', () => {
+    for (const folder of ['spike agent', 'café', 'agent-']) {
+      let thrown: unknown;
+      try {
+        composeWithFolder(folder);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown, `folder '${folder}' must refuse`).toMatchObject({ kind: 'spec-invalid', retryable: false });
+    }
+  });
+
+  it('accepts a folder at exactly 63 bytes, and the uuid-minted shape a governance flow creates', () => {
+    // The bound is the cap itself, not a timid margin below it — and the
+    // ~42-byte `agent-<uuid>` shape minted group folders get must stay legal,
+    // so refusals are rare and loud rather than routine.
+    const sixtyThree = `a${'b'.repeat(61)}c`;
+    expect(sixtyThree.length).toBe(63);
+    expect(composeWithFolder(sixtyThree).labels['nanoclaw-group-folder']).toBe(sixtyThree);
+    const minted = 'agent-ef251cff-7911-42a6-b835-942fa947ab74';
+    expect(composeWithFolder(minted).labels['nanoclaw-group-folder']).toBe(minted);
+  });
+
+  it('splits PID 1 so a driver can preserve the image init', () => {
+    const agent = compose().containers[0];
+    expect(agent.command).toEqual(['bash', '-c']);
+    expect(agent.args).toEqual(['exec bun run /app/src/index.ts']);
+  });
+
+  it('asks for a shared-private network and the standard posture', () => {
+    const spec = compose();
+    expect(spec.network).toBe('shared-private');
+    expect(spec.networkAccess).toEqual({ endpoint: 'localhost', target: { kind: 'host' } });
+    expect(spec.hardening).toBe('standard');
+    expect(spec.runtimeTier).toBe('container');
+    expect(spec.stopGraceSeconds).toBe(1);
+  });
+
+  it('reads the isolation tier from the group container config, defaulting to container', () => {
+    expect(compose().runtimeTier).toBe('container');
+    expect(compose({ containerConfig: { ...containerConfig, runtimeTier: 'vm' } }).runtimeTier).toBe('vm');
+    expect(compose({ containerConfig: { ...containerConfig, runtimeTier: 'container' } }).runtimeTier).toBe(
+      'container',
+    );
+  });
+
+  it('composes an explicit runAs posture on a uid-1000 host', () => {
+    // uid 1000 matches the agent image's node user, so Docker's realization of
+    // this posture is a no-op — but the spec contract (drivers/types.ts) says
+    // the identity that must read 0600 host-owned material is explicit for
+    // every non-root host, never inherited from an image USER. A driver whose
+    // auxiliary image runs as 65532 cannot open the session's 0600 material
+    // without it. Reverting to the old host-uid heuristic fails exactly this case.
+    const getuid = vi.spyOn(process, 'getuid').mockReturnValue(1000);
+    const getgid = vi.spyOn(process, 'getgid').mockReturnValue(1000);
+    try {
+      const spec = compose();
+      expect(spec.runAs).toEqual({ uid: 1000, gid: 1000 });
+      expect(spec.containers[0].env.HOME).toBe('/home/node');
+    } finally {
+      getuid.mockRestore();
+      getgid.mockRestore();
+    }
+  });
+
+  it('maps identity and HOME together for any non-root uid', () => {
+    // Under a uid the image has no passwd entry for, HOME resolves to '/' and
+    // the provider SDK's `mkdir ~/.claude` dies EACCES — so the mapping and
+    // the explicit HOME travel together, exactly as they did in the old argv.
+    const getuid = vi.spyOn(process, 'getuid').mockReturnValue(501);
+    const getgid = vi.spyOn(process, 'getgid').mockReturnValue(20);
+    try {
+      const spec = compose();
+      expect(spec.runAs).toEqual({ uid: 501, gid: 20 });
+      expect(spec.containers[0].env.HOME).toBe('/home/node');
+    } finally {
+      getuid.mockRestore();
+      getgid.mockRestore();
+    }
+  });
+
+  it('never asks a runtime to run the session as root', () => {
+    // The hardened posture pins non-root, so a composed uid-0 runAs could never
+    // be realized; Docker's root behavior (image USER wins) stays unchanged.
+    const getuid = vi.spyOn(process, 'getuid').mockReturnValue(0);
+    try {
+      const spec = compose();
+      expect(spec.runAs).toBeUndefined();
+      expect(spec.containers[0].env.HOME).toBeUndefined();
+    } finally {
+      getuid.mockRestore();
+    }
+  });
+
+  it('leaves cpu and memory unset by default (unbounded, as today)', () => {
+    // Guards the knobs' own defaults: an accidental default cap would OOM-kill
+    // workloads that run fine now.
+    expect(CONTAINER_CPU_LIMIT).toBe('');
+    expect(CONTAINER_MEMORY_LIMIT).toBe('');
+    const spec = compose();
+    expect(spec.resources.cpus).toBeUndefined();
+    expect(spec.resources.memoryMb).toBeUndefined();
+    expect(spec.resources.shmSizeMb).toBe(1024);
   });
 });
 
-describe('container boot-failure tripwire (structural)', () => {
-  // A container that dies at boot (unknown provider, missing CLI binary, bad
-  // config) explains itself only on stderr — which logs at debug, below the
-  // default level. The spawn handler must keep a stderr tail and surface it
-  // at warn on a non-zero exit, or the operator sees only "exited code 1" on
-  // repeat. Driving a real failing spawn needs a container runtime, so this
-  // guards the wiring structurally, matching the invariant test above.
-  it('surfaces the stderr tail when the container exits non-zero', () => {
-    const src = fs.readFileSync(path.join(process.cwd(), 'src', 'container-runner.ts'), 'utf-8');
-    expect(src).toContain('stderrTail.push(line)');
-    expect(src).toMatch(/Container exited non-zero.*stderrTail/s);
+describe('parseMemoryMb', () => {
+  it('reads the operator-facing docker size strings', () => {
+    expect(parseMemoryMb('8g')).toBe(8192);
+    expect(parseMemoryMb('512m')).toBe(512);
+    expect(parseMemoryMb('2G')).toBe(2048);
+  });
+
+  it('treats a bare number as bytes, the way Docker does', () => {
+    // Reinterpreting it as megabytes would multiply an existing operator value
+    // by a million.
+    expect(parseMemoryMb('536870912')).toBe(512);
+  });
+
+  it('treats blank and zero as unbounded — the meanings Docker itself assigns', () => {
+    for (const value of ['', '   ', '0']) {
+      expect(parseMemoryMb(value)).toBeUndefined();
+    }
+  });
+
+  it('REFUSES garbage instead of silently removing the cap', () => {
+    // Fail-closed like the raw pass-through this replaced: Docker used to
+    // reject an invalid value at spawn. Returning undefined would fail in the
+    // one wrong direction a resource limit has — quietly uncapped.
+    for (const value of ['lots', '-4', '8gb extra', '8 gigs']) {
+      expect(() => parseMemoryMb(value), `'${value}' must refuse`).toThrow(/CONTAINER_MEMORY_LIMIT/);
+    }
   });
 });
 
-// Feature 4 (self-authored skills as procedural memory): lock in the invariant
-// that a non-symlink directory the agent authors under a UNIQUE name survives
-// the spawn-time reconciliation in syncSkillSymlinks, while shared symlinks
-// still reconcile. If this breaks, agent procedural memory silently vanishes.
-describe('syncSkillSymlinks — agent-authored skill survival', () => {
-  let claudeDir: string;
-  let skillsDir: string;
-
-  beforeEach(() => {
-    claudeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ncl-skills-'));
-    skillsDir = path.join(claudeDir, 'skills');
-    fs.mkdirSync(skillsDir, { recursive: true });
+describe('parsePidsLimit', () => {
+  it('accepts a positive integer and floors fractions', () => {
+    expect(parsePidsLimit('2048')).toBe(2048);
+    expect(parsePidsLimit('2048.7')).toBe(2048);
   });
 
-  afterEach(() => {
-    fs.rmSync(claudeDir, { recursive: true, force: true });
-  });
-
-  it('preserves a non-symlink (agent-authored) dir with a unique name', () => {
-    // Agent authored a real skill directory under a name not in `desired`.
-    const authored = path.join(skillsDir, 'deploy-static-site');
-    fs.mkdirSync(authored);
-    fs.writeFileSync(path.join(authored, 'SKILL.md'), '# authored');
-
-    _syncSkillSymlinksForTesting(claudeDir, makeConfig(['welcome', 'status']));
-
-    // Authored dir survives both loops, contents intact.
-    expect(fs.existsSync(authored)).toBe(true);
-    expect(fs.lstatSync(authored).isSymbolicLink()).toBe(false);
-    expect(fs.readFileSync(path.join(authored, 'SKILL.md'), 'utf8')).toBe('# authored');
-    // Desired shared skills are symlinked in alongside it.
-    expect(fs.lstatSync(path.join(skillsDir, 'welcome')).isSymbolicLink()).toBe(true);
-    expect(fs.lstatSync(path.join(skillsDir, 'status')).isSymbolicLink()).toBe(true);
-  });
-
-  it('removes a stale symlink no longer in the desired set', () => {
-    // A previously-desired shared skill, now dropped from config.
-    fs.symlinkSync('/app/skills/reactions', path.join(skillsDir, 'reactions'));
-
-    _syncSkillSymlinksForTesting(claudeDir, makeConfig(['welcome']));
-
-    expect(fs.existsSync(path.join(skillsDir, 'reactions'))).toBe(false);
-    expect(fs.lstatSync(path.join(skillsDir, 'welcome')).isSymbolicLink()).toBe(true);
-  });
-
-  it('clobbers a real dir ONLY when its name collides with a desired skill', () => {
-    // Agent mistakenly authored under a shared skill's name — the documented
-    // caveat. This dir is destroyed; the SKILL.md must teach unique names.
-    const colliding = path.join(skillsDir, 'welcome');
-    fs.mkdirSync(colliding);
-    fs.writeFileSync(path.join(colliding, 'SKILL.md'), '# clobbered');
-
-    _syncSkillSymlinksForTesting(claudeDir, makeConfig(['welcome']));
-
-    expect(fs.lstatSync(colliding).isSymbolicLink()).toBe(true);
+  it('rejects 0, negatives, blank and garbage', () => {
+    // cgroups v2 rejects `--pids-limit 0` with EINVAL, killing the spawn.
+    for (const value of ['0', '-1', '', '   ', 'lots']) {
+      expect(parsePidsLimit(value)).toBeUndefined();
+    }
   });
 });
 
-describe('learn-skill SKILL.md presence', () => {
-  it('exists and declares the required Pitfalls + Verification sections', () => {
-    const skillPath = path.join(process.cwd(), 'container', 'skills', 'learn-skill', 'SKILL.md');
-    expect(fs.existsSync(skillPath)).toBe(true);
-    const body = fs.readFileSync(skillPath, 'utf8');
-    expect(body).toMatch(/^## Pitfalls$/m);
-    expect(body).toMatch(/^## Verification$/m);
-    // Teaches the load-bearing rule.
-    expect(body.toLowerCase()).toContain('unique');
-  });
-});
-
-describe('CLAUDE_CODE_QUIET_ENV', () => {
-  it('names exactly the flags the shipped claude binary reads', () => {
-    // Verified against the strings in
-    // @anthropic-ai/claude-agent-sdk-linux-x64/claude in the agent image.
-    // A rename here silently brings the Datadog traffic back, so the names
-    // are asserted literally rather than derived.
-    expect([...CLAUDE_CODE_QUIET_ENV]).toEqual([
-      'CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC',
-      'DISABLE_TELEMETRY',
-      'DISABLE_ERROR_REPORTING',
+describe('toMountSpecs', () => {
+  it('carries the class and scope through, and maps readonly to a mode', () => {
+    expect(toMountSpecs(mounts, 'agent-1')).toEqual([
+      {
+        class: 'group-state',
+        hostPath: '/install/data/v2-sessions/agent-1/session-1',
+        containerPath: '/workspace',
+        mode: 'rw',
+        groupScope: 'agent-1',
+      },
+      {
+        class: 'install-surface',
+        hostPath: '/install/container/agent-runner/src',
+        containerPath: '/app/src',
+        mode: 'ro',
+        groupScope: 'agent-1',
+      },
     ]);
   });
 
-  it('is set on every spawned container, before per-group env', () => {
-    const source = fs.readFileSync(path.join(import.meta.dirname, 'container-runner.ts'), 'utf-8');
-    // The loop lives in buildContainerArgs, which every spawn goes through.
-    expect(source).toMatch(/for \(const key of CLAUDE_CODE_QUIET_ENV\)\s*\{\s*\n\s*args\.push\('-e', `\$\{key\}=1`\);/);
-    // Ordering matters: operator env (container.json `env`) is pushed after,
-    // so a group can still deliberately re-enable telemetry.
-    expect(source.indexOf('CLAUDE_CODE_QUIET_ENV')).toBeLessThan(source.indexOf('containerEnvArgs('));
+  it('defaults an unclassed mount to the vetted-upstream class', () => {
+    const [spec] = toMountSpecs([{ hostPath: '/x', containerPath: '/y', readonly: false }], 'agent-1');
+    expect(spec.class).toBe('allowlisted-extra');
+    expect(spec.groupScope).toBe('agent-1');
+  });
+});
+
+describe('armSessionLifecycle', () => {
+  function fakeHandle(startBehavior: () => Promise<void> = async () => {}): {
+    handle: Pick<SupervisedHandle, 'onTerminal' | 'start'>;
+    order: string[];
+  } {
+    const order: string[] = [];
+    return {
+      order,
+      handle: {
+        onTerminal: () => order.push('onTerminal'),
+        start: async () => {
+          order.push('start');
+          await startBehavior();
+        },
+      },
+    };
+  }
+
+  it('arms terminal handling before starting, and bookkeeping after', async () => {
+    const { handle, order } = fakeHandle();
+    await armSessionLifecycle({
+      handle,
+      onTerminal: () => {},
+      beforeStart: () => {
+        order.push('gateway');
+      },
+      afterStart: () => {
+        order.push('afterStart');
+      },
+    });
+
+    // A failure landing during startup must find a runtime that already knows
+    // how to finalize; recording "running" before the session exists would
+    // mark a session running that never started.
+    expect(order).toEqual(['onTerminal', 'gateway', 'start', 'afterStart']);
   });
 
-  it('uses no key the container runner would filter as reserved', () => {
-    for (const key of CLAUDE_CODE_QUIET_ENV) {
-      expect(isReservedContainerEnv(key)).toBe(false);
+  it('never runs the post-start bookkeeping when the start fails', async () => {
+    const { handle, order } = fakeHandle(async () => {
+      throw new Error('image-unavailable');
+    });
+
+    await expect(
+      armSessionLifecycle({
+        handle,
+        onTerminal: () => {},
+        afterStart: () => {
+          order.push('afterStart');
+        },
+      }),
+    ).rejects.toThrow('image-unavailable');
+
+    expect(order).toEqual(['onTerminal', 'start']);
+  });
+
+  it('runs failure cleanup before propagating a start failure', async () => {
+    const { handle, order } = fakeHandle(async () => {
+      throw new Error('start-failed');
+    });
+
+    await expect(
+      armSessionLifecycle({
+        handle,
+        onTerminal: () => {},
+        onFailure: async () => {
+          order.push('cleanup');
+        },
+      }),
+    ).rejects.toThrow('start-failed');
+
+    expect(order).toEqual(['onTerminal', 'start', 'cleanup']);
+  });
+});
+
+describe('gateway availability', () => {
+  it('stops the affected runtime when its lease becomes unavailable', () => {
+    const stop = vi.fn();
+    const gateway = {
+      contribution: { networkAccess: { endpoint: 'localhost', target: { kind: 'host' as const } } },
+      onUnavailable(callback: (reason: string) => void) {
+        callback('gateway-lost');
+      },
+    };
+    expect(watchGatewayAvailability(gateway, new AbortController().signal, stop)).toBe(true);
+    expect(stop).toHaveBeenCalledWith('gateway-lost');
+  });
+
+  it('ignores reports after core cancels local observation', () => {
+    const stop = vi.fn();
+    let report!: (reason: string) => void;
+    const controller = new AbortController();
+    const gateway = {
+      contribution: { networkAccess: { endpoint: 'localhost', target: { kind: 'host' as const } } },
+      onUnavailable(callback: (reason: string) => void) {
+        report = callback;
+      },
+    };
+    watchGatewayAvailability(gateway, controller.signal, stop);
+    controller.abort();
+    report('late-loss');
+    expect(stop).not.toHaveBeenCalled();
+  });
+});
+
+describe('syncSkillSymlinks', () => {
+  function tmpClaudeDir(): string {
+    return fs.mkdtempSync(path.join(os.tmpdir(), 'ncl-skills-'));
+  }
+
+  it('links every selected skill to its container path', () => {
+    const dir = tmpClaudeDir();
+    syncSkillSymlinks(dir, { ...containerConfig, skills: ['welcome'] } as ContainerConfig);
+
+    const link = path.join(dir, 'skills', 'welcome');
+    expect(fs.lstatSync(link).isSymbolicLink()).toBe(true);
+    // Dangling on the host, valid inside the container.
+    expect(fs.readlinkSync(link)).toBe('/app/skills/welcome');
+  });
+
+  it('prunes symlinks that are no longer selected', () => {
+    const dir = tmpClaudeDir();
+    syncSkillSymlinks(dir, { ...containerConfig, skills: ['welcome', 'vercel-cli'] } as ContainerConfig);
+    syncSkillSymlinks(dir, { ...containerConfig, skills: ['welcome'] } as ContainerConfig);
+
+    expect(fs.existsSync(path.join(dir, 'skills', 'vercel-cli'))).toBe(false);
+  });
+
+  it('warns instead of silently skipping when a real entry blocks a desired skill', () => {
+    // Template overlays depend on surviving the prune (see src/group-skills.ts);
+    // a stale pre-refactor skill copy (#3001) otherwise gets served forever with
+    // no trace.
+    const dir = tmpClaudeDir();
+    fs.mkdirSync(path.join(dir, 'skills', 'welcome'), { recursive: true });
+
+    syncSkillSymlinks(dir, { ...containerConfig, skills: ['welcome'] } as ContainerConfig);
+
+    expect(log.warn).toHaveBeenCalledWith(
+      expect.stringContaining('Shared skill not symlinked'),
+      expect.objectContaining({ skill: 'welcome' }),
+    );
+  });
+
+  it('leaves a host directory alone when the skills dir is a symlink to it', () => {
+    const dir = tmpClaudeDir();
+    const hostDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ncl-host-'));
+    fs.symlinkSync('/somewhere', path.join(hostDir, 'stale-link'));
+    fs.symlinkSync(hostDir, path.join(dir, 'skills'));
+
+    syncSkillSymlinks(dir, { ...containerConfig, skills: ['welcome'] } as ContainerConfig);
+
+    expect(fs.readdirSync(hostDir).sort()).toEqual(['stale-link']);
+  });
+});
+
+describe('composeSessionSpec — per-group operator env', () => {
+  const withEnv = (env: Record<string, string>) => compose({ containerConfig: { ...containerConfig, env } });
+  const agentEnv = (spec: ReturnType<typeof compose>) =>
+    spec.containers.find((c) => c.role === 'agent')!.env as Record<string, string>;
+
+  it('injects an allowed per-group variable', () => {
+    expect(agentEnv(withEnv({ AGENT_BROWSER_PROXY: 'http://vpn:3128' })).AGENT_BROWSER_PROXY).toBe('http://vpn:3128');
+  });
+
+  it('refuses a reserved name instead of letting it reach the container', () => {
+    // The attack this blocks: no secret appears in the value, so the spec's
+    // admission policy would pass it, and the agent's API traffic would leave
+    // via the operator's proxy rather than the credential gateway.
+    const env = agentEnv(withEnv({ HTTPS_PROXY: 'http://attacker:8080' }));
+    expect(env.HTTPS_PROXY).toBeUndefined();
+  });
+
+  it('cannot clobber host-owned TZ or the mailbox wiring', () => {
+    const env = agentEnv(withEnv({ TZ: 'Pacific/Kiritimati', NANOCLAW_MAILBOX_BACKEND: 'bogus' }));
+    expect(env.TZ).not.toBe('Pacific/Kiritimati');
+    expect(env.NANOCLAW_MAILBOX_BACKEND).toBe('sqlite');
+  });
+
+  it('always sets the quiet-traffic flags, with or without per-group env', () => {
+    for (const spec of [compose(), withEnv({ FEATURE_FLAG: 'on' })]) {
+      expect(agentEnv(spec).CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC).toBe('1');
+      expect(agentEnv(spec).DISABLE_TELEMETRY).toBe('1');
+      expect(agentEnv(spec).DISABLE_ERROR_REPORTING).toBe('1');
     }
+  });
+
+  it('leaves the gateway lane to the gateway', () => {
+    // Gateway env rides contributedEnv, a separate lane that wins on collision —
+    // per-group env can never be the source of a proxy var.
+    const spec = withEnv({ FEATURE_FLAG: 'on' });
+    const agent = spec.containers.find((c) => c.role === 'agent')!;
+    expect(Object.keys(agent.env)).not.toContain('HTTPS_PROXY');
   });
 });

@@ -1,5 +1,7 @@
 # Proposal: Learning & Memory Layer
 
+> **Phase 2 note (2026-11-05):** historical record. On `v2026.10.0`, `src/claude-md-compose.ts` is upstream's `src/project-doc-compose.ts`; the `remember` tool and `memory-budgets` migration were dropped in favour of upstream's file-based `memory/` tree (see `.nanoclaw-migrations/index.md` §1.5.1). `search_history` and task outcomes were ported.
+
 **Status:** proposal (not implemented)
 **Date:** 2026-06-12
 **Context:** NanoClaw should learn how it is used — what each user asks, which answers land, and what goes wrong when it performs tasks (reports, channel creation, scheduled tasks). This proposal borrows the strongest memory/learning mechanisms from the [Nous Research Hermes Agent](https://github.com/NousResearch/hermes-agent) and maps them onto infrastructure NanoClaw already has.

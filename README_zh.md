@@ -11,6 +11,7 @@
   <a href="https://docs.nanoclaw.dev">文档</a>&nbsp; • &nbsp;
   <a href="README.md">English</a>&nbsp; • &nbsp;
   <a href="README_ja.md">日本語</a>&nbsp; • &nbsp;
+  <a href="README_ko.md">한국어</a>&nbsp; • &nbsp;
   <a href="https://discord.gg/VDdww8qS42"><img src="https://img.shields.io/discord/1470188214710046894?label=Discord&logo=discord&v=2" alt="Discord" valign="middle"></a>&nbsp; • &nbsp;
   <a href="repo-tokens"><img src="repo-tokens/badge.svg" alt="repo tokens" valign="middle"></a>
 </p>
@@ -107,7 +108,7 @@ NanoClaw 不用配置文件。想改就直接告诉 Claude Code：
 ## 系统要求
 
 - macOS 或 Linux（Windows 通过 WSL2）
-- Node.js 20+ 和 pnpm 10+（安装脚本会在缺失时自动安装）
+- Node.js 22+ 和 pnpm 10+（安装脚本会在缺失时自动安装）
 - [Docker Desktop](https://docker.com/products/docker-desktop)（macOS/Windows）或 Docker Engine（Linux）
 - [Claude Code](https://claude.ai/download)，用于 `/customize`、`/debug`、安装过程中的错误恢复以及所有 `/add-<channel>` 技能
 

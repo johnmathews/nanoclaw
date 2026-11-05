@@ -1,134 +1,72 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+/**
+ * ensureContainerConfig provider stamping (global-default-provider feature).
+ *
+ * Two load-bearing guarantees:
+ *   1. A fresh row is stamped with the given provider (claude → NULL), so a new
+ *      group is created on the instance default.
+ *   2. An existing row is never overwritten (INSERT OR IGNORE), so enabling a
+ *      non-claude default never retroactively flips existing groups.
+ */
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
-import { closeDb, getDb, initTestDb } from './connection.js';
-import {
-  DEFAULT_MODEL,
-  createContainerConfig,
-  ensureContainerConfig,
-  getContainerConfig,
-  updateContainerConfigJson,
-  updateContainerConfigScalars,
-} from './container-configs.js';
-import { configFromDb } from '../container-config.js';
-import { createAgentGroup } from './agent-groups.js';
+import { initTestDb, closeDb } from './connection.js';
 import { runMigrations } from './migrations/index.js';
-import type { AgentGroup } from '../types.js';
+import { createAgentGroup } from './agent-groups.js';
+import { ensureContainerConfig, getContainerConfig, updateContainerConfigScalars } from './container-configs.js';
 
-function makeAgentGroup(id: string): AgentGroup {
-  return {
-    id,
-    name: id,
-    folder: id,
-    agent_provider: null,
-    created_at: new Date().toISOString(),
-  };
+async function makeGroup(id: string): Promise<void> {
+  await createAgentGroup({ id, name: id, folder: id, agent_provider: null, created_at: new Date().toISOString() });
 }
 
-beforeEach(() => {
-  const db = initTestDb();
-  runMigrations(db);
-});
-
-afterEach(() => {
-  closeDb();
-});
-
-describe('container-configs default model', () => {
-  it('seeds DEFAULT_MODEL when ensureContainerConfig creates a new row', () => {
-    createAgentGroup(makeAgentGroup('ag-new'));
-    ensureContainerConfig('ag-new');
-
-    const row = getContainerConfig('ag-new');
-    expect(row?.model).toBe(DEFAULT_MODEL);
-    expect(DEFAULT_MODEL).toBe('claude-opus-4-7');
+describe('ensureContainerConfig provider stamping', () => {
+  beforeEach(async () => {
+    const db = await initTestDb();
+    await runMigrations(db);
+  });
+  afterEach(async () => {
+    await closeDb();
   });
 
-  it('does not clobber an explicitly set model on subsequent ensureContainerConfig calls', () => {
-    createAgentGroup(makeAgentGroup('ag-override'));
-    ensureContainerConfig('ag-override');
-    updateContainerConfigScalars('ag-override', { model: 'claude-haiku-4-5-20251001' });
+  it('stamps a non-default provider on a fresh row; claude is stored as NULL', async () => {
+    await makeGroup('ag-codex');
+    await ensureContainerConfig('ag-codex', 'codex');
+    expect((await getContainerConfig('ag-codex'))?.provider).toBe('codex');
 
-    // Idempotent re-init must not reset the override (INSERT OR IGNORE)
-    ensureContainerConfig('ag-override');
+    await makeGroup('ag-claude');
+    await ensureContainerConfig('ag-claude', 'claude');
+    expect((await getContainerConfig('ag-claude'))?.provider).toBeNull();
 
-    expect(getContainerConfig('ag-override')?.model).toBe('claude-haiku-4-5-20251001');
+    // Casing is normalized to match what resolution lowercases to.
+    await makeGroup('ag-cased');
+    await ensureContainerConfig('ag-cased', 'Codex');
+    expect((await getContainerConfig('ag-cased'))?.provider).toBe('codex');
+
+    await makeGroup('ag-cased-claude');
+    await ensureContainerConfig('ag-cased-claude', 'Claude');
+    expect((await getContainerConfig('ag-cased-claude'))?.provider).toBeNull();
   });
 
-  it('migration 017 backfills NULL model values to the default', () => {
-    // Simulate a pre-migration row (legacy backfill path writes model = null)
-    createAgentGroup(makeAgentGroup('ag-legacy'));
-    createContainerConfig({
-      agent_group_id: 'ag-legacy',
-      provider: null,
-      model: null,
-      effort: null,
-      image_tag: null,
-      assistant_name: null,
-      max_messages_per_prompt: null,
-      skills: '"all"',
-      mcp_servers: '{}',
-      packages_apt: '[]',
-      packages_npm: '[]',
-      additional_mounts: '[]',
-      env: '{}',
-      cli_scope: 'group',
-      memory_budget_chars: 2200,
-      user_budget_chars: 1375,
-      updated_at: new Date().toISOString(),
-    });
+  it('never overwrites an existing row — existing groups are not flipped', async () => {
+    await makeGroup('ag-existing');
+    await ensureContainerConfig('ag-existing', 'codex'); // existing group already on codex
+    expect((await getContainerConfig('ag-existing'))?.provider).toBe('codex');
 
-    expect(getContainerConfig('ag-legacy')?.model).toBeNull();
-
-    // Apply the same UPDATE migration 017 runs. Guards against the SQL drifting.
-    getDb().prepare("UPDATE container_configs SET model = 'claude-opus-4-7' WHERE model IS NULL OR model = ''").run();
-
-    expect(getContainerConfig('ag-legacy')?.model).toBe(DEFAULT_MODEL);
+    // A later bare ensure (defensive re-init, or a changed instance default)
+    // must NOT change it — INSERT OR IGNORE keeps the row frozen.
+    await ensureContainerConfig('ag-existing');
+    expect((await getContainerConfig('ag-existing'))?.provider).toBe('codex');
   });
 
-  it('migration 017 also rewrites empty-string model values', () => {
-    createAgentGroup(makeAgentGroup('ag-empty'));
-    ensureContainerConfig('ag-empty');
-    getDb().prepare("UPDATE container_configs SET model = '' WHERE agent_group_id = 'ag-empty'").run();
+  it('sets and clears the timezone override (NULL = follow the install default)', async () => {
+    await makeGroup('ag-tz');
+    await ensureContainerConfig('ag-tz');
+    expect((await getContainerConfig('ag-tz'))?.timezone).toBeNull();
 
-    expect(getContainerConfig('ag-empty')?.model).toBe('');
+    await updateContainerConfigScalars('ag-tz', { timezone: 'Asia/Tokyo' });
+    expect((await getContainerConfig('ag-tz'))?.timezone).toBe('Asia/Tokyo');
 
-    getDb().prepare("UPDATE container_configs SET model = 'claude-opus-4-7' WHERE model IS NULL OR model = ''").run();
-
-    expect(getContainerConfig('ag-empty')?.model).toBe(DEFAULT_MODEL);
-  });
-});
-
-describe('container-configs env (migration 019)', () => {
-  it('migration 019 adds env column defaulting to empty object', () => {
-    createAgentGroup(makeAgentGroup('ag-env-default'));
-    ensureContainerConfig('ag-env-default');
-
-    const row = getContainerConfig('ag-env-default');
-    expect(row?.env).toBe('{}');
-  });
-
-  it('round-trips an env map through updateContainerConfigJson + configFromDb', () => {
-    createAgentGroup(makeAgentGroup('ag-env'));
-    ensureContainerConfig('ag-env');
-
-    updateContainerConfigJson('ag-env', 'env', {
-      AGENT_BROWSER_EXTENSIONS: '/workspace/extra/bpc',
-      AGENT_BROWSER_PROFILE: '/workspace/agent/.bpc-profile',
-      AGENT_BROWSER_ARGS: '--no-sandbox,--headless=new',
-    });
-
-    const row = getContainerConfig('ag-env')!;
-    expect(JSON.parse(row.env)).toEqual({
-      AGENT_BROWSER_EXTENSIONS: '/workspace/extra/bpc',
-      AGENT_BROWSER_PROFILE: '/workspace/agent/.bpc-profile',
-      AGENT_BROWSER_ARGS: '--no-sandbox,--headless=new',
-    });
-
-    const config = configFromDb(row, makeAgentGroup('ag-env'));
-    expect(config.env).toEqual({
-      AGENT_BROWSER_EXTENSIONS: '/workspace/extra/bpc',
-      AGENT_BROWSER_PROFILE: '/workspace/agent/.bpc-profile',
-      AGENT_BROWSER_ARGS: '--no-sandbox,--headless=new',
-    });
+    // `ncl groups config update --timezone ""` maps to null — the clear path.
+    await updateContainerConfigScalars('ag-tz', { timezone: null });
+    expect((await getContainerConfig('ag-tz'))?.timezone).toBeNull();
   });
 });

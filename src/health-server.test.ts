@@ -41,7 +41,7 @@ function fetch(url: string): Promise<{ status: number; body: string }> {
   });
 }
 
-async function listenOnEphemeralPort(getter: () => HealthData): Promise<http.Server> {
+async function listenOnEphemeralPort(getter: () => HealthData | Promise<HealthData>): Promise<http.Server> {
   const server = startHealthServer(0, getter);
   await new Promise<void>((resolve) => server.once('listening', resolve));
   return server;
@@ -66,6 +66,35 @@ describe('health-server', () => {
     expect(data.healthy).toBe(true);
     expect(data.uptimeSeconds).toBe(3600);
     expect(data.channels).toHaveLength(1);
+  });
+
+  it('awaits an async getter (snapshotHealth is async)', async () => {
+    server = await listenOnEphemeralPort(async () => healthyData);
+    const port = (server.address() as { port: number }).port;
+
+    const res = await fetch(`http://127.0.0.1:${port}/health`);
+    expect(res.status).toBe(200);
+    expect(JSON.parse(res.body).healthy).toBe(true);
+  });
+
+  it('returns 500 when an async getter rejects', async () => {
+    server = await listenOnEphemeralPort(async () => {
+      throw new Error('db closed');
+    });
+    const port = (server.address() as { port: number }).port;
+
+    const res = await fetch(`http://127.0.0.1:${port}/health`);
+    expect(res.status).toBe(500);
+    expect(JSON.parse(res.body).error).toBe('db closed');
+  });
+
+  it('survives a port that is already taken', async () => {
+    server = await listenOnEphemeralPort(() => healthyData);
+    const port = (server.address() as { port: number }).port;
+
+    const second = startHealthServer(port, () => healthyData);
+    await new Promise<void>((resolve) => second.once('error', () => resolve()));
+    expect(second.listening).toBe(false);
   });
 
   it('returns 503 when unhealthy', async () => {

@@ -15,7 +15,7 @@ Two-part migration:
 
 1. **`migrate-v2.sh`** — deterministic bash script. Handles prerequisites, DB seeding, file copies, channel install, container build, service switchover. Writes `logs/setup-migration/handoff.json` then `exec`s into Claude.
 
-2. **`/migrate-from-v1` skill** — Claude-driven. Reads the handoff, seeds owner/roles, cleans up CLAUDE.local.md, validates container configs, ports fork customizations.
+2. **`/migrate-from-v1` skill** — Claude-driven. Reads the handoff, seeds owner/roles, invokes `/migrate-memory`, validates container configs, and ports fork customizations.
 
 ## File layout
 
@@ -76,21 +76,21 @@ Each prints `OK:<details>`, `SKIPPED:<reason>`, or errors to stdout. Exit 0 on s
 
 ```bash
 # Agent groups
-sqlite3 data/v2.db "SELECT * FROM agent_groups"
+pnpm exec tsx scripts/q.ts data/v2.db "SELECT * FROM agent_groups"
 
 # Messaging groups + wiring
-sqlite3 data/v2.db "SELECT mg.id, mg.channel_type, mg.platform_id, mg.unknown_sender_policy, mga.engage_mode, mga.engage_pattern FROM messaging_groups mg JOIN messaging_group_agents mga ON mga.messaging_group_id = mg.id"
+pnpm exec tsx scripts/q.ts data/v2.db "SELECT mg.id, mg.channel_type, mg.platform_id, mg.unknown_sender_policy, mga.engage_mode, mga.engage_pattern FROM messaging_groups mg JOIN messaging_group_agents mga ON mga.messaging_group_id = mg.id"
 
 # Sessions
-sqlite3 data/v2.db "SELECT * FROM sessions"
+pnpm exec tsx scripts/q.ts data/v2.db "SELECT * FROM sessions"
 
 # Users and roles
-sqlite3 data/v2.db "SELECT * FROM users"
-sqlite3 data/v2.db "SELECT * FROM user_roles"
+pnpm exec tsx scripts/q.ts data/v2.db "SELECT * FROM users"
+pnpm exec tsx scripts/q.ts data/v2.db "SELECT * FROM user_roles"
 
 # Session continuation (which Claude Code session will be resumed)
-AG_ID=$(sqlite3 data/v2.db "SELECT id FROM agent_groups LIMIT 1")
-SESS_ID=$(sqlite3 data/v2.db "SELECT id FROM sessions LIMIT 1")
+AG_ID=$(pnpm exec tsx scripts/q.ts data/v2.db "SELECT id FROM agent_groups LIMIT 1")
+SESS_ID=$(pnpm exec tsx scripts/q.ts data/v2.db "SELECT id FROM sessions LIMIT 1")
 sqlite3 data/v2-sessions/$AG_ID/$SESS_ID/outbound.db "SELECT * FROM session_state"
 
 # Scheduled tasks
@@ -108,19 +108,18 @@ python3 -m json.tool logs/setup-migration/handoff.json
 **Bot doesn't respond after switchover:**
 1. Check both services aren't running: `systemctl --user list-units 'nanoclaw*'`
 2. Check error log: `tail logs/nanoclaw.error.log`
-3. Check sender policy: `sqlite3 data/v2.db "SELECT unknown_sender_policy FROM messaging_groups"` — must be `public` before owner is seeded
-4. Check engage pattern: `sqlite3 data/v2.db "SELECT engage_mode, engage_pattern FROM messaging_group_agents"` — should be `pattern` / `.` for respond-to-everything
+3. Check sender policy: `pnpm exec tsx scripts/q.ts data/v2.db "SELECT unknown_sender_policy FROM messaging_groups"` — must be `public` before owner is seeded
+4. Check engage pattern: `pnpm exec tsx scripts/q.ts data/v2.db "SELECT engage_mode, engage_pattern FROM messaging_group_agents"` — should be `pattern` / `.` for respond-to-everything
 
 **Session not continuing from v1:**
 1. Check continuation is set: see "Session continuation" query above
 2. Check JSONL exists at the right path: `ls data/v2-sessions/<ag_id>/.claude-shared/projects/-workspace-agent/`
 3. The v1 session JSONL should be copied from `-workspace-group/` to `-workspace-agent/` (v2 container CWD is `/workspace/agent`)
 
-**v2 service won't start cleanly:**
-1. The v2 service name is `nanoclaw-<install-slug>` (sha1 of the install path, first 8 hex chars — see `src/install-slug.ts`). Find it: `systemctl --user list-units 'nanoclaw*'`.
-2. If the unit is enabled but failing, check `journalctl --user -u <unit> --no-pager -n 100` and `logs/setup-steps/*.log`.
-3. To stop / disable: `systemctl --user stop <unit> && systemctl --user disable <unit>`.
-4. Re-running `bash migrate-v2.sh` against the same install path is idempotent — it re-seeds, re-builds, and re-registers the service. There is no separate "revert to v1" path on a target that has fully migrated: `/migrate-from-v1` deletes the v1 install once `/migrate-from-v1` completes (see `journal/260525-remove-v1-and-drop-v2-suffix.md`). If you need a rollback before that point, restore from the tarball backup that `migrate-v2.sh` writes under `data/migration-backups/`.
+**Service switchover revert didn't work:**
+1. The v2 service name is `nanoclaw-v2-<hash>` — find it: `systemctl --user list-units 'nanoclaw*'`
+2. Manually stop: `systemctl --user stop <unit> && systemctl --user disable <unit>`
+3. Restart v1: `systemctl --user start nanoclaw`
 
 ### Step logs
 

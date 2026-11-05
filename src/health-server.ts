@@ -10,11 +10,12 @@ import http from 'http';
 import type { HealthData } from './health.js';
 import { log } from './log.js';
 
-export function startHealthServer(port: number, getHealth: () => HealthData): http.Server {
-  const server = http.createServer((req, res) => {
+export function startHealthServer(port: number, getHealth: () => HealthData | Promise<HealthData>): http.Server {
+  const server = http.createServer(async (req, res) => {
     if (req.method === 'GET' && req.url === '/health') {
       try {
-        const data = getHealth();
+        // snapshotHealth is async since the DbDriver port (stage 4c).
+        const data = await getHealth();
         const status = data.healthy ? 200 : 503;
         res.writeHead(status, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(data));
@@ -30,6 +31,13 @@ export function startHealthServer(port: number, getHealth: () => HealthData): ht
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'Not found' }));
     }
+  });
+
+  // A bind failure (port taken) must not crash the host: without a listener,
+  // 'error' is thrown as an uncaught exception and takes messaging down with
+  // a loopback-only diagnostics endpoint.
+  server.on('error', (err) => {
+    log.error('Health server failed', { port, err });
   });
 
   server.listen(port, '127.0.0.1', () => {

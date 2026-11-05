@@ -9,13 +9,13 @@ Installs [mnemon](https://github.com/mnemon-dev/mnemon) in the agent container i
 
 ## Provider Compatibility
 
-mnemon hooks fire only under `--target claude-code`. Use this skill on agent groups that run the default Claude provider (`AGENT_PROVIDER=claude`). Confirm the provider before applying:
+mnemon hooks fire only under `--target claude-code`. Use this skill on agent groups that run the default Claude provider. The provider is the materialized `provider` key in each group's `container.json` (absent or `claude` = default Claude provider). Confirm it before applying:
 
 ```bash
-grep AGENT_PROVIDER .env groups/*/container.json 2>/dev/null
+grep -H '"provider"' groups/*/container.json 2>/dev/null   # no match, or "provider": "claude" = Claude
 ```
 
-If a group uses a different provider (e.g. `AGENT_PROVIDER=opencode`), it spawns its own process and never invokes the `claude` CLI, so the hooks registered by `mnemon setup` do not run for that group.
+If a group sets a different provider (e.g. `"provider": "opencode"`), it spawns its own process and never invokes the `claude` CLI, so the hooks registered by `mnemon setup` do not run for that group.
 
 ## Phase 1: Pre-flight
 
@@ -117,13 +117,13 @@ systemctl --user restart $(systemd_unit)              # Linux
 After the next container starts, check that setup ran:
 
 ```bash
-docker logs $(docker ps --filter name=nanoclaw-v2 --format '{{.Names}}' | head -1) 2>&1 | grep -i mnemon
+docker logs $(docker ps --filter label=nanoclaw-session --format "{{.Names}}" | head -1) 2>&1 | grep -i mnemon
 ```
 
 Then inspect the hooks inside the running container:
 
 ```bash
-docker exec $(docker ps --filter name=nanoclaw-v2 --format '{{.Names}}' | head -1) \
+docker exec $(docker ps --filter label=nanoclaw-session --format "{{.Names}}" | head -1) \
   cat /home/node/.claude/settings.json | grep -A5 mnemon
 ```
 
@@ -136,7 +136,7 @@ Have a conversation with the agent, then start a new session and reference somet
 Mnemon writes to `/home/node/.claude/mnemon/` inside the container, which maps to the per-agent-group `.claude/` directory on the host. To find the exact host path:
 
 ```bash
-docker inspect $(docker ps --filter name=nanoclaw-v2 --format '{{.Names}}' | head -1) \
+docker inspect $(docker ps --filter label=nanoclaw-session --format "{{.Names}}" | head -1) \
   --format '{{range .Mounts}}{{if eq .Destination "/home/node/.claude"}}{{.Source}}{{end}}{{end}}'
 ```
 

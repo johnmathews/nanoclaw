@@ -9,4 +9,5 @@
 import './cli.js';
 import './whatsapp.js';
 import './slack.js';
+import './slack-a2a-guard.js';
 import './resend.js';

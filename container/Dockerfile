@@ -1,10 +1,16 @@
-# syntax=docker/dockerfile:1.7
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
+# The BuildKit frontend above is pinned by digest, so a build fetches it by
+# content address and never asks Docker Hub to resolve the `1.7` tag first. The
+# tag lookup is the HEAD request that returned 500 and took two registry-skills
+# legs down on 2026-09-07 with the code untouched. Resolved with
+# `crane digest docker/dockerfile:1.7` (docker buildx imagetools inspect agrees).
+# Bump the tag and digest together.
 # NanoClaw Agent Container
 # Runs Claude Agent SDK in isolated Linux VM with browser automation.
 #
 # Runtime split:
 #   - agent-runner (our TypeScript code): Bun, mounted RO at /app/src by host
-#   - globally-installed Node CLIs (claude-code, agent-browser, vercel): pnpm + Node
+#   - globally-installed Node CLIs (claude-code, agent-browser): pnpm + Node
 #
 # Source is never baked in — /app/src is provided by a shared read-only
 # bind mount at runtime (see src/container-runner.ts). Source-only changes
@@ -18,12 +24,10 @@ ARG INSTALL_CJK_FONTS=false
 
 # Pin versions for reproducibility. Bump deliberately — unpinned installs mean
 # every rebuild silently picks up the latest and can break in lockstep across
-# all users. The global Node CLIs (claude-code, agent-browser, vercel) are
+# all users. The global Node CLIs (claude-code, agent-browser) are
 # pinned in cli-tools.json so a skill can add one with a json-merge; Bun (the
 # runtime) is pinned here because it installs from a different source.
-ARG BUN_VERSION=1.3.12
-ARG GMAIL_MCP_VERSION=1.1.11
-ARG CALENDAR_MCP_VERSION=2.6.1
+ARG BUN_VERSION=1.4.0
 
 # ---- System dependencies -----------------------------------------------------
 # tini: correct PID 1 / signal forwarding so outbound.db writes finalize on
@@ -36,6 +40,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         fonts-noto-color-emoji \
         libgbm1 \
         libnss3 \
+        libnss3-tools \
         libatk-bridge2.0-0 \
         libgtk-3-0 \
         libx11-xcb1 \
@@ -49,6 +54,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         libxshmfence1 \
         ca-certificates \
         curl \
+        poppler-utils \
         git \
         tini \
         unzip \
@@ -97,28 +103,31 @@ ENV PATH="$PNPM_HOME:$PATH"
 # silently skips claude-code's native-binary postinstall and agent-browser's
 # bin chmod — the agent then crashes at runtime with "native binary not
 # installed". Keep this in lockstep with package.json's `packageManager`.
-ARG PNPM_VERSION=10.33.0
+ARG PNPM_VERSION=10.34.5
 RUN corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate
+
+# The npm bundled with node:22-slim (10.9.8) vendors tar <7.5.19, which
+# carries a fixable critical (GHSA-23hp-3jrh-7fpw) that the publish gate
+# refuses to ship. Patch-level bump only. Drop this once the base image
+# ships npm >= 10.9.9.
+ARG NPM_VERSION=10.9.9
+RUN npm install -g npm@${NPM_VERSION}
 
 # Global Node CLIs the agent invokes at runtime live in cli-tools.json so a
 # skill can add one with a json-merge instead of editing this Dockerfile.
+#
+# Three entries there are not CLIs the agent calls directly:
+#   - the Gmail and Google Calendar MCP servers, which the agent reaches as MCP
+#     tools (credentials are injected per request by the gateway, never baked).
+#   - zod-to-json-schema, pinned to 3.22.5 as a direct global to hold back a
+#     resolution bug: gmail-mcp@1.1.11 leaves it unpinned, pnpm then picks
+#     >=3.25, and that imports `zod/v3` — a subpath absent from the zod 3.24.x
+#     resolved alongside it. Re-check this pin if the Gmail MCP is bumped.
 # install-cli-tools.sh installs each via pnpm (pinned), writing the per-tool
 # only-built-dependencies opt-ins it reads from the manifest.
 COPY cli-tools.json install-cli-tools.sh /tmp/
 RUN --mount=type=cache,target=/root/.cache/pnpm \
     sh /tmp/install-cli-tools.sh /tmp/cli-tools.json
-
-# Gmail + Google Calendar MCP servers (OneCLI-stubbed creds; tokens injected by
-# gateway at request time). zod-to-json-schema is pinned because gmail-mcp@1.1.11
-# has loose deps: unpinned, pnpm picks zod-to-json-schema>=3.25 which imports
-# `zod/v3` — a subpath that doesn't exist in the zod 3.24.x that resolves
-# alongside it. Re-check this pin if GMAIL_MCP_VERSION is bumped.
-# (calendar-mcp uses zod@4.x and is unaffected by the pin.)
-RUN --mount=type=cache,target=/root/.cache/pnpm \
-    pnpm install -g \
-        "@gongrzhe/server-gmail-autoauth-mcp@${GMAIL_MCP_VERSION}" \
-        "@cocal/google-calendar-mcp@${CALENDAR_MCP_VERSION}" \
-        "zod-to-json-schema@3.22.5"
 
 # ---- ncl CLI wrapper ----------------------------------------------------------
 # Actual script lives in the mounted source at /app/src/cli/ncl.ts.
@@ -134,9 +143,32 @@ RUN mkdir -p /workspace/group /workspace/extra && \
     chown -R node:node /workspace && \
     chmod 777 /home/node
 
+# Drop setuid-root from the binaries Debian ships (mount, su, passwd, ...). The
+# agent runs unprivileged and needs none of them.
+RUN find / -xdev -perm -4000 -type f -exec chmod u-s {} + || true
+
 USER node
 WORKDIR /workspace/group
 
-# tini is PID 1, reaps zombies, forwards signals cleanly. entrypoint.sh does
-# `exec bun ...` so bun runs as tini's direct child.
+# Only applies to a bare `docker run` — the host spawn overrides ENTRYPOINT and
+# passes --init instead (see hardeningArgs in src/container-runner.ts).
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/entrypoint.sh"]
+
+# ---- Provenance labels -------------------------------------------------------
+# LAST on purpose. An ARG invalidates every layer below it, so declaring these
+# up with the other build-args would make an otherwise-cached rebuild redo
+# `bun install` and the pnpm global CLIs on every existing install, for two
+# pieces of metadata. Labels have no filesystem effect, so they cost nothing here.
+#
+# Which lockfile the baked /app/node_modules came from: /app/src is mounted from
+# the host checkout at every spawn, so an image and a checkout whose lockfiles
+# disagree fail as a missing module inside a `--rm` container with no logs.
+# container/pull.sh checks this before retagging. build.sh passes it; a bare
+# `docker build` leaves it empty, which the pull path treats as unverifiable.
+#
+# image-source defaults to `local` so anything built from this file is honest
+# unless its builder says otherwise — the retag cannot forge it after the fact.
+ARG AGENT_RUNNER_LOCK_SHA256=
+LABEL dev.nanoclaw.agent-runner-lock-sha256="${AGENT_RUNNER_LOCK_SHA256}"
+ARG IMAGE_SOURCE=local
+LABEL dev.nanoclaw.image-source="${IMAGE_SOURCE}"

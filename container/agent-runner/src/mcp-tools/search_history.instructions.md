@@ -10,6 +10,6 @@ You can full-text search **this group's own** conversation history — past user
 
 - **"Have we talked about this before?"** — before asking the user something they may have already told you, search for it.
 - **Recall a past decision or fact** that has scrolled out of your current context (older sessions get compacted into transcripts).
-- **Reflection** — when reviewing the week, search for recurring questions or topics to fold into `MEMORY.md` / `USER.md` via `remember`.
+- **Reflection** — when reviewing the week, search for recurring questions or topics worth recording in your memory files.
 
 Recent in-session messages are already in your prompt — reach for `search_history` for *older* or compacted history, not for what you can already see. The index is refreshed periodically, so a message from the last minute may not be searchable yet.

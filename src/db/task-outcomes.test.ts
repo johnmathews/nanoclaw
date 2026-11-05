@@ -1,89 +1,61 @@
-import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+/**
+ * Two load-bearing guarantees:
+ *   1. An outcome round-trips and reads back newest-first, scoped to its group.
+ *   2. A missing `task_outcomes` table degrades to a no-op instead of throwing
+ *      — this is called from the host sweep's failure path, which must not be
+ *      aborted by a DB that predates the migration.
+ */
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
-import { closeDb, getDb, initTestDb } from './connection.js';
+import { initTestDb, closeDb, getDb } from './connection.js';
 import { runMigrations } from './migrations/index.js';
 import { listTaskOutcomes, recordTaskOutcome } from './task-outcomes.js';
 
-describe('task_outcomes migration', () => {
-  beforeEach(() => {
-    const db = initTestDb();
-    runMigrations(db);
-  });
-  afterEach(() => closeDb());
+const base = { sessionId: 'sess-1', messageId: 'msg-1', reason: 'claim-stuck' };
 
-  it('creates the task_outcomes table and group index', () => {
-    const table = getDb().prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='task_outcomes'").get();
-    expect(table).toBeTruthy();
-    const index = getDb()
-      .prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_task_outcomes_group'")
-      .get();
-    expect(index).toBeTruthy();
+describe('task outcomes', () => {
+  beforeEach(async () => {
+    const db = await initTestDb();
+    await runMigrations(db);
+  });
+  afterEach(async () => {
+    await closeDb();
   });
 
-  it('is idempotent — re-running migrations does not error or duplicate', () => {
-    // schema_version is keyed by name, so a second run is a no-op.
-    expect(() => runMigrations(getDb())).not.toThrow();
+  it('round-trips an outcome with its defaults applied', async () => {
+    await recordTaskOutcome({ ...base, agentGroupId: 'ag-1' });
+    const [row] = await listTaskOutcomes('ag-1');
+    expect(row.agent_group_id).toBe('ag-1');
+    expect(row.reason).toBe('claim-stuck');
+    expect(row.status).toBe('failed');
+    expect(row.series_id).toBeNull();
+    expect(row.kind).toBeNull();
+    expect(row.recorded_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
-});
 
-describe('recordTaskOutcome / listTaskOutcomes', () => {
-  beforeEach(() => {
-    const db = initTestDb();
-    runMigrations(db);
-  });
-  afterEach(() => closeDb());
-
-  it('persists all fields and defaults status to failed', () => {
-    recordTaskOutcome(getDb(), {
-      agentGroupId: 'ag-1',
-      sessionId: 'sess-1',
-      messageId: 'm-1',
-      seriesId: 's-1',
-      kind: 'task',
-      reason: 'claim-stuck',
-    });
-
-    const rows = listTaskOutcomes(getDb(), 'ag-1');
+  it('keeps series and kind when given, and scopes reads to the group', async () => {
+    await recordTaskOutcome({ ...base, agentGroupId: 'ag-1', seriesId: 'daily-digest', kind: 'task' });
+    await recordTaskOutcome({ ...base, agentGroupId: 'ag-2', messageId: 'msg-2' });
+    const rows = await listTaskOutcomes('ag-1');
     expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({
-      agent_group_id: 'ag-1',
-      session_id: 'sess-1',
-      message_id: 'm-1',
-      series_id: 's-1',
-      kind: 'task',
-      reason: 'claim-stuck',
-      status: 'failed',
-    });
-    expect(rows[0].recorded_at).toBeTruthy();
+    expect(rows[0].series_id).toBe('daily-digest');
+    expect(rows[0].kind).toBe('task');
   });
 
-  it('defaults seriesId and kind to null when omitted', () => {
-    recordTaskOutcome(getDb(), {
-      agentGroupId: 'ag-1',
-      sessionId: 'sess-1',
-      messageId: 'm-2',
-      reason: 'container not running',
-    });
-    const rows = listTaskOutcomes(getDb(), 'ag-1');
-    expect(rows[0]).toMatchObject({ series_id: null, kind: null });
+  it('returns newest first and honours the limit', async () => {
+    for (const id of ['a', 'b', 'c']) {
+      await recordTaskOutcome({ ...base, agentGroupId: 'ag-1', messageId: id });
+    }
+    const rows = await listTaskOutcomes('ag-1', 2);
+    expect(rows).toHaveLength(2);
+    // Same recorded_at second is likely, so id DESC is the tiebreak that makes
+    // "newest first" deterministic.
+    expect(rows[0].id).toBeGreaterThan(rows[1].id);
   });
 
-  it('scopes listing to the requested agent group', () => {
-    recordTaskOutcome(getDb(), { agentGroupId: 'ag-1', sessionId: 's', messageId: 'a', reason: 'r' });
-    recordTaskOutcome(getDb(), { agentGroupId: 'ag-2', sessionId: 's', messageId: 'b', reason: 'r' });
-
-    expect(listTaskOutcomes(getDb(), 'ag-1')).toHaveLength(1);
-    expect(listTaskOutcomes(getDb(), 'ag-2')).toHaveLength(1);
-    expect(listTaskOutcomes(getDb(), 'ag-3')).toHaveLength(0);
-  });
-
-  it('degrades to a no-op when the table is absent (pre-migration safety)', () => {
-    const bare = new Database(':memory:');
-    expect(() =>
-      recordTaskOutcome(bare, { agentGroupId: 'x', sessionId: 's', messageId: 'm', reason: 'r' }),
-    ).not.toThrow();
-    expect(listTaskOutcomes(bare, 'x')).toEqual([]);
-    bare.close();
+  it('is a no-op when the table is absent, and never throws', async () => {
+    await getDb().exec('DROP TABLE task_outcomes');
+    await expect(recordTaskOutcome({ ...base, agentGroupId: 'ag-1' })).resolves.toBeUndefined();
+    await expect(listTaskOutcomes('ag-1')).resolves.toEqual([]);
   });
 });

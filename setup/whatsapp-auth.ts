@@ -1,5 +1,5 @@
 /**
- * Step: whatsapp-auth — standalone WhatsApp (Baileys v7) authentication.
+ * Step: whatsapp-auth — standalone WhatsApp (Baileys) authentication.
  *
  * Forked from the channels-branch version so setup:auto's driver can render
  * the terminal UX itself (inside clack) instead of the step dumping a raw QR
@@ -41,31 +41,66 @@ import {
   useMultiFileAuthState,
 } from '@whiskeysockets/baileys';
 import { emitStatus } from './status.js';
+import { resolveWaWebVersion, type WaWebVersion } from './whatsapp-auth-version.js';
 
 const AUTH_DIR = path.join(process.cwd(), 'store', 'auth');
 const PAIRING_CODE_FILE = path.join(process.cwd(), 'store', 'pairing-code.txt');
 const baileysLogger = pino({ level: 'silent' });
 
-/** Fetch current WA Web version — wppconnect tracker, then Baileys sw.js scrape. */
-async function resolveWaWebVersion(): Promise<[number, number, number]> {
-  try {
-    const res = await fetch('https://wppconnect.io/whatsapp-versions/', {
-      signal: AbortSignal.timeout(5000),
-    });
-    if (res.ok) {
-      const html = await res.text();
-      const match = html.match(/2\.3000\.(\d+)/);
-      if (match) return [2, 3000, Number(match[1])];
-    }
-  } catch { /* fall through */ }
-  try {
-    const { version } = await fetchLatestWaWebVersion({});
-    if (version) return version as [number, number, number];
-  } catch { /* fall through */ }
-  throw new Error('Could not fetch current WhatsApp Web version — cannot connect with stale version');
+type AuthMethod = 'qr' | 'pairing-code';
+
+/** Extract the bare phone digits from a WhatsApp JID like `14155551234:12@s.whatsapp.net`. */
+function phoneFromId(id?: string | null): string {
+  if (!id) return '';
+  return id.split(':')[0].split('@')[0];
 }
 
-type AuthMethod = 'qr' | 'pairing-code';
+/** Read the linked number from saved credentials (the skipped / already-authed path). */
+function readAuthedPhoneFromFile(): string {
+  try {
+    const raw = fs.readFileSync(path.join(AUTH_DIR, 'creds.json'), 'utf-8');
+    const creds = JSON.parse(raw) as { me?: { id?: string } };
+    return phoneFromId(creds.me?.id);
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Render a raw QR payload to terminal block-art lines (small mode keeps it short
+ * on 24-row terminals) plus a one-line caption. Returned as plain lines the
+ * caller console.logs, so a streaming parent (hostExecStream) tees the live QR
+ * straight to the operator's terminal — no parent-side renderQr / in-place redraw.
+ */
+async function renderQrLines(qr: string): Promise<string[]> {
+  try {
+    const QRCode = await import('qrcode');
+    const art = await QRCode.toString(qr, { type: 'terminal', small: true });
+    return [
+      ...art.trimEnd().split('\n'),
+      '',
+      '   Open WhatsApp -> Settings -> Linked Devices -> Link a Device, then scan.',
+    ];
+  } catch {
+    return ['QR code (raw): ' + qr];
+  }
+}
+
+/** Print the pairing code as a spaced terminal card on plain stdout (teed live). */
+function printPairingCard(code: string): void {
+  const spaced = code.split('').join('  ');
+  console.log(
+    [
+      '',
+      `   ${spaced}`,
+      '',
+      '   Open WhatsApp -> Settings -> Linked Devices -> Link a Device',
+      '   -> "Link with phone number instead" -> enter this code.',
+      '   It expires in ~60 seconds.',
+      '',
+    ].join('\n'),
+  );
+}
 
 function parseArgs(args: string[]): { method: AuthMethod; phone?: string } {
   let method: AuthMethod = 'qr';
@@ -105,8 +140,19 @@ export async function run(args: string[]): Promise<void> {
       STATUS: 'skipped',
       REASON: 'already-authenticated',
       AUTH_DIR,
+      PHONE: readAuthedPhoneFromFile(),
     });
     return;
+  }
+
+  // Once, before connecting: a failure is reported as this step's own block,
+  // and the 515 reconnect reuses the version instead of looking it up mid-link.
+  let version: WaWebVersion;
+  try {
+    version = await resolveWaWebVersion(fetchLatestWaWebVersion);
+  } catch (err) {
+    emitStatus('WHATSAPP_AUTH', { STATUS: 'failed', ERROR: err instanceof Error ? err.message : String(err) });
+    process.exit(1);
   }
 
   fs.mkdirSync(AUTH_DIR, { recursive: true });
@@ -118,7 +164,7 @@ export async function run(args: string[]): Promise<void> {
     }, 120_000);
 
     let succeeded = false;
-    function succeed(): void {
+    function succeed(phone?: string): void {
       if (succeeded) return;
       succeeded = true;
       clearTimeout(timeout);
@@ -127,7 +173,13 @@ export async function run(args: string[]): Promise<void> {
       } catch {
         // ignore — the pairing code file is best-effort cleanup
       }
-      emitStatus('WHATSAPP_AUTH', { STATUS: 'success' });
+      // Surface the linked number in the terminal block so the SKILL.md's
+      // `nc:run effect:step capture:bot_phone=PHONE` binds it straight from the
+      // block, instead of the caller reading it back out of store/auth/creds.json.
+      emitStatus('WHATSAPP_AUTH', {
+        STATUS: 'success',
+        PHONE: phone || readAuthedPhoneFromFile(),
+      });
       resolve();
       // Give a moment for creds to flush before exiting.
       setTimeout(() => process.exit(0), 1000);
@@ -135,7 +187,6 @@ export async function run(args: string[]): Promise<void> {
 
     async function connectSocket(isReconnect = false): Promise<void> {
       const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
-      const version = await resolveWaWebVersion();
 
       const sock = makeWASocket({
         version,
@@ -149,17 +200,15 @@ export async function run(args: string[]): Promise<void> {
       });
 
       // Request pairing code only on first connect (not reconnect after 515).
-      if (
-        !isReconnect &&
-        method === 'pairing-code' &&
-        phone &&
-        !state.creds.registered
-      ) {
+      if (!isReconnect && method === 'pairing-code' && phone && !state.creds.registered) {
         setTimeout(async () => {
           try {
             const code = await sock.requestPairingCode(phone);
             fs.writeFileSync(PAIRING_CODE_FILE, code, 'utf-8');
+            // Render the code as a plain-stdout card so a streaming parent tees
+            // it live to the operator; keep the block for block-parsing callers.
             emitStatus('WHATSAPP_AUTH_PAIRING_CODE', { CODE: code });
+            printPairingCard(code);
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             emitStatus('WHATSAPP_AUTH', { STATUS: 'failed', ERROR: message });
@@ -171,20 +220,23 @@ export async function run(args: string[]): Promise<void> {
       sock.ev.on('connection.update', (update) => {
         const { connection, lastDisconnect, qr } = update;
 
-        // QR method: emit each rotation as a block. Parent renders.
+        // QR method: render each rotation as plain stdout lines so a streaming
+        // parent (hostExecStream) tees the live QR straight to the operator's
+        // terminal. The raw-QR status block is kept for any block-parsing caller.
         if (qr && method === 'qr') {
           emitStatus('WHATSAPP_AUTH_QR', { QR: qr });
+          void renderQrLines(qr).then((lines) => {
+            console.log('\n' + lines.join('\n'));
+          });
         }
 
         if (connection === 'open') {
-          succeed();
+          succeed(phoneFromId(sock.user?.id ?? state.creds.me?.id));
           sock.end(undefined);
         }
 
         if (connection === 'close') {
-          const reason = (
-            lastDisconnect?.error as { output?: { statusCode?: number } }
-          )?.output?.statusCode;
+          const reason = (lastDisconnect?.error as { output?: { statusCode?: number } })?.output?.statusCode;
           if (reason === DisconnectReason.loggedOut) {
             clearTimeout(timeout);
             emitStatus('WHATSAPP_AUTH', {

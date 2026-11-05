@@ -39,9 +39,15 @@ interface StringEntry extends BaseEntry {
   validate?: (v: string) => string | undefined;
 }
 
+export interface EnumOption {
+  value: string;
+  label: string;
+  hint?: string;
+}
+
 interface EnumEntry extends BaseEntry {
   type: 'enum';
-  options: { value: string; label: string; hint?: string }[];
+  options: EnumOption[];
   default?: string;
 }
 
@@ -59,32 +65,9 @@ interface IntEntry extends BaseEntry {
 
 export type Entry = StringEntry | EnumEntry | BoolEntry | IntEntry;
 
-const httpUrl = (v: string): string | undefined =>
-  /^https?:\/\/\S+/.test(v) ? undefined : 'Must be http(s)://…';
+const httpUrl = (v: string): string | undefined => (/^https?:\/\/\S+/.test(v) ? undefined : 'Must be http(s)://…');
 
 export const CONFIG: Entry[] = [
-  {
-    key: 'onecliApiHost',
-    label: 'OneCLI vault URL',
-    help: 'Use a remote OneCLI vault instead of installing one locally.',
-    surface: 'flag+ui',
-    group: 'OneCLI',
-    type: 'url',
-    default: 'https://api.onecli.sh',
-    placeholder: 'https://api.onecli.sh',
-    validate: httpUrl,
-  },
-  {
-    key: 'onecliApiToken',
-    label: 'OneCLI access token',
-    help: 'Bearer token for the remote vault. Required if --onecli-api-host is set.',
-    surface: 'flag+ui',
-    group: 'OneCLI',
-    type: 'string',
-    secret: true,
-    placeholder: 'oc_…',
-    validate: (v) => (v.startsWith('oc_') ? undefined : 'Must start with oc_'),
-  },
   {
     key: 'anthropicBaseUrl',
     label: 'Anthropic API base URL',
@@ -105,6 +88,24 @@ export const CONFIG: Entry[] = [
     secret: true,
     validate: (v) => (v.trim() ? undefined : 'Required'),
   },
+  {
+    key: 'gatewayProvider',
+    label: 'Credential gateway',
+    help: 'Select the credential and egress gateway installed for this NanoClaw copy.',
+    surface: 'flag+ui',
+    group: 'Agent',
+    type: 'enum',
+    options: [],
+  },
+  {
+    key: 'templatePath',
+    label: 'Agent template',
+    help: 'Create or update an agent from a local template ref under templates/ (for example, sales/sdr).',
+    surface: 'flag+ui',
+    group: 'Agent',
+    type: 'string',
+    placeholder: 'sales/sdr',
+  },
 
   // Existing env-var knobs — flag-only so they don't clutter the UI screen.
   {
@@ -120,6 +121,14 @@ export const CONFIG: Entry[] = [
     envVar: 'NANOCLAW_DISPLAY_NAME',
     label: 'Display name',
     help: 'Skip the "what should your assistant call you?" prompt.',
+    surface: 'flag',
+    type: 'string',
+  },
+  {
+    key: 'agentProvider',
+    envVar: 'NANOCLAW_AGENT_PROVIDER',
+    label: 'Agent provider',
+    help: 'Preselect the setup provider and skip the provider picker.',
     surface: 'flag',
     type: 'string',
   },

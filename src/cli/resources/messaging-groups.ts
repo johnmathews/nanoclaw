@@ -1,3 +1,11 @@
+import { randomUUID } from 'crypto';
+
+import { resolveUnknownSenderPolicy } from '../../channels/channel-defaults.js';
+import { hasDeclaredChannelDefaults } from '../../channels/channel-registry.js';
+import { getMessagingGroupByPlatform } from '../../db/messaging-groups.js';
+import { log } from '../../log.js';
+import { routeInbound } from '../../router.js';
+import { UNKNOWN_SENDER_POLICIES } from '../../types.js';
 import { registerResource } from '../crud.js';
 
 registerResource({
@@ -5,7 +13,7 @@ registerResource({
   plural: 'messaging-groups',
   table: 'messaging_groups',
   description:
-    'Messaging group — one chat or channel on one platform (a Telegram DM, a Discord channel, a Slack thread root, an email address). Identity is the (channel_type, platform_id) pair, which must be unique.',
+    'Messaging group — one chat or channel on one platform (a Telegram DM, a Discord channel, a Slack thread root, an email address). Identity is the (channel_type, platform_id, instance) triple, which must be unique.',
   idColumn: 'id',
   columns: [
     { name: 'id', type: 'string', description: 'UUID.', generated: true },
@@ -24,6 +32,14 @@ registerResource({
       required: true,
     },
     {
+      name: 'instance',
+      type: 'string',
+      description:
+        'Adapter instance that owns this chat, when running N adapters of one channel type. Defaults to channel_type (the default instance) when omitted.',
+      defaultFrom: 'channel_type',
+      updatable: true,
+    },
+    {
       name: 'name',
       type: 'string',
       description: 'Display name. Often auto-populated by the channel adapter.',
@@ -40,18 +56,9 @@ registerResource({
       name: 'unknown_sender_policy',
       type: 'string',
       description:
-        'What happens when an unrecognized sender posts. "strict" drops silently. "request_approval" sends an approval card to an admin. "public" allows anyone.',
-      enum: ['strict', 'request_approval', 'public'],
+        'What happens when an unrecognized sender posts. "strict" drops silently. "request_approval" sends an approval card to an admin. "decline_notify" declines the sender politely and sends the owner a one-line FYI. "public" allows anyone. Default: declared by the channel adapter for this context (DM vs group); "strict" when the channel has no declaration.',
+      enum: [...UNKNOWN_SENDER_POLICIES],
       default: 'strict',
-      updatable: true,
-    },
-    {
-      name: 'reply_mode',
-      type: 'string',
-      description:
-        'Where the agent posts replies on threaded platforms (Slack). "channel" replies in the channel root, regardless of where the inbound message landed (default). "thread" replies in the originating thread. Ignored on non-threaded adapters.',
-      enum: ['thread', 'channel'],
-      default: 'channel',
       updatable: true,
     },
     {
@@ -63,5 +70,64 @@ registerResource({
     },
     { name: 'created_at', type: 'string', description: 'Auto-set.', generated: true },
   ],
+  // Idempotent create: a skill re-running `ncl messaging-groups create` gets the existing row back.
+  naturalKey: ['channel_type', 'platform_id', 'instance'],
   operations: { list: 'open', get: 'open', create: 'approval', update: 'approval', delete: 'approval' },
+  resolveDefaults: (values) => {
+    if (values.unknown_sender_policy !== undefined) return;
+    const channelType = String(values.channel_type);
+    const channelKey = (values.instance as string | undefined) ?? channelType;
+    // Static 'strict' stays the no-declaration fallback: a trunk update alone
+    // must not change ncl's creation defaults for stale (undeclared) adapters.
+    if (!hasDeclaredChannelDefaults(channelKey, channelType)) {
+      log.warn(
+        `messaging-group create: channel '${channelKey}' has no declared defaults (adapter not installed or stale) — using legacy static defaults`,
+      );
+      return;
+    }
+    // is_group carries its static default (0) only after this hook runs, so
+    // treat "not provided" as the same DM context the static default means.
+    const isGroup = Number(values.is_group ?? 0) === 1;
+    values.unknown_sender_policy = resolveUnknownSenderPolicy(channelKey, isGroup, channelType);
+  },
+  customOperations: {
+    send: {
+      access: 'approval',
+      description:
+        'Inject a message into a messaging group as if a sender posted it, waking the wired agent — used to send a welcome on first wire. Use --channel-type, --platform-id, --text, optionally --instance, --sender-id, --sender.',
+      handler: async (args) => {
+        const channelType = args.channel_type as string;
+        const platformId = args.platform_id as string;
+        const text = args.text as string;
+        if (!channelType || !platformId || !text) {
+          throw new Error('--channel-type, --platform-id and --text are required');
+        }
+        const instance = (args.instance as string) ?? channelType;
+        const mg = await getMessagingGroupByPlatform(channelType, platformId, instance);
+        if (!mg) {
+          throw new Error(`no messaging group for ${channelType} ${platformId} — create + wire it first`);
+        }
+        // Build the same InboundEvent the CLI admin transport (src/channels/cli.ts)
+        // emits for a routed message, and route it in-process. The sender id should
+        // be a wired user (e.g. the owner just granted) so the access gate passes.
+        await routeInbound({
+          channelType,
+          instance,
+          platformId,
+          threadId: platformId,
+          message: {
+            id: `send-${randomUUID()}`,
+            kind: 'chat',
+            timestamp: new Date().toISOString(),
+            content: JSON.stringify({
+              text,
+              sender: (args.sender as string) ?? 'cli',
+              senderId: (args.sender_id as string) ?? 'cli:local',
+            }),
+          },
+        });
+        return { sent: { channel_type: channelType, platform_id: platformId } };
+      },
+    },
+  },
 });
