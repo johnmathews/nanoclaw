@@ -39,9 +39,10 @@ import {
 import type { GroupMetadata, WAMessageKey, WAMessage, WASocket } from '@whiskeysockets/baileys';
 
 import { isSafeAttachmentName } from '../attachment-safety.js';
-import { DATA_DIR } from '../config.js';
+import {} from '../config.js';
 import { readEnvFile } from '../env.js';
 import { log } from '../log.js';
+import { ChannelDisconnectedError } from './delivery-errors.js';
 import { maybePdfExtract, maybeTranscribe } from './chat-sdk-bridge.js';
 import { registerChannelAdapter } from './channel-registry.js';
 import { normalizeOptions, type NormalizedOption } from './ask-question.js';
@@ -514,8 +515,6 @@ registerChannelAdapter('whatsapp', {
     let botPhoneJid: string | undefined;
 
     // Outgoing queue for messages sent while disconnected
-    const outgoingQueue: Array<{ jid: string; text: string; mentions?: string[] }> = [];
-    let flushing = false;
 
     // Sent message cache for retry/re-encrypt requests
     const sentMessageCache = new Map<string, any>();
@@ -633,25 +632,6 @@ registerChannelAdapter('whatsapp', {
       }
     }
 
-    async function flushOutgoingQueue(): Promise<void> {
-      if (flushing || outgoingQueue.length === 0) return;
-      flushing = true;
-      try {
-        log.info('Flushing outgoing message queue', { count: outgoingQueue.length });
-        while (outgoingQueue.length > 0) {
-          const item = outgoingQueue.shift()!;
-          const payload: { text: string; mentions?: string[] } = { text: item.text };
-          if (item.mentions && item.mentions.length > 0) payload.mentions = item.mentions;
-          const sent = await sock.sendMessage(item.jid, payload);
-          if (sent?.key?.id && sent.message) {
-            sentMessageCache.set(sent.key.id, sent.message);
-          }
-        }
-      } finally {
-        flushing = false;
-      }
-    }
-
     /** Download media from an inbound message, save to /workspace/attachments/. */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async function downloadInboundMedia(
@@ -711,29 +691,32 @@ registerChannelAdapter('whatsapp', {
       return { attachments: results, failures };
     }
 
+    /**
+     * Send, or throw. Never swallow.
+     *
+     * This used to push onto an in-memory queue and return undefined, which
+     * the host read as "delivered": the agent's outbound row was cleared and
+     * the only remaining copy lived in this process, lost on the next
+     * restart. The queue is gone — the host's delivery loop is the durable
+     * retry, and it can only do that job if a failure reaches it.
+     *
+     * Returning normally therefore means the message reached WhatsApp.
+     */
     async function sendRawMessage(jid: string, text: string, mentions?: string[]): Promise<string | undefined> {
       if (!connected) {
-        outgoingQueue.push({ jid, text, mentions });
-        log.info('WA disconnected, message queued', { jid, queueSize: outgoingQueue.length });
-        return;
+        throw new ChannelDisconnectedError(`WhatsApp socket is not connected (jid ${jid})`);
       }
-      try {
-        const payload: { text: string; mentions?: string[] } = { text };
-        if (mentions && mentions.length > 0) payload.mentions = mentions;
-        const sent = await sock.sendMessage(jid, payload);
-        if (sent?.key?.id && sent.message) {
-          sentMessageCache.set(sent.key.id, sent.message);
-          if (sentMessageCache.size > SENT_MESSAGE_CACHE_MAX) {
-            const oldest = sentMessageCache.keys().next().value!;
-            sentMessageCache.delete(oldest);
-          }
+      const payload: { text: string; mentions?: string[] } = { text };
+      if (mentions && mentions.length > 0) payload.mentions = mentions;
+      const sent = await sock.sendMessage(jid, payload);
+      if (sent?.key?.id && sent.message) {
+        sentMessageCache.set(sent.key.id, sent.message);
+        if (sentMessageCache.size > SENT_MESSAGE_CACHE_MAX) {
+          const oldest = sentMessageCache.keys().next().value!;
+          sentMessageCache.delete(oldest);
         }
-        return sent?.key?.id ?? undefined;
-      } catch (err) {
-        outgoingQueue.push({ jid, text, mentions });
-        log.warn('Failed to send, message queued', { jid, err, queueSize: outgoingQueue.length });
-        return undefined;
       }
+      return sent?.key?.id ?? undefined;
     }
 
     // --- Socket creation ---
@@ -882,7 +865,6 @@ registerChannelAdapter('whatsapp', {
           }
 
           // Flush queued messages
-          flushOutgoingQueue().catch((err) => log.error('Failed to flush outgoing queue', { err }));
 
           // Group sync
           syncGroupMetadata().catch((err) => log.error('Initial group sync failed', { err }));

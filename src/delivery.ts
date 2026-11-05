@@ -25,14 +25,19 @@ import {
   getMessagingGroupByPlatform,
   getMessagingGroupForOwnDestination,
 } from './db/messaging-groups.js';
-import { clearDeliveryAttempt, recordDeliveryAttempt } from './db/coordination.js';
+import { clearDeliveryAttempt, getDeliveryAttempt, recordDeliveryAttempt } from './db/coordination.js';
+import {
+  ChannelDisconnectedError,
+  PermanentDeliveryError,
+  classifyDeliveryError,
+} from './channels/delivery-errors.js';
 import { runGuarded, type DeliveryGuardSpec, type GuardedDeliveryHandler } from './delivery-guard.js';
 import { isUnguarded, type Unguarded } from './guard/index.js';
 import { mapConcurrent } from './concurrency.js';
 import { fanOutboundMessage } from './modules/cross-session-context/index.js';
 import { log } from './log.js';
 import { normalizeOptions } from './channels/ask-question.js';
-import { clearOutbox, readOutboxFiles, withExistingMailboxSession } from './session-manager.js';
+import { clearOutbox, readOutboxFiles, withExistingMailboxSession, writeSessionMessage } from './session-manager.js';
 import { pauseTypingRefreshAfterDelivery, setTypingAdapter } from './modules/typing/index.js';
 import type { OutboundFile } from './channels/adapter.js';
 import type { PendingApproval, Session } from './types.js';
@@ -61,6 +66,133 @@ const DELIVERY_CONCURRENCY = 8;
  * give-up decision for this tick (the message just retries next poll), and a
  * failed clear leaves a stale row the next lifecycle of the same id clears.
  */
+/**
+ * Is this message still inside a deferral backoff window?
+ *
+ * Fail-open to false: if the bookkeeping read breaks we attempt delivery,
+ * which is the behaviour that existed before deferrals and is strictly safer
+ * than silently parking a message forever.
+ */
+async function deferralPending(messageId: string): Promise<boolean> {
+  /* eslint-disable no-catch-all/no-catch-all -- a bookkeeping read must never block delivery */
+  try {
+    const row = await getDeliveryAttempt(messageId);
+    if (!row?.next_attempt_at) return false;
+    return Date.parse(row.next_attempt_at) > Date.now();
+  } catch (err) {
+    log.warn('Deferral gate read failed — attempting delivery', { messageId, err });
+    return false;
+  }
+  /* eslint-enable no-catch-all/no-catch-all */
+}
+
+/** Backoff before re-driving a message whose channel is offline. Capped so a
+ *  long outage does not stretch the gap indefinitely, but long enough not to
+ *  hammer a reconnecting socket on every poll tick. */
+const DEFERRAL_BACKOFF_BASE_SEC = 15;
+const DEFERRAL_BACKOFF_MAX_SEC = 120;
+
+/**
+ * Park a message until its channel is back.
+ *
+ * Writes `next_attempt_at` — the column upstream already had but never used —
+ * and deliberately does NOT let the attempt count decide anything: the drain
+ * skips the row until the gate passes, and a channel that is down for an hour
+ * must not bury a queue of perfectly good messages.
+ */
+async function deferDelivery(messageId: string, sessionId: string, err: unknown): Promise<void> {
+  /* eslint-disable no-catch-all/no-catch-all -- bookkeeping must never break delivery */
+  try {
+    const existing = await getDeliveryAttempt(messageId);
+    const deferrals = (existing?.attempts ?? 0) + 1;
+    const backoffSec = Math.min(DEFERRAL_BACKOFF_MAX_SEC, DEFERRAL_BACKOFF_BASE_SEC * 2 ** (deferrals - 1));
+    await recordDeliveryAttempt({
+      messageId,
+      sessionId,
+      now: new Date().toISOString(),
+      nextAttemptAt: new Date(Date.now() + backoffSec * 1000).toISOString(),
+      error: err instanceof Error ? err.message : String(err),
+    });
+  } catch (deferErr) {
+    log.error('Failed to defer delivery — message retries on the next poll without backoff', {
+      messageId,
+      sessionId,
+      err: deferErr,
+    });
+  }
+  /* eslint-enable no-catch-all/no-catch-all */
+}
+
+/**
+ * Give up on a message, and tell the agent.
+ *
+ * Marking it failed without surfacing is how the original bug felt from the
+ * outside: the agent "remembered" sending something the user never got, with
+ * nothing anywhere to contradict it.
+ */
+async function failDelivery(
+  agentGroupId: string,
+  session: Session,
+  msg: { id: string; content: string; channelType: string | null; platformId: string | null },
+  err: unknown,
+): Promise<void> {
+  /* eslint-disable no-catch-all/no-catch-all -- a surfacing failure must not mask the delivery failure */
+  try {
+    await withExistingMailboxSession(agentGroupId, session.id, (mailbox) => mailbox.markDeliveryFailed(msg.id));
+    await clearAttemptRow(msg.id);
+  } catch (markErr) {
+    log.error('Failed to record permanent delivery failure', { messageId: msg.id, sessionId: session.id, err: markErr });
+  }
+  try {
+    await surfaceDeliveryFailure(agentGroupId, session, msg, err);
+  } catch (surfaceErr) {
+    log.error('Failed to surface delivery failure to the agent', { messageId: msg.id, err: surfaceErr });
+  }
+  /* eslint-enable no-catch-all/no-catch-all */
+}
+
+/**
+ * Tell the agent its message never landed.
+ *
+ * Context-only (`trigger: false`): it rides along on the agent's next real
+ * turn rather than waking one, which would risk a deliver→notify→deliver loop
+ * on a channel that is failing.
+ */
+async function surfaceDeliveryFailure(
+  agentGroupId: string,
+  session: Session,
+  msg: { id: string; content: string; channelType: string | null; platformId: string | null },
+  err: unknown,
+): Promise<void> {
+  let preview = '';
+  try {
+    const parsed = JSON.parse(msg.content) as Record<string, unknown>;
+    const body = (parsed.markdown as string) || (parsed.text as string) || '';
+    preview = body.length > 200 ? `${body.slice(0, 200)}…` : body;
+  } catch {
+    /* non-JSON or opaque content — omit the preview */
+  }
+  const reason =
+    err instanceof PermanentDeliveryError && err.reason
+      ? err.reason
+      : err instanceof Error
+        ? err.message
+        : String(err);
+  const dest = msg.channelType ? `${msg.channelType}${msg.platformId ? `/${msg.platformId}` : ''}` : 'the channel';
+  const text =
+    `⚠️ System notice: a message you sent could NOT be delivered to ${dest} and the user did not receive it ` +
+    `(reason: ${reason}). If it still matters, re-send it (optionally via another route) or let the user know.` +
+    (preview ? `\n\nUndelivered message:\n${preview}` : '');
+
+  await writeSessionMessage(agentGroupId, session.id, {
+    id: `delivery-fail-${msg.id}`,
+    kind: 'chat',
+    timestamp: new Date().toISOString(),
+    content: JSON.stringify({ text, sender: 'system', senderName: 'System', system: true }),
+    trigger: false,
+  });
+}
+
 async function recordAttemptRow(messageId: string, sessionId: string, err: unknown): Promise<number | null> {
   /* eslint-disable no-catch-all/no-catch-all -- attempt bookkeeping must never break delivery */
   try {
@@ -304,6 +436,11 @@ async function drainSession(session: Session): Promise<void> {
   }
 
   for (const msg of pending) {
+    // Honour a deferral's backoff gate. Without this a message whose channel
+    // is offline is retried on every poll tick (1s), which hammers a
+    // reconnecting socket and buries the log — the backoff written by
+    // deferDelivery would be recorded and then ignored.
+    if (await deferralPending(msg.id)) continue;
     try {
       const platformMsgId = await deliverMessage(msg, session);
       await withExistingMailboxSession(agentGroup.id, session.id, (mailbox) =>
@@ -339,6 +476,35 @@ async function drainSession(session: Session): Promise<void> {
         }
       }
     } catch (err) {
+      const disposition = classifyDeliveryError(err);
+
+      // Channel offline: the message was not sent and nothing is wrong with
+      // it. Defer with backoff and re-drive indefinitely — crucially WITHOUT
+      // counting against the retry budget, or a channel that is down for a few
+      // minutes marks every queued message permanently failed.
+      if (disposition === 'disconnected') {
+        await deferDelivery(msg.id, session.id, err);
+        log.warn('Message delivery deferred — channel offline, will retry', {
+          messageId: msg.id,
+          sessionId: session.id,
+          err,
+        });
+        continue;
+      }
+
+      // Can never succeed as-is (bad scope, deleted target, unknown route).
+      // Terminal immediately: retrying only hammers the platform API, and the
+      // agent needs to know its message is not coming back.
+      if (disposition === 'permanent') {
+        log.error('Message delivery failed permanently and will not be retried', {
+          messageId: msg.id,
+          sessionId: session.id,
+          err,
+        });
+        await failDelivery(agentGroup.id, session, msg, err);
+        continue;
+      }
+
       const attempts = await recordAttemptRow(msg.id, session.id, err);
       if (attempts !== null && attempts >= MAX_DELIVERY_ATTEMPTS) {
         log.error('Message delivery failed permanently, giving up', {
@@ -347,16 +513,7 @@ async function drainSession(session: Session): Promise<void> {
           attempts,
           err,
         });
-        try {
-          await withExistingMailboxSession(agentGroup.id, session.id, (mailbox) => mailbox.markDeliveryFailed(msg.id));
-          await clearAttemptRow(msg.id);
-        } catch (markErr) {
-          log.error('Failed to record permanent delivery failure', {
-            messageId: msg.id,
-            sessionId: session.id,
-            err: markErr,
-          });
-        }
+        await failDelivery(agentGroup.id, session, msg, err);
       } else {
         log.warn('Message delivery failed, will retry', {
           messageId: msg.id,
@@ -384,8 +541,11 @@ async function deliverMessage(
   session: Session,
 ): Promise<string | undefined> {
   if (!deliveryAdapter) {
-    log.warn('No delivery adapter configured, dropping message', { id: msg.id });
-    return;
+    // Returning here marked the message delivered: the agent's outbound row is
+    // cleared and the only copy is gone, while the user never saw it. The
+    // adapter being unset is a startup-ordering condition, not a bad message,
+    // so it defers and re-drives.
+    throw new ChannelDisconnectedError(`no delivery adapter configured (message ${msg.id})`);
   }
 
   const content = JSON.parse(msg.content);
@@ -420,7 +580,10 @@ async function deliverMessage(
   // check will throw, which falls into the normal retry → mark-failed path.
   if (msg.channelType === 'agent') {
     if (!(await hasTable(getDb(), 'agent_destinations'))) {
-      throw new Error(`agent-to-agent module not installed — cannot route message ${msg.id}`);
+      throw new PermanentDeliveryError(
+        `agent-to-agent module not installed — cannot route message ${msg.id}`,
+        'module_not_installed',
+      );
     }
     const { routeAgentMessage } = await import('./modules/agent-to-agent/agent-route.js');
     await routeAgentMessage(
@@ -468,7 +631,10 @@ async function deliverMessage(
         : ((await getMessagingGroupForOwnDestination(session.agent_group_id, msg.channelType, msg.platformId)) ??
           (await getMessagingGroupByPlatform(msg.channelType, msg.platformId)));
     if (!mg) {
-      throw new Error(`unknown messaging group for ${msg.channelType}/${msg.platformId} (message ${msg.id})`);
+      throw new PermanentDeliveryError(
+        `unknown messaging group for ${msg.channelType}/${msg.platformId} (message ${msg.id})`,
+        'unknown_messaging_group',
+      );
     }
     if (mg.detached_at) {
       // The bot was removed from this conversation (a channel membership
