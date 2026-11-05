@@ -282,3 +282,63 @@ clean, and **3559/3559 tests green**. One caveat: under this host's ambient `uma
 single `group-skills.test.ts` case fails because it hardcodes mode `644` while files land
 `664`. Run the suite with `umask 022` — or treat that one failure as the known baseline.
 Nothing in `materializeTemplateSkills` is actually broken.
+
+## 1.12 Outcome — stages 9–10 and the cutover (2026-11-05)
+
+**Live since 2026-11-05 22:26 CET.** The second cutover attempt succeeded; the first (21:21) was rolled
+back after about 2½ minutes of downtime. `main` took the branch's tree through a merge commit (`df4356fa`)
+rather than a textual merge: a three-way merge from `acbb1144` gave 96 conflicts and would have kept
+fork files the rebuild deliberately dropped, e.g. the old-numbered migrations whose `name` strings
+collide with the renumbered ones.
+
+### 1.12.1 Gaps from stages 1–8 found during stages 9–10
+
+Each one passed `pnpm test`; none would have been caught by the suites alone.
+
+| Gap | Effect if shipped | Fixed in |
+|---|---|---|
+| `watchdog.ts` / `health-server.ts` copied (stage 3) but never started from `main()` | `Type=notify` unit never gets `READY=1`, so systemd fails the start | `ee865a34` (also: `/health` awaits the now-async snapshot; a bind failure logs instead of crashing the host) |
+| §6.3 install-slug de-`v2` never applied | Image/unit names diverge from the live `nanoclaw-583cc1c4`; `/update-nanoclaw` targets a nonexistent unit | `9e5f316c` |
+| `search_history` container tool never ported (host half done in 4a) | Action registered, nothing could call it | `7e9296f2` |
+| **`/add-onecli` never applied (stage 1)** | `FATAL No gateway provider is registered in this build`. **Caused the first rollback.** Suites mock the provider. | `73484142` |
+| §5.5 `reply_mode` never ported (migrations only) | All Slack replies threaded | Replaced, not ported — see 1.12.3 |
+
+### 1.12.2 Not anticipated by this guide
+
+- **Upstream's upgrade tripwire** stops the first start after any manual tree change. Clear it with
+  `pnpm exec tsx scripts/upgrade-state.ts set`, and again after *every* later commit on the live
+  checkout (it checks the exact commit and tree).
+- **Slack Socket Mode.** Upstream's Slack adapter uses Socket Mode whenever `SLACK_APP_TOKEN` is set;
+  the fork's adapter ignored it. This Slack app is webhook-only ("Socket Mode is not turned on"), so
+  inbound silently vanished until the token was commented out of `.env`. Messages sent 22:26–22:29 may
+  have been lost.
+- **pnpm skips `better-sqlite3`'s build script** (per §1.11.2 #4). It loads from the prebuild. Confirmed live.
+- **Upstream's `docs/onecli-upgrades.md` dropped the credential-injection probe.** Re-added in `docs/`
+  and in the `/add-onecli` payload so a skill refresh keeps it.
+
+### 1.12.3 Decisions taken at cutover
+
+- **Threading:** upstream's per-wiring `threads` replaces §5.5. All 12 Slack channel wirings were set to
+  `threads=0`, and `SLACK_DEFAULTS` was fork-patched so new wirings are unthreaded too (`b69682da`).
+  The `reply_mode` column stays as inert residue.
+- **`/add-onecli` "Configure the gateway" step skipped**: the gateway was already on the 1.42.0 pin, and
+  setup can rebind it. The provider's agent identifier (raw agent group id) matched 14/15 existing OneCLI
+  agents; the 15th had none before either.
+- **Not ported, deliberately:** §6.2 (upstream skips and warns about real dirs in skill slots, because
+  they may be template overlays); the `oc-` identifier sanitizer is present but unwired (no live id is
+  digit-leading); the fork's `.github` workflows (`bump-version`, `update-tokens`).
+
+### 1.12.4 Verification at cutover (§1.10)
+
+Exactly the 7 migrations by name (ledger 22→29, 186 columns, data counts unchanged); `READY=1` plus
+watchdog pings; `/health` 200; gateway `/v1/health` 200 from the host and from a container; injection
+probe `http=200` with `injections_applied=1`; a live `#nanoclaw-introspection` round-trip (top-level
+`ack` after the threading change).
+
+**Process lesson:** green suites did not prove the host boots. Before any future cutover, run the built
+host from a scratch directory against a *copy* of `data/v2.db`, with no channel credentials and an
+unreachable `ONECLI_URL`. It must select the gateway provider, apply the expected migrations and send `READY=1`.
+
+**Rollback assets** (keep about a week): tag `pre-phase2-cutover` (`aab3304d`, pushed), image
+`nanoclaw-agent-583cc1c4:pre-phase2`, `data/backups/v2.db.pre-cutover-20261105T212536Z`,
+`data/backups/upgrade-state.json.pre-cutover2`, `.env` copies in `data/backups/`.
