@@ -16,9 +16,11 @@
     "@chat-adapter/teams": "4.29.0",
     "@chat-adapter/telegram": "4.29.0",
     "@chat-adapter/whatsapp": "4.29.0",
+    "@cocal/google-calendar-mcp": "2.6.1",
     "@deltachat/stdio-rpc-server": "2.49.0",
     "@firecrawl/anydoc": "0.1.6",
     "@getdial/cli": "0.37.0",
+    "@gongrzhe/server-gmail-autoauth-mcp": "1.1.11",
     "@grpc/grpc-js": "1.14.5",
     "@grpc/proto-loader": "0.8.1",
     "@microsoft/teams.cli": "3.0.2",
@@ -38,7 +40,8 @@
     "spectrum-ts": "11.0.0",
     "vercel": "52.2.1",
     "wechat-ilink-client": "0.1.0",
-    "ws": "8.21.3"
+    "ws": "8.21.3",
+    "zod-to-json-schema": "3.22.5"
   },
   "skillPins": {
     "@anthropic-ai/claude-code": {
@@ -107,6 +110,12 @@
         ".claude/skills/add-whatsapp-cloud/SKILL.md nc:dep"
       ]
     },
+    "@cocal/google-calendar-mcp": {
+      "version": "2.6.1",
+      "sources": [
+        "container/cli-tools.json"
+      ]
+    },
     "@deltachat/stdio-rpc-server": {
       "version": "2.49.0",
       "sources": [
@@ -124,6 +133,12 @@
       "sources": [
         ".claude/skills/add-dial-tool/SKILL.md nc:run",
         ".claude/skills/add-dial-tool/SKILL.md nc:json-merge"
+      ]
+    },
+    "@gongrzhe/server-gmail-autoauth-mcp": {
+      "version": "1.1.11",
+      "sources": [
+        "container/cli-tools.json"
       ]
     },
     "@grpc/grpc-js": {
@@ -247,6 +262,14 @@
       "version": "8.21.3",
       "sources": [
         ".claude/skills/add-mattermost/SKILL.md nc:dep"
+      ]
+    },
+    "zod-to-json-schema": {
+      "version": "3.22.5",
+      "sources": [
+        ".claude/skills/add-gcal-tool/SKILL.md code block",
+        ".claude/skills/add-gmail-tool/SKILL.md code block",
+        "container/cli-tools.json"
       ]
     }
   }
