@@ -91,6 +91,23 @@ docker run --rm --add-host=host.docker.internal:host-gateway \
 
 This must print `200`. If it can't connect while the host-side check passed, set the bind address in `~/.onecli/.env` to the docker-bridge IP (or `0.0.0.0` on a host with a closed firewall) and `cd ~/.onecli && env -u ONECLI_VERSION docker compose up -d`. Symptom if skipped: host log clean, agents fail all API calls.
 
+**Verify credential injection (the only check that proves the gateway works).** Both health checks can pass while the vault refuses to inject, so exercise the path an agent actually uses. Two things make this probe valid, and it reports a false failure without either: send it through the **proxy port** (10255) with a running agent's token, and include an **`Authorization: Bearer placeholder`** header — the gateway *substitutes* an existing auth header rather than adding one, so a request with no auth header returns `credential_not_found` even on a perfectly healthy gateway. (This is why NanoClaw spawns containers with `CLAUDE_CODE_OAUTH_TOKEN=placeholder`.) A path the credential's injection rule doesn't cover, such as `GET /v1/models`, also returns `credential_not_found` — use `POST /v1/messages`.
+
+```bash
+# token + CA from any running agent container (docker ps --filter label=nanoclaw-session)
+TOK=$(docker inspect <agent-container> -f '{{range .Config.Env}}{{println .}}{{end}}' \
+  | grep -m1 '^HTTPS_PROXY=' | sed 's|.*//||' | sed 's/host.docker.internal/172.17.0.1/')
+curl -s -o /tmp/probe.json -w 'http=%{http_code}\n' \
+  --proxy "http://${TOK}" --proxy-insecure --cacert /tmp/onecli-proxy-ca.pem \
+  -H 'Authorization: Bearer placeholder' -H 'anthropic-version: 2023-06-01' \
+  -H 'content-type: application/json' \
+  -d '{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}' \
+  https://api.anthropic.com/v1/messages
+docker logs onecli --since 60s 2>&1 | grep 'forward:' | tail -1
+```
+
+Must print `http=200`, and the gateway log line must end `status=200 ... injections_applied=1`. `injections_applied=0` or a `credential_not_found` body means the vault is not serving this agent — stop and roll back. Also confirm the MITM CA did not change, or every already-running container's mounted cert is stale: `curl -s "$GW/v1/container-config?identifier=<agent-group-id>"` and compare its `caCertificate` fingerprint with `openssl x509 -in /tmp/onecli-proxy-ca.pem -noout -fingerprint -sha256`.
+
 Finally, restart the NanoClaw service (per-install names — derive with `setup/lib/install-slug.sh`):
 
 ```bash
