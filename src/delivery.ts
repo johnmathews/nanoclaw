@@ -96,7 +96,7 @@ const DEFERRAL_BACKOFF_MAX_SEC = 120;
  * skips the row until the gate passes, and a channel that is down for an hour
  * must not bury a queue of perfectly good messages.
  */
-async function deferDelivery(messageId: string, sessionId: string, err: unknown): Promise<void> {
+async function deferDelivery(messageId: string, sessionId: string, err: unknown): Promise<number | null> {
   /* eslint-disable no-catch-all/no-catch-all -- bookkeeping must never break delivery */
   try {
     const existing = await getDeliveryAttempt(messageId);
@@ -109,14 +109,31 @@ async function deferDelivery(messageId: string, sessionId: string, err: unknown)
       nextAttemptAt: new Date(Date.now() + backoffSec * 1000).toISOString(),
       error: err instanceof Error ? err.message : String(err),
     });
+    return deferrals;
   } catch (deferErr) {
     log.error('Failed to defer delivery — message retries on the next poll without backoff', {
       messageId,
       sessionId,
       err: deferErr,
     });
+    return null;
   }
   /* eslint-enable no-catch-all/no-catch-all */
+}
+
+/** At the capped backoff (120s) this is roughly one reminder per hour. */
+export const DEFERRAL_WARN_EVERY = 30;
+
+/**
+ * Log level for the Nth deferral of one message. A channel that stays offline
+ * for days (a parked WhatsApp login) re-defers every queued message every two
+ * minutes forever; warning each time — with a stack — grew the error log to
+ * gigabytes. Warn on the first deferral, on a periodic reminder, and when the
+ * count is unknown (bookkeeping failed); everything else is debug.
+ */
+export function deferralLogLevel(deferrals: number | null): 'warn' | 'debug' {
+  if (deferrals === null || deferrals <= 1) return 'warn';
+  return deferrals % DEFERRAL_WARN_EVERY === 0 ? 'warn' : 'debug';
 }
 
 /**
@@ -479,12 +496,21 @@ async function drainSession(session: Session): Promise<void> {
       // counting against the retry budget, or a channel that is down for a few
       // minutes marks every queued message permanently failed.
       if (disposition === 'disconnected') {
-        await deferDelivery(msg.id, session.id, err);
-        log.warn('Message delivery deferred — channel offline, will retry', {
-          messageId: msg.id,
-          sessionId: session.id,
-          err,
-        });
+        const deferrals = await deferDelivery(msg.id, session.id, err);
+        const level = deferralLogLevel(deferrals);
+        log[level](
+          deferrals !== null && deferrals > 1
+            ? 'Message delivery still deferred — channel offline, will retry'
+            : 'Message delivery deferred — channel offline, will retry',
+          {
+            messageId: msg.id,
+            sessionId: session.id,
+            deferrals,
+            // Full error (with stack) only on the first report; repeats carry
+            // the message alone so a long outage does not bury the log.
+            err: deferrals === 1 || deferrals === null ? err : err instanceof Error ? err.message : String(err),
+          },
+        );
         continue;
       }
 

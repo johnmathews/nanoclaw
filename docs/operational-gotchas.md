@@ -49,8 +49,13 @@ entries with `[migration-only]` so they're easy to prune later.
 4. v2's logs at `/srv/apps/nanoclaw/logs/nanoclaw.{log,error.log}`, not
    journald. Unit redirects via `StandardOutput=append:`. journalctl only
    shows the systemd start message. Lines carry no date (`CLAUDE.md`
-   convention 10), and nothing rotates them: `nanoclaw.error.log` was
-   2.7 GB on 2026-11-06.
+   convention 10). They rotate since 2026-11-06 (`nanoclaw.error.log` had
+   reached 2.6 GB): the systemd user timer `nanoclaw-logrotate.timer` checks
+   hourly and rotates daily or at 50 MB, keeping 14 gzipped archives
+   `logs/nanoclaw*.log-<YYYYMMDD-HHMMSS>.gz`. It uses copytruncate, which is
+   safe with `append:` (O_APPEND), so no restart is needed. Config and units
+   are in `ops/logrotate/`; `ops/logrotate/install.sh` reinstalls them. Root's
+   logrotate is not involved (no sudo here).
 5. v2 runs from `dist/`, not `src/`. `cd /srv/apps/nanoclaw && pnpm run build`
    (= tsc) is mandatory between any host-source edit and
    `systemctl --user restart nanoclaw-583cc1c4`. Pre-W4.3 muscle memory from

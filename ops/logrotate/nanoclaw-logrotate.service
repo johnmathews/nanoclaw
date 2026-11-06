@@ -1,0 +1,8 @@
+[Unit]
+Description=Rotate NanoClaw host logs (logs/nanoclaw*.log)
+
+[Service]
+Type=oneshot
+Nice=19
+IOSchedulingClass=idle
+ExecStart=/usr/sbin/logrotate --state %h/.local/state/nanoclaw-logrotate.status /srv/apps/nanoclaw/ops/logrotate/nanoclaw.conf

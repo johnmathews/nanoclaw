@@ -1,0 +1,10 @@
+[Unit]
+Description=Hourly check for NanoClaw host log rotation
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=5m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

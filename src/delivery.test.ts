@@ -31,12 +31,15 @@ import { getDeliveredIds } from './mailbox/sqlite/session-db.js';
 import { inboundDbPath, outboundDbPath } from './mailbox/sqlite/paths.js';
 import { resolveSession, resolveTaskSession, withMailboxSession } from './session-manager.js';
 import {
+  DEFERRAL_WARN_EVERY,
+  deferralLogLevel,
   deliverSessionMessages,
   registerDeliveryBatchPreview,
   registerPostDeliveryHook,
   setDeliveryAdapter,
 } from './delivery.js';
 import { createChannelDeliveryAdapter } from './channels/channel-registry.js';
+import { ChannelDisconnectedError } from './channels/delivery-errors.js';
 import { createDestination } from './modules/agent-to-agent/db/agent-destinations.js';
 import { getAgentMailbox } from './mailbox/index.js';
 import { log } from './log.js';
@@ -290,6 +293,58 @@ describe('deliverSessionMessages — retry and permanent failure', () => {
     expect(row).toBeDefined();
     expect(row!.status).toBe('failed');
     expect(row!.platform_message_id).toBeNull();
+  });
+
+  it('deferralLogLevel warns on the first deferral and periodically, debug otherwise', () => {
+    expect(deferralLogLevel(null)).toBe('warn');
+    expect(deferralLogLevel(1)).toBe('warn');
+    expect(deferralLogLevel(2)).toBe('debug');
+    expect(deferralLogLevel(DEFERRAL_WARN_EVERY - 1)).toBe('debug');
+    expect(deferralLogLevel(DEFERRAL_WARN_EVERY)).toBe('warn');
+    expect(deferralLogLevel(DEFERRAL_WARN_EVERY * 2)).toBe('warn');
+    expect(deferralLogLevel(DEFERRAL_WARN_EVERY * 2 + 1)).toBe('debug');
+  });
+
+  it('a long channel outage warns once, then logs repeat deferrals at debug without the stack', async () => {
+    // Regression: 144 messages parked behind a logged-out WhatsApp each logged
+    // a WARN with a full stack every 2 minutes, growing nanoclaw.error.log to 2.6 GB.
+    await seedAgentAndChannel();
+    const { session } = await resolveSession('ag-1', 'mg-1', null, 'shared');
+    insertOutbound('ag-1', session.id, 'out-parked');
+
+    setDeliveryAdapter({
+      async deliver() {
+        throw new ChannelDisconnectedError('whatsapp');
+      },
+    });
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {});
+    const debug = vi.spyOn(log, 'debug').mockImplementation(() => {});
+    const deferredCalls = (spy: typeof warn) =>
+      spy.mock.calls.filter(([msg]) => String(msg).includes('delivery') && String(msg).includes('deferred'));
+
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      for (let i = 0; i < 3; i++) {
+        await deliverSessionMessages(session);
+        vi.setSystemTime(Date.now() + 10 * 60 * 1000); // step past any backoff
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const warns = deferredCalls(warn);
+    const debugs = deferredCalls(debug);
+    expect(warns).toHaveLength(1);
+    expect(warns[0][1]).toMatchObject({ messageId: 'out-parked', deferrals: 1 });
+    expect(warns[0][1]!.err).toBeInstanceOf(ChannelDisconnectedError);
+    expect(debugs).toHaveLength(2);
+    expect(debugs[1][1]).toMatchObject({ deferrals: 3 });
+    expect(typeof debugs[1][1]!.err).toBe('string');
+
+    // Still parked, not failed: deferrals never count against the retry budget.
+    expect(await withMailboxSession('ag-1', session.id, (mailbox) => mailbox.getDeliveredIds().has('out-parked'))).toBe(
+      false,
+    );
   });
 
   it('clears attempt counter on successful delivery', async () => {
