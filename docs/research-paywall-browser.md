@@ -1,5 +1,12 @@
 # Paywall-bypass browser for research agents
 
+**Status:** live config, extension source broken. **Last verified:** 2026-11-06
+against the live install: the Financial Times and HackerNews Summaries groups
+carry the env vars below, but the extension directory they mount was deleted
+with Syncthing on 2026-10-23, so every spawn logs `Additional mount REJECTED`
+and runs without it (`docs/operational-gotchas.md` item 38). The steps below
+still use the old path. Swap in the extension's new location once it has one.
+
 Give a research agent group a headless Chromium that loads the
 **Bypass Paywalls Clean** extension, so `agent-browser` reads paywalled
 articles for summarization. Built on per-group container `env` (migration 019)
@@ -20,8 +27,9 @@ Two non-obvious facts (verified against the live image):
    (Chromium's new headless supports extensions) — passed via `AGENT_BROWSER_ARGS`.
    No Xvfb needed.
 2. **The extension can be mounted read-only.** Chromium writes only into the
-   profile dir, never the extension dir. So the Syncthing-synced copy stays
-   auto-updating and the mount is `:ro`.
+   profile dir, never the extension dir. So the mount is `:ro`, and the copy
+   on the host can be updated in place. Until 2026-10-23 Syncthing kept it
+   current; that sync is gone.
 
 The three env vars:
 
@@ -78,12 +86,12 @@ Add the extension dir to the mount allowlist
 `GROUP` is the agent-group id (e.g. the HN summaries group, or a new FT group).
 
 ```bash
-# 1. Mount the extension at /workspace/extra/bpc.
-#    No ncl verb for additional_mounts yet — set the DB column directly.
-#    NOTE: this REPLACES additional_mounts; merge by hand if the group has others.
-pnpm exec tsx scripts/q.ts data/v2.db "UPDATE container_configs SET \
-  additional_mounts='[{\"hostPath\":\"/srv/apps/syncthing/all/bypass-paywalls-chrome-clean-master\",\"containerPath\":\"bpc\",\"readonly\":true}]' \
-  WHERE agent_group_id='$GROUP'"
+# 1. Mount the extension at /workspace/extra/bpc (operator-only verb; it
+#    adds to additional_mounts rather than replacing them).
+#    To move an existing mount, `config remove-mount` the old one first.
+ncl groups config add-mount --id "$GROUP" \
+  --host /srv/apps/syncthing/all/bypass-paywalls-chrome-clean-master \
+  --container bpc --ro
 
 # 2. Set the three browser env vars.
 ncl groups config set-env --id "$GROUP" --json \
@@ -98,6 +106,7 @@ live (the BPC service worker is `chrome-extension://lkbebcjgcmobigpeffafkodonchf
 
 ## Caveat
 
-The extension is third-party JavaScript running in the browser context and
-auto-updates via Syncthing. Fine for a personal research box; it is an
-unreviewed code path that refreshes itself.
+The extension is third-party JavaScript running in the browser context. It
+used to auto-update via Syncthing, an unreviewed code path that refreshed
+itself. Fine for a personal research box. Whatever replaces Syncthing as its
+source decides whether that is still true.

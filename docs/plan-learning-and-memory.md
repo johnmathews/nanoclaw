@@ -2,7 +2,7 @@
 
 > **Phase 2 note (2026-11-05):** historical record. On `v2026.10.0`, `src/claude-md-compose.ts` is upstream's `src/project-doc-compose.ts`; the `remember` tool and `memory-budgets` migration were dropped in favour of upstream's file-based `memory/` tree (see `.nanoclaw-migrations/index.md` §1.5.1). `search_history` and task outcomes were ported.
 
-**Status:** in progress — all five features BUILT (committed, not yet live)
+**Status:** historical — superseded by the v2026.10.0 cutover (2026-11-05). The progress table below is the June state, not the current one. Per-feature status now lives in `.nanoclaw-migrations/index.md` §1.5.1.
 **Date:** 2026-06-13
 **Companion to:** [proposal-learning-and-memory.md](proposal-learning-and-memory.md)
 
