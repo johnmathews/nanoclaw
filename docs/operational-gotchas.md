@@ -1,6 +1,11 @@
 # Operational gotchas — NanoClaw v2 (this fork)
 
-**Status:** living — append-only runtime gotchas log for the v2 codebase. **Last updated:** 2026-05-28. Reference numbers are stable across edits.
+**Status:** living — append-only runtime gotchas log for the v2 codebase. **Last verified:** 2026-11-06, every entry against `dfaabc34` (v2026.10.0) and the live install on agent_lxc (unit, ports, `.env` keys, allowlist, logs). Reference numbers are stable across edits.
+
+Since the 2026-11-05 cutover to v2026.10.0, standing decisions for this install
+live in `CLAUDE.md` § "This install — fork conventions" (default model, upgrade
+stamp, OneCLI pin, Slack HTTP mode, …). This file keeps the runtime traps and
+the history behind them.
 
 Durable runtime notes about the v2 install. Carry-over from past sessions;
 append new entries here rather than letting them accumulate in
@@ -16,10 +21,12 @@ required reading instead of duplicating the list.
   this changed to …").
 - **Delete** an entry only when the underlying behavior has been retired
   AND no in-flight migration step depends on it. Cross-check `journal/`,
-  `docs/archive/v2-migration/p3-notes.md`, and recent commits before deleting.
+  `.nanoclaw-migrations/`, and recent commits before deleting.
 - If a gotcha graduates into stable, well-documented behavior, move the
-  authoritative text into the relevant doc (`docs/SPEC.md`,
-  `docs/agent-runner-details.md`, etc.) and leave a short pointer here.
+  authoritative text into the relevant doc (`CLAUDE.md` § "This install —
+  fork conventions", `docs/agent-runner-details.md`, etc.) and leave a short
+  pointer here. (`docs/SPEC.md` is the historical v1 spec, so it is not a
+  destination.)
 
 Most entries are v2-runtime concerns; some are migration-era topology
 notes that will retire once v1 is tombstoned (W8.6). Mark migration-only
@@ -34,47 +41,69 @@ entries with `[migration-only]` so they're easy to prune later.
 2. ~~Never restart v1's service.~~ v1 has been deleted as of 2026-05-25.
    Only artefact is the `v1-archive` git branch on the fork.
    `[migration-only — RETIRED 2026-05-25]`
-3. `pnpm` at `~/.npm-global/bin/pnpm`, `onecli` at the same dir, `ncl` at
-   `/srv/apps/nanoclaw/bin/ncl` — prefix `PATH=…:$PATH` or use absolute
-   paths. These are not on Claude Code's Bash tool default PATH.
+3. Tool locations (verified 2026-11-06): `pnpm` is `/usr/bin/pnpm`
+   (corepack; `~/.npm-global/bin/pnpm` also exists), `onecli` is
+   `~/.local/bin/onecli`, `ncl` is `~/.local/bin/ncl` → `/srv/apps/nanoclaw/bin/ncl`.
+   The unit's `PATH` includes `~/.local/bin`; an interactive or tool shell
+   may not, so use absolute paths there.
 4. v2's logs at `/srv/apps/nanoclaw/logs/nanoclaw.{log,error.log}`, not
    journald. Unit redirects via `StandardOutput=append:`. journalctl only
-   shows the systemd start message.
+   shows the systemd start message. Lines carry no date (`CLAUDE.md`
+   convention 10), and nothing rotates them: `nanoclaw.error.log` was
+   2.7 GB on 2026-11-06.
 5. v2 runs from `dist/`, not `src/`. `cd /srv/apps/nanoclaw && pnpm run build`
    (= tsc) is mandatory between any host-source edit and
-   `systemctl --user restart`. Pre-W4.3 muscle memory from v1 (tsx)
-   will skip this.
-6. OneCLI gateway runs on `127.0.0.1:10255`. 10254 is the web UI.
+   `systemctl --user restart nanoclaw-583cc1c4`. Pre-W4.3 muscle memory from
+   v1 (tsx) will skip this. Since v2026.10.0 every commit also needs
+   `pnpm exec tsx scripts/upgrade-state.ts set` before the next restart, or
+   the service refuses to boot (`CLAUDE.md` convention 7).
+6. OneCLI listens on two ports, each bound to `127.0.0.1` and the docker0
+   address `172.17.0.1`: **10255** is the credential-injecting gateway proxy
+   (the one `docs/onecli-upgrades.md`'s probe tests), **10254** is the web UI
+   and API (`ONECLI_URL` in `.env`, `api-host` in `~/.onecli/config.json`).
 7. `/health` reachable at `127.0.0.1:3002`. After `systemctl --user restart`,
    sleep ≥6s before curling — channels connect first, health server second.
+   Its `channels` list only shows adapters that started: a channel missing
+   from it is not running (see item 37).
 
 ## Command + responder behaviour
 
-8. `HOST_RESPONDER_COMMANDS` renderers run fire-and-forget off the hot path
-   (W4.5 pattern). Render failures fall back to inline error messages —
-   the original inbound row is already marked processed (no retry).
-9. Mount allowlist after P3 + W4.5: 3 `allowedRoots` + `~/.calendar-mcp`.
-   17 `blockedPatterns`.
+8. `HOST_RESPONDER_COMMANDS` (`src/command-gate.ts`) renderers run
+   fire-and-forget off the hot path (W4.5 pattern). Render failures fall back
+   to inline error messages — the original inbound row is already marked
+   processed (no retry).
+9. Mount allowlist (`~/.config/nanoclaw/mount-allowlist.json`, verified
+   2026-11-06): 4 `allowedRoots` — `/srv/apps/nanoclaw`, `~/.gmail-mcp`,
+   `~/.calendar-mcp`, and the paywall extension
+   `/srv/apps/syncthing/all/bypass-paywalls-chrome-clean-master`, which **no
+   longer exists** (item 38). The file's own `blockedPatterns` is empty; the
+   loader merges 19 defaults from `src/modules/mount-security/index.ts`
+   (17 before v2026.10.0). Its top-level `nonMainReadOnly` key is ignored
+   and logs a WARN at every load: read-only is per root now.
 10. v2 `additionalMounts` `containerPath` must be RELATIVE. v2 prefixes
     with `/workspace/extra/`. v1-style absolute paths are rejected.
 
 ## Git topology
 
-11. DO NOT `git pull` on `/srv/apps/nanoclaw`. It's the v1 working tree;
-    its local main = `0bd42bb` and diverges from remote main.
-    `[migration-only]`
-12. Migration docs are archived at `docs/archive/v2-migration/` as of
-    2026-05-28 (closure). `[migration-only — RETIRED 2026-05-28]`
-13. `writeOutboundDirect` now writes (fixed in `d8c04b8`). Before that
-    fix, every deny / respond / respond-error path in `src/router.ts`
-    silently failed because the function opened the outbound DB readonly.
+11. ~~DO NOT `git pull` on `/srv/apps/nanoclaw`; it's the v1 working
+    tree.~~ `[migration-only — RETIRED]` `/srv/apps/nanoclaw` is the v2 `main`,
+    tracking `origin/main`, and is where this install's commits and merges
+    are made (the v2026.10.0 merge, 2026-11-06). Pulling is fine; what bites
+    is restarting after any commit or pull without the upgrade stamp (item 5).
+12. ~~Migration docs are archived at `docs/archive/v2-migration/`.~~
+    `[migration-only — RETIRED]` No `docs/archive/` exists. Migration records
+    live in `.nanoclaw-migrations/` (`index.md`, closed 2026-11-05;
+    `index-2026-06-15-executed.md` for the June rebuild).
+13. `writeOutboundDirect` now writes (fixed in `d8c04b8`; the function is in
+    `src/session-manager.ts` since v2026.10.0). Before that fix, every deny /
+    respond / respond-error path in `src/router.ts` silently failed because
+    the function opened the outbound DB readonly.
 14. v2 installer-template now writes `Type=notify` (fixed in `7cde667`).
     Fresh-install-only — the live unit already had the W4.3 hand-edited
     flags.
-15. Git author identity workaround: no `user.name` / `user.email` set
-    anywhere visible. Use
-    `git -c user.name="John Mathews" -c user.email="mthwsjc@gmail.com" commit ...`
-    per-command override.
+15. ~~Git author identity workaround: no `user.name` / `user.email` set.~~
+    `[RETIRED]` As of 2026-11-06 the global git config on agent_lxc sets the
+    author, so plain `git commit` works.
 16. `v1-archive` branch is load-bearing for retire audits. When v2
     retires a v1 file, audit reads should still target `v1-archive` (or
     the v1 working tree while it exists), not v2 main.
@@ -137,8 +166,9 @@ entries with `[migration-only]` so they're easy to prune later.
 27. Slack checkbox state isn't re-delivered with button clicks. Agents
     using checkbox+button pairs MUST persist the pre-selected option
     list in group memory keyed off the post timestamp and look it up at
-    click time. Documented in
-    `groups/slack_git-maintenance/CLAUDE.local.md`.
+    click time. (It was documented in
+    `groups/slack_git-maintenance/CLAUDE.local.md`; that group no longer
+    exists on this install, so this entry is now the only record.)
 28. `ncv2:` is the v2-canonical Slack interactivity `action_id` prefix.
     Bridge's `chat.onAction` routes `ncv2:*` to the agent as a synthetic
     chat-sdk inbound (text + structured action payload). Anything not
@@ -146,12 +176,11 @@ entries with `[migration-only]` so they're easy to prune later.
 
 ## Scheduled tasks
 
-29. Git-maintenance cron task id = `task-1775472071448-rpvh6c`, in
-    `data/v2-sessions/ag-1779373702794-62oxsv/sess-1779373704595-mqteww/inbound.db`.
-    Recurrence `3 2 * * 1,4` interpreted in `Europe/Amsterdam`
-    (`src/modules/scheduling/recurrence.ts:31`). Next fire
-    `2026-05-25T00:03:00Z = 02:03 CEST`. First live test of §18 — plan
-    in `p3-notes.md` §21. `[time-sensitive — retires after Mon 2026-05-25 fire]`
+29. ~~Git-maintenance cron task id = `task-1775472071448-rpvh6c` …~~
+    `[time-sensitive — RETIRED]` The 2026-05-25 fire it tracked has passed
+    and the git-maintenance group is gone. Recurrences are still interpreted
+    in `TIMEZONE` (`src/config.ts`; system zone `Europe/Amsterdam`), now via
+    `src/modules/scheduling/create.ts`.
 
 ## Docs
 
@@ -164,7 +193,18 @@ entries with `[migration-only]` so they're easy to prune later.
 
 ## Delivery
 
-31. Outbound delivery is **poll-driven**, and the WhatsApp socket
+31. > **As of v2026.10.0 (2026-11-05) the three mechanisms below are not in
+    > the code** — `onReconnect`, `pendingRedrive` and `SEND_TIMEOUT_MS` are
+    > absent from `src/`. Upstream's `src/delivery.ts` now defers a send to an
+    > offline channel with backoff and re-drives it, and adapters signal
+    > "offline" by throwing `ChannelDisconnectedError` (ported
+    > `src/channels/delivery-errors.ts`). The WhatsApp prompt-delivery fix
+    > (`2c7f6245`) was marked PORT in `.nanoclaw-migrations/08-deep-intents.md`
+    > §8.2 item 6 but was not re-applied. It is moot while WhatsApp is
+    > unpaired (item 37); re-check §8.2 before pairing it again. The text
+    > below is the June history.
+
+    Outbound delivery is **poll-driven**, and the WhatsApp socket
     reconnects ~150×/day, so the two interact. The host delivers via two
     polls (`src/delivery.ts`): the 1s active poll covers sessions whose
     `container_status` is `running`/`idle`; the 60s sweep covers all
@@ -193,7 +233,19 @@ entries with `[migration-only]` so they're easy to prune later.
 
 ## Responder behaviour (silent turns)
 
-32. A turn can end having delivered **nothing** — the model returns empty
+32. > **As of v2026.10.0 the recovery is re-implemented on upstream's turn
+    > model** (`.nanoclaw-migrations/08-deep-intents.md` §8.1). Same behaviour
+    > and the same hardened nudge text, different internals:
+    > `container/agent-runner/src/poll-loop.ts` `processQuery` keeps a
+    > per-turn `silentNudged` flag on each `QueuedTurn` (replacing
+    > `silentNudgeStreak`), and "nothing delivered" is
+    > `midTurnSent === 0 && !chatRowWrittenSince(turnStartSeq)`, read from the
+    > outbound DB (replacing `getOutboundWriteCount()`). Tests:
+    > `poll-loop.silent-turn.test.ts`. The bind-mount deployment note below
+    > still holds (`src/container-runner.ts` ~1188, read-only `/app/src`).
+    > Line numbers and names in the text below are from June.
+
+    A turn can end having delivered **nothing** — the model returns empty
     text, or an `<internal>`-only body that strips to nothing. The host
     logs this as `Indexed conversation history … outCount=0`. For a *task*
     or *system* trigger that's often legitimate (delivered by email,
@@ -257,7 +309,12 @@ entries with `[migration-only]` so they're easy to prune later.
       specifically for the unanswered message. Bigger change to the batching
       model than the nudge; do this only if the hardened nudge still leaks.
 
-33. **Silent-turn nudge fired on task ticks that followed a chat**
+33. > **As of v2026.10.0 this bug cannot recur:** routing (and the nudge
+    > guard) is rebound per turn, so a task tick never inherits a chat
+    > turn's state. There is no `turnExpectsReply` flag any more; the gate is
+    > `routing.expectsReply`. Kept for the history.
+
+    **Silent-turn nudge fired on task ticks that followed a chat**
     (fixed 2026-07-02, `container/agent-runner/src/poll-loop.ts`). The nudge
     (item 32) is gated on a `turnExpectsReply` flag. That flag was **set
     only, never cleared** — the initial chat batch latched it to `true` and
@@ -334,3 +391,43 @@ entries with `[migration-only]` so they're easy to prune later.
     (`ONECLI_URL`, `SLACK_SIGNING_SECRET`); `RESEND_*` (0 wired channels),
     `WHATSAPP_*` (WA works without), `TZ` (system is `Europe/Amsterdam`), and
     `ANTHROPIC_BASE_URL` are optional/unused here.
+    **Cause, found 2026-08-24:** the home-server Ansible role (`make agent`)
+    templated `.env` from a v1-era template as `root:600`. The role no longer
+    touches `.env` (home-server `documentation/agent.md` § "NanoClaw `.env` is
+    hand-managed"). Verified 2026-11-06: `.env` is `john:john 600` and holds
+    `ONECLI_URL` and `SLACK_SIGNING_SECRET`. The key list from the grep above
+    now also includes `NANOCLAW_GATEWAY_PROVIDER` (set here; `onecli`) and
+    `SLACK_INSTANCES` (unset; optional).
+
+36. **NanoClaw's Claude login is a OneCLI secret, not `~/.claude`.** Agent
+    containers authenticate with a `claude setup-token` token stored in the
+    OneCLI vault as the secret "Anthropic"; OneCLI injects it on each
+    request. `claude login` on the host only rewrites `~/.claude`, which
+    serves interactive `claude` and `/usage`, so it does not fix a NanoClaw
+    401 outage (2026-10-26/27, ~22 h). Renewal runbook and the Grafana alert
+    that watches OneCLI's 401s: home-server `documentation/agent.md`
+    § "Claude login (OneCLI token)". Added 2026-11-06.
+
+37. **WhatsApp has been unpaired since 2026-08-02.** The last WhatsApp
+    delivery in the log is 2026-08-01 17:00 CEST. `store/auth/` has been empty
+    since 2026-08-02 07:10 CEST (its mtime), which matches the adapter's
+    logged-out path (`classifyConnectionClose` → `'wipe'` →
+    `rmSync` + `mkdirSync` in `src/channels/whatsapp.ts`; inferred, the log
+    line itself was not found). Nothing re-paired it. With no
+    `store/auth/creds.json`, `WHATSAPP_PHONE_NUMBER` or `WHATSAPP_ENABLED`,
+    the adapter factory returns `null`, so WhatsApp does not start at all:
+    startup logs only `cli` and `slack`, and `/health` lists only those.
+    Nothing alerts on this. The `whatsapp_main` group and one `whatsapp`
+    messaging group are still wired. To bring it back, pair again
+    (`/add-whatsapp`) after re-checking item 31's note. Found 2026-11-06.
+
+38. **The paywall extension mount points at a deleted directory.** The
+    Financial Times and HackerNews Summaries groups mount
+    `/srv/apps/syncthing/all/bypass-paywalls-chrome-clean-master` as `bpc`
+    (`docs/research-paywall-browser.md`). Syncthing and that directory were
+    removed from agent_lxc on 2026-10-23. Every spawn of those groups now logs
+    `WARN Additional mount REJECTED … Host path does not exist`, in
+    `logs/nanoclaw.error.log`, not `nanoclaw.log`. The container still starts,
+    just without the extension, so paywalled fetches quietly lose the bypass.
+    The fix is a new home for the extension, plus updates to the allowlist
+    root (item 9) and both groups' `additional_mounts`. Found 2026-11-06.
