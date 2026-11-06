@@ -178,7 +178,12 @@ describe('materializeTemplateSkills', () => {
       materializeTemplateSkills('g10', path.join(groupB, '.agents', 'skills'));
 
       expect(tree(groupB)).toEqual(tree(groupA));
-      expect(tree(groupB)).toContain('file .agents/skills/widget/SKILL.md:body:644');
+      // The copy keeps the source's mode; read it rather than assume umask 022.
+      const srcMode = (
+        fs.statSync(path.join(DATA_DIR, 'v2-sessions', 'g10', '.claude-shared', 'skills', 'widget', 'SKILL.md')).mode &
+        0o777
+      ).toString(8);
+      expect(tree(groupB)).toContain(`file .agents/skills/widget/SKILL.md:body:${srcMode}`);
       expect(fs.lstatSync(path.join(groupB, '.agents', 'skills', 'widget')).isSymbolicLink()).toBe(false);
       expect(warn).not.toHaveBeenCalled();
     });
