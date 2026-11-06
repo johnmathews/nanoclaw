@@ -672,7 +672,7 @@ async function deliverToAgent(
       event.platformId,
       effectiveThreadId,
       mg.instance,
-      event.message.id,
+      workingMarkerMessageId(event),
     );
     const freshSession = await getSession(session.id);
     if (freshSession) {
@@ -700,6 +700,21 @@ async function deliverToAgent(
       timestamp: event.message.timestamp,
     });
   }
+}
+
+/**
+ * Fork: the inbound message the working marker (Slack 👀) goes on. A
+ * synthetic reaction row is not a message the user is waiting on — and must
+ * not move the marker off the real one — so it yields no target.
+ */
+export function workingMarkerMessageId(event: InboundEvent): string | undefined {
+  try {
+    const content = JSON.parse(event.message.content) as unknown;
+    if (content && typeof content === 'object' && 'reaction' in content) return undefined;
+  } catch {
+    // Unparseable content is still a real message.
+  }
+  return event.message.id || undefined;
 }
 
 /**

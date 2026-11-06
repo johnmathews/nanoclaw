@@ -47,3 +47,13 @@ job-search-ritsya answer again; the FT and HackerNews digests are back on schedu
 - Tests: typing marker lifecycle, the reply check, bridge add/remove and the echo drop through the
   real Chat SDK dispatch (verified to fail with the guard disabled), and Slack guard cases in
   `slack-fork.test.ts` (verified to fail against the unpatched `slack.ts`).
+
+## 1.4 Wrap-up fix (/done code review)
+
+- A user's reaction arrives as a synthetic `rxn-…` inbound row and re-triggers the typing
+  refresher. The first version treated it as a newer message and took 👀 off the message the agent
+  was still answering. Now `workingMarkerMessageId` in `src/router.ts` gives reaction rows no marker
+  target, and the typing module leaves the current marker alone when a re-trigger has no message id.
+  Both have tests; the typing test fails against the old behaviour.
+- Not built: a `ghcr.io` publish workflow. The agent image is built locally by
+  `./container/build.sh` and isn't a deployable service (same decision as `260622`).

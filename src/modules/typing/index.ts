@@ -161,10 +161,11 @@ export function startTypingRefresh(
   if (existing) {
     // A new inbound message moves the working marker to it: clear the old
     // message's marker (at its own address) before the address changes.
-    const nextMessageId = messageId ?? null;
-    if (nextMessageId !== existing.messageId) {
+    // A re-trigger with no markable message (e.g. a user's reaction row)
+    // leaves the current marker where it is.
+    if (messageId !== undefined && messageId !== existing.messageId) {
       clearMarker({ ...existing }, existing.messageId, existing.marked);
-      existing.messageId = nextMessageId;
+      existing.messageId = messageId;
       existing.marked = false;
       existing.settled = false;
     }

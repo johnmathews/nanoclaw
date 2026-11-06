@@ -197,6 +197,16 @@ describe('working marker (fork: Slack 👀)', () => {
     expect(calls.map((c) => `${c.op}:${c.messageId}`)).toEqual(['mark:100.1', 'clear:100.1']);
   });
 
+  it('a re-trigger without a message id (a reaction row) leaves the marker in place', async () => {
+    const calls = markerAdapter();
+    startTypingRefresh('sess-1', 'ag-1', 'slack', 'slack:C1', null, undefined, '100.1');
+    startTypingRefresh('sess-1', 'ag-1', 'slack', 'slack:C1', null, undefined, undefined);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls.map((c) => `${c.op}:${c.messageId}`)).toEqual(['mark:100.1']);
+    clearWorkingMarker('sess-1');
+    expect(calls.map((c) => `${c.op}:${c.messageId}`)).toEqual(['mark:100.1', 'clear:100.1']);
+  });
+
   it('does nothing without an inbound message id', async () => {
     const calls = markerAdapter();
     startTypingRefresh('sess-1', 'ag-1', 'slack', 'slack:C1', null);
