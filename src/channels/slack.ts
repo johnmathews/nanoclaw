@@ -16,16 +16,18 @@
  */
 import { createSlackAdapter, type SlackAdapter } from '@chat-adapter/slack';
 
+import { log } from '../log.js';
 import { readEnvFile } from '../env.js';
-import type { ChannelAdapter, ChannelContextDefaults, ChannelDefaults } from './adapter.js';
-import { createChatSdkBridge } from './chat-sdk-bridge.js';
+import type { ChannelAdapter, ChannelDefaults } from './adapter.js';
+import { createChatSdkBridge, type PostBlocksFn } from './chat-sdk-bridge.js';
 import { registerChannelAdapter } from './channel-registry.js';
 import { setSlackAuthorIsBotResolver } from './slack-a2a-guard.js';
 import { slackRawTextExtractor } from './slack-raw-text.js';
 
 /**
- * Dedicated bot app on a threaded platform. group threads:true keeps
- * mention-sticky bounded — engagement sticks per-thread, not forever.
+ * Dedicated bot app on a threaded platform. Fork: both contexts default to
+ * unthreaded, top-level replies (see the declaration below); upstream's group
+ * default was threads:true + per-thread sessions.
  * dm.threads:false is a deliberate policy choice, not a capability limit:
  * Slack users can open sub-threads inside a DM, but by default the agent
  * replies top-level and all DM sub-threads collapse into the one DM session.
@@ -53,19 +55,24 @@ export const SLACK_DEFAULTS: ChannelDefaults = {
     engageMode: 'pattern',
     engagePattern: '.',
     threads: false,
-    sessionMode: 'per-thread',
+    // Fork: 'shared', not upstream's 'per-thread'. A per-thread sessionMode
+    // is stamped as threads=1 on every new wiring (resolveWiringDefaults),
+    // which would thread DM replies; this install replies top-level.
+    sessionMode: 'shared',
     unknownSenderPolicy: 'decline_notify',
   },
   group: {
+    // Declared mention-sticky, but resolveWiringDefaults coerces it to plain
+    // 'mention' while threads are off (stickiness is keyed per thread).
     engageMode: 'mention-sticky',
-    threads: true,
-    // D29: group conversations are per-thread too — Slack channels
-    // materialize a thread per top-level message, and ambient context
-    // (same-mg fan + channel-timeline backfill) is the continuity layer.
-    // Creation-time stamp like dm.sessionMode; existing wirings never flip.
-    // Canvas-comment shadow channels deliberately stay shared (wired
-    // explicitly in room-canvas, the documented D29 exception).
-    sessionMode: 'per-thread',
+    // Fork: unthreaded by default (upstream: threads true + sessionMode
+    // 'per-thread', its D29). This install's Slack channels reply top-level
+    // in the channel root -- the behaviour the fork's per-channel reply_mode
+    // gave before Phase 2. Both fields must change: a per-thread sessionMode
+    // is stamped as threads=1 on new wirings regardless of `threads`.
+    // Per wiring, `ncl wirings update <id> --threads true` re-enables threads.
+    threads: false,
+    sessionMode: 'shared',
     unknownSenderPolicy: 'request_approval',
   },
   mentions: 'platform',
@@ -165,6 +172,56 @@ export interface SlackBridgeOptions {
  * null when the bot token is missing so the registry surfaces its normal
  * "credentials missing, skipping" warning.
  */
+interface SlackWebClient {
+  chat: {
+    postMessage(args: {
+      channel: string;
+      thread_ts?: string;
+      text: string;
+      blocks?: unknown[];
+      unfurl_links?: boolean;
+      unfurl_media?: boolean;
+    }): Promise<{ ok?: boolean; ts?: string; channel?: string; error?: string }>;
+  };
+}
+
+/**
+ * Build a `postBlocks` function from a Slack adapter instance.
+ *
+ * Reaches into the adapter's private `client` deliberately: the Chat SDK's
+ * postMessage takes AdapterPostableMessage (string | Postable{Raw,Markdown,
+ * Ast,Card}), none of which can carry raw Block Kit. Returns null when the
+ * adapter shape does not match — a future adapter version renaming `client`
+ * then degrades send_blocks to fallbackText instead of crashing delivery.
+ */
+function makeSlackPostBlocks(slackAdapter: unknown): PostBlocksFn | null {
+  const client = (slackAdapter as { client?: SlackWebClient }).client;
+  if (!client?.chat || typeof client.chat.postMessage !== 'function') {
+    log.warn('Slack adapter has no .client.chat.postMessage; send_blocks will fall back to text');
+    return null;
+  }
+  return async (threadId, blocks, fallbackText) => {
+    // threadId is "slack:CHANNEL:THREAD_TS" (or "slack:CHANNEL:" off-thread).
+    // See @chat-adapter/slack decodeThreadId.
+    const parts = threadId.split(':');
+    if (parts.length < 2 || parts[0] !== 'slack') {
+      throw new Error(`postBlocks called with non-Slack threadId: ${threadId}`);
+    }
+    const channel = parts[1];
+    const threadTs = parts.length === 3 && parts[2] ? parts[2] : undefined;
+    const result = await client.chat.postMessage({
+      channel,
+      thread_ts: threadTs,
+      text: fallbackText,
+      blocks,
+      unfurl_links: false,
+      unfurl_media: false,
+    });
+    if (!result.ok) throw new Error(`Slack chat.postMessage failed: ${result.error ?? 'unknown'}`);
+    return { id: result.ts };
+  };
+}
+
 export function createSlackBridge(options: SlackBridgeOptions = {}): ChannelAdapter | null {
   const suffix = options.envKeySuffix ? `_${options.envKeySuffix}` : '';
   const keys = {
@@ -186,8 +243,10 @@ export function createSlackBridge(options: SlackBridgeOptions = {}): ChannelAdap
     mode: appToken ? 'socket' : 'webhook',
   });
   setSlackAuthorIsBotResolver(options.instanceKey ?? 'slack', (userId) => slackAuthorIsBot(slackAdapter, userId));
+  const postBlocks = makeSlackPostBlocks(slackAdapter) ?? undefined;
   const bridge = createChatSdkBridge({
     adapter: slackAdapter,
+    postBlocks,
     extractRawText: slackRawTextExtractor(slackAdapter),
     instance: options.instanceKey, // undefined ⇒ default instance (keyed by channelType)
     concurrency: 'concurrent',

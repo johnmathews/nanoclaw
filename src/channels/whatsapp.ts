@@ -39,9 +39,11 @@ import {
 import type { GroupMetadata, WAMessageKey, WAMessage, WASocket } from '@whiskeysockets/baileys';
 
 import { isSafeAttachmentName } from '../attachment-safety.js';
-import { DATA_DIR } from '../config.js';
+import {} from '../config.js';
 import { readEnvFile } from '../env.js';
 import { log } from '../log.js';
+import { ChannelDisconnectedError } from './delivery-errors.js';
+import { maybePdfExtract, maybeTranscribe } from './chat-sdk-bridge.js';
 import { registerChannelAdapter } from './channel-registry.js';
 import { normalizeOptions, type NormalizedOption } from './ask-question.js';
 import type {
@@ -340,6 +342,90 @@ export function appendMediaFailureNote(content: string, failures: string[]): str
   return content ? `${content}\n${note}` : note;
 }
 
+/**
+ * Build an inbound attachment entry from downloaded bytes.
+ *
+ * Exported so the delivery-shape decision is testable without a Baileys
+ * socket: the IO stays in the adapter closure, this is the part that decides
+ * what the agent actually receives.
+ */
+export async function buildInboundAttachment(
+  type: string,
+  filename: string,
+  mimetype: string | undefined,
+  buffer: Buffer,
+): Promise<WhatsAppInboundAttachment> {
+  const entry: WhatsAppInboundAttachment = {
+    type,
+    name: filename,
+    mimeType: mimetype ?? mimeForType(type),
+    size: buffer.length,
+    // The BYTES, not a host path. The host's attachment spill
+    // (extractAttachmentFiles in session-manager) writes this base64 into the
+    // session's own inbox, which is the only place the container can read:
+    // `attachments/<name>` under DATA_DIR is a host path no agent can open, so
+    // writing there delivered an attachment the agent could see referenced and
+    // never fetch.
+    data: buffer.toString('base64'),
+  };
+  // Host-side preprocessing, same contract as the Chat SDK bridge: neither
+  // call throws, each records its own error on the entry.
+  await maybeTranscribe(entry as unknown as Record<string, unknown>, buffer);
+  await maybePdfExtract(entry as unknown as Record<string, unknown>, buffer);
+  return entry;
+}
+
+/** An inbound WhatsApp attachment, carried as bytes for the host to spill. */
+export interface WhatsAppInboundAttachment {
+  type: string;
+  name: string;
+  mimeType: string;
+  size: number;
+  /** base64 — the host writes this into the session inbox and replaces it with a path. */
+  data: string;
+  transcription?: string;
+  transcriptionError?: string;
+  extractedText?: string;
+  pdfExtractionError?: string;
+}
+
+/** Fallback mime when WhatsApp omits one, so the preprocessors can still dispatch. */
+function mimeForType(type: string): string {
+  switch (type) {
+    case 'image':
+      return 'image/jpeg';
+    case 'video':
+      return 'video/mp4';
+    case 'audio':
+      return 'audio/ogg';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
+/**
+ * What to do when the socket closes: reconnect, wipe the auth state, or leave
+ * it alone.
+ *
+ * Behaviourally identical to the inline expression this replaces — extracted
+ * so the wipe decision is testable on its own. A regression here once
+ * invalidated the user's WhatsApp session on every service restart, which
+ * presents as "scan the QR code again" and cannot be undone, so it is worth a
+ * named function and three assertions rather than a boolean buried in a
+ * handler.
+ *
+ * 'preserve' is the case that matters: a graceful shutdown must NOT be treated
+ * as a logout.
+ */
+export function classifyConnectionClose(
+  reason: number | undefined,
+  shuttingDown: boolean,
+): 'reconnect' | 'wipe' | 'preserve' {
+  if (reason === DisconnectReason.loggedOut) return 'wipe';
+  if (shuttingDown) return 'preserve';
+  return 'reconnect';
+}
+
 /** Map file extension to Baileys media message type. */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function buildMediaMessage(data: Buffer, filename: string, ext: string, caption?: string): any {
@@ -429,8 +515,6 @@ registerChannelAdapter('whatsapp', {
     let botPhoneJid: string | undefined;
 
     // Outgoing queue for messages sent while disconnected
-    const outgoingQueue: Array<{ jid: string; text: string; mentions?: string[] }> = [];
-    let flushing = false;
 
     // Sent message cache for retry/re-encrypt requests
     const sentMessageCache = new Map<string, any>();
@@ -548,32 +632,13 @@ registerChannelAdapter('whatsapp', {
       }
     }
 
-    async function flushOutgoingQueue(): Promise<void> {
-      if (flushing || outgoingQueue.length === 0) return;
-      flushing = true;
-      try {
-        log.info('Flushing outgoing message queue', { count: outgoingQueue.length });
-        while (outgoingQueue.length > 0) {
-          const item = outgoingQueue.shift()!;
-          const payload: { text: string; mentions?: string[] } = { text: item.text };
-          if (item.mentions && item.mentions.length > 0) payload.mentions = item.mentions;
-          const sent = await sock.sendMessage(item.jid, payload);
-          if (sent?.key?.id && sent.message) {
-            sentMessageCache.set(sent.key.id, sent.message);
-          }
-        }
-      } finally {
-        flushing = false;
-      }
-    }
-
     /** Download media from an inbound message, save to /workspace/attachments/. */
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async function downloadInboundMedia(
       msg: WAMessage,
       normalized: any,
     ): Promise<{
-      attachments: Array<{ type: string; name: string; localPath: string }>;
+      attachments: WhatsAppInboundAttachment[];
       failures: string[];
     }> {
       const mediaTypes: Array<{ key: string; type: string; ext: string }> = [
@@ -582,7 +647,7 @@ registerChannelAdapter('whatsapp', {
         { key: 'audioMessage', type: 'audio', ext: '.ogg' },
         { key: 'documentMessage', type: 'document', ext: '' },
       ];
-      const results: Array<{ type: string; name: string; localPath: string }> = [];
+      const results: WhatsAppInboundAttachment[] = [];
       const failures: string[] = [];
       for (const { key, type, ext } of mediaTypes) {
         if (!normalized[key]) continue;
@@ -609,12 +674,15 @@ registerChannelAdapter('whatsapp', {
               replacement: filename,
             });
           }
-          const attachDir = path.join(DATA_DIR, 'attachments');
-          fs.mkdirSync(attachDir, { recursive: true });
-          const filePath = path.join(attachDir, filename);
-          fs.writeFileSync(filePath, buffer);
-          results.push({ type, name: filename, localPath: `attachments/${filename}` });
-          log.info('Media downloaded', { type, filename });
+          // Return the BYTES, not a host path. The host's attachment spill
+          // (extractAttachmentFiles in session-manager) writes base64 `data`
+          // into the session's own inbox, which is the only place the
+          // container can read: `attachments/<name>` under DATA_DIR is a host
+          // path no agent can open, so writing there delivered an attachment
+          // the agent could see referenced and never fetch.
+          const entry = await buildInboundAttachment(type, filename, normalized[key].mimetype, buffer);
+          results.push(entry);
+          log.info('Media downloaded', { type, filename, bytes: buffer.length });
         } catch (err) {
           log.warn('Failed to download media', { type, err });
           failures.push(type);
@@ -623,29 +691,32 @@ registerChannelAdapter('whatsapp', {
       return { attachments: results, failures };
     }
 
+    /**
+     * Send, or throw. Never swallow.
+     *
+     * This used to push onto an in-memory queue and return undefined, which
+     * the host read as "delivered": the agent's outbound row was cleared and
+     * the only remaining copy lived in this process, lost on the next
+     * restart. The queue is gone — the host's delivery loop is the durable
+     * retry, and it can only do that job if a failure reaches it.
+     *
+     * Returning normally therefore means the message reached WhatsApp.
+     */
     async function sendRawMessage(jid: string, text: string, mentions?: string[]): Promise<string | undefined> {
       if (!connected) {
-        outgoingQueue.push({ jid, text, mentions });
-        log.info('WA disconnected, message queued', { jid, queueSize: outgoingQueue.length });
-        return;
+        throw new ChannelDisconnectedError(`WhatsApp socket is not connected (jid ${jid})`);
       }
-      try {
-        const payload: { text: string; mentions?: string[] } = { text };
-        if (mentions && mentions.length > 0) payload.mentions = mentions;
-        const sent = await sock.sendMessage(jid, payload);
-        if (sent?.key?.id && sent.message) {
-          sentMessageCache.set(sent.key.id, sent.message);
-          if (sentMessageCache.size > SENT_MESSAGE_CACHE_MAX) {
-            const oldest = sentMessageCache.keys().next().value!;
-            sentMessageCache.delete(oldest);
-          }
+      const payload: { text: string; mentions?: string[] } = { text };
+      if (mentions && mentions.length > 0) payload.mentions = mentions;
+      const sent = await sock.sendMessage(jid, payload);
+      if (sent?.key?.id && sent.message) {
+        sentMessageCache.set(sent.key.id, sent.message);
+        if (sentMessageCache.size > SENT_MESSAGE_CACHE_MAX) {
+          const oldest = sentMessageCache.keys().next().value!;
+          sentMessageCache.delete(oldest);
         }
-        return sent?.key?.id ?? undefined;
-      } catch (err) {
-        outgoingQueue.push({ jid, text, mentions });
-        log.warn('Failed to send, message queued', { jid, err, queueSize: outgoingQueue.length });
-        return undefined;
       }
+      return sent?.key?.id ?? undefined;
     }
 
     // --- Socket creation ---
@@ -721,11 +792,11 @@ registerChannelAdapter('whatsapp', {
           // initializes useMultiFileAuthState which can truncate creds.json
           // mid-write when the process exits, leaving a 0-byte creds file
           // and forcing a fresh QR pairing on next start.
-          const shouldReconnect = !shuttingDown && reason !== DisconnectReason.loggedOut;
+          const disposition = classifyConnectionClose(reason, shuttingDown);
 
-          log.info('WhatsApp connection closed', { reason, shouldReconnect, shuttingDown });
+          log.info('WhatsApp connection closed', { reason, disposition, shuttingDown });
 
-          if (shouldReconnect) {
+          if (disposition === 'reconnect') {
             log.info('Reconnecting...');
             connectSocket().catch((err) => {
               log.error('Failed to reconnect, retrying in 5s', { err });
@@ -735,7 +806,7 @@ registerChannelAdapter('whatsapp', {
                 });
               }, RECONNECT_DELAY_MS);
             });
-          } else if (reason === DisconnectReason.loggedOut) {
+          } else if (disposition === 'wipe') {
             // Server-side logout (account unlinked, 401, etc.). Clear auth so
             // the next start prompts for a fresh pair — stale creds would
             // 401 again and risk WhatsApp's "can't link new devices now"
@@ -794,7 +865,6 @@ registerChannelAdapter('whatsapp', {
           }
 
           // Flush queued messages
-          flushOutgoingQueue().catch((err) => log.error('Failed to flush outgoing queue', { err }));
 
           // Group sync
           syncGroupMetadata().catch((err) => log.error('Initial group sync failed', { err }));

@@ -11,7 +11,7 @@
  *     the same SLACK_DEFAULTS declaration as the default Slack app (declared
  *     defaults, not the core fallback). hasDeclaredChannelDefaults()
  *     distinguishes a declared entry from fallbackChannelDefaults(), and
- *     `group.threads === true` is the field where the two differ with no
+ *     `group.sessionMode` / `dm.unknownSenderPolicy` are fields where the two differ with no
  *     live adapter (fallback resolves threads to false).
  *  3. The shared factory — the per-name factory delegates to
  *     createSlackBridge, whose credential path is driven for real here: with
@@ -33,6 +33,7 @@ import { join } from 'node:path';
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 
+import { resolveWiringDefaults } from './channel-defaults.js';
 import { getChannelDefaults, getRegisteredChannelNames, hasDeclaredChannelDefaults } from './channel-registry.js';
 
 const originalCwd = process.cwd();
@@ -65,13 +66,40 @@ describe('slack multi-instance registration', () => {
       // copy of the defaults would fail this even with equal-looking fields
       // elsewhere.
       expect(defaults).toEqual(getChannelDefaults('slack'));
-      // group.threads true is SLACK_DEFAULTS; the no-live-adapter fallback
-      // would resolve threads:false. Engagement fields ride along.
-      expect(defaults.group.threads).toBe(true);
+      // Fork: group.threads is false in SLACK_DEFAULTS (unthreaded by
+      // default), the same value the no-live-adapter fallback resolves, so
+      // it can no longer tell them apart. The fallback declares no
+      // sessionMode and uses request_approval for DMs; SLACK_DEFAULTS
+      // declares both, so those fields carry the distinction.
+      expect(defaults.group).toMatchObject({ threads: false, sessionMode: 'shared' });
+      expect(defaults.dm.unknownSenderPolicy).toBe('decline_notify');
       expect(defaults.group.engageMode).toBe('mention-sticky');
       expect(defaults.dm).toMatchObject({ engageMode: 'pattern', engagePattern: '.', threads: false });
       expect(defaults.mentions).toBe('platform');
     }
+  });
+});
+
+// Fork: new Slack wirings are unthreaded. A per-thread sessionMode would be
+// stamped as threads=1 at creation, so assert the created row, not just the
+// declaration.
+describe('new Slack wirings default to unthreaded, top-level replies', () => {
+  it('channel wirings: shared session, threads inherit (off), mention-sticky coerced to mention', () => {
+    expect(resolveWiringDefaults('slack', true, 'Andy')).toEqual({
+      engage_mode: 'mention',
+      engage_pattern: null,
+      session_mode: 'shared',
+      threads: null,
+    });
+  });
+
+  it('DM wirings: shared session, threads inherit (off), every message engages', () => {
+    expect(resolveWiringDefaults('slack', false, 'Andy')).toMatchObject({
+      engage_mode: 'pattern',
+      engage_pattern: '.',
+      session_mode: 'shared',
+      threads: null,
+    });
   });
 });
 
