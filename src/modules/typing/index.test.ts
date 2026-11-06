@@ -14,7 +14,7 @@ vi.mock('../../config.js', async () => {
   return { ...actual, DATA_DIR: '/tmp/nanoclaw-test-typing' };
 });
 
-import { setTypingAdapter, startTypingRefresh, stopTypingRefresh } from './index.js';
+import { clearWorkingMarker, setTypingAdapter, startTypingRefresh, stopTypingRefresh } from './index.js';
 
 type Call = { channelType: string; platformId: string; threadId: string | null; instance?: string };
 
@@ -119,5 +119,103 @@ describe('startTypingRefresh — instance forwarding', () => {
         instance: 'telegram',
       });
     }
+  });
+});
+
+describe('working marker (fork: Slack 👀)', () => {
+  type MarkerCall = {
+    op: 'mark' | 'clear';
+    platformId: string;
+    threadId: string | null;
+    messageId: string;
+    instance?: string;
+  };
+
+  function markerAdapter() {
+    const calls: MarkerCall[] = [];
+    setTypingAdapter({
+      async setTyping() {},
+      async markWorking(_channelType, platformId, threadId, messageId, instance) {
+        calls.push({ op: 'mark', platformId, threadId, messageId, instance });
+      },
+      async clearWorking(_channelType, platformId, threadId, messageId, instance) {
+        calls.push({ op: 'clear', platformId, threadId, messageId, instance });
+      },
+    });
+    return calls;
+  }
+
+  it('marks the inbound message once, not on every refresh tick', async () => {
+    const calls = markerAdapter();
+    startTypingRefresh('sess-1', 'ag-1', 'slack', 'slack:C1', null, undefined, '100.1');
+    await vi.advanceTimersByTimeAsync(12_000); // three ticks inside the grace window
+    expect(calls).toEqual([
+      { op: 'mark', platformId: 'slack:C1', threadId: null, messageId: '100.1', instance: undefined },
+    ]);
+  });
+
+  it('clears on a delivered reply and never re-marks the same message', async () => {
+    const calls = markerAdapter();
+    startTypingRefresh('sess-1', 'ag-1', 'slack', 'slack:C1', null, 'slack', '100.1');
+    await vi.advanceTimersByTimeAsync(0);
+    clearWorkingMarker('sess-1');
+    await vi.advanceTimersByTimeAsync(12_000); // refresher keeps ticking inside grace
+    expect(calls.map((c) => `${c.op}:${c.messageId}`)).toEqual(['mark:100.1', 'clear:100.1']);
+    expect(calls[1].instance).toBe('slack');
+  });
+
+  it('moves the marker to a newer inbound message', async () => {
+    const calls = markerAdapter();
+    startTypingRefresh('sess-1', 'ag-1', 'slack', 'slack:C1', null, undefined, '100.1');
+    startTypingRefresh('sess-1', 'ag-1', 'slack', 'slack:C1', null, undefined, '100.2');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls.map((c) => `${c.op}:${c.messageId}`)).toEqual(['mark:100.1', 'clear:100.1', 'mark:100.2']);
+  });
+
+  it('a new inbound after a delivered reply gets its own marker', async () => {
+    const calls = markerAdapter();
+    startTypingRefresh('sess-1', 'ag-1', 'slack', 'slack:C1', null, undefined, '100.1');
+    clearWorkingMarker('sess-1');
+    startTypingRefresh('sess-1', 'ag-1', 'slack', 'slack:C1', null, undefined, '100.2');
+    await vi.advanceTimersByTimeAsync(0);
+    // 100.1 was already cleared, so moving on does not clear it twice.
+    expect(calls.map((c) => `${c.op}:${c.messageId}`)).toEqual(['mark:100.1', 'clear:100.1', 'mark:100.2']);
+  });
+
+  it('clears when the refresher stops (container exit) without a reply', async () => {
+    const calls = markerAdapter();
+    startTypingRefresh('sess-1', 'ag-1', 'slack', 'slack:C1', null, undefined, '100.1');
+    stopTypingRefresh('sess-1');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls.map((c) => `${c.op}:${c.messageId}`)).toEqual(['mark:100.1', 'clear:100.1']);
+  });
+
+  it('clears when the agent goes idle (grace over, no heartbeat)', async () => {
+    const calls = markerAdapter();
+    startTypingRefresh('sess-1', 'ag-1', 'slack', 'slack:C1', null, undefined, '100.1');
+    await vi.advanceTimersByTimeAsync(20_000); // past the 15s grace; no heartbeat file in the test DATA_DIR
+    expect(calls.map((c) => `${c.op}:${c.messageId}`)).toEqual(['mark:100.1', 'clear:100.1']);
+  });
+
+  it('does nothing without an inbound message id', async () => {
+    const calls = markerAdapter();
+    startTypingRefresh('sess-1', 'ag-1', 'slack', 'slack:C1', null);
+    stopTypingRefresh('sess-1');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toEqual([]);
+  });
+
+  it('a failing marker call never throws into routing', async () => {
+    setTypingAdapter({
+      async markWorking() {
+        throw new Error('missing_scope');
+      },
+      async clearWorking() {
+        throw new Error('no_reaction');
+      },
+    });
+    expect(() => startTypingRefresh('sess-1', 'ag-1', 'slack', 'slack:C1', null, undefined, '100.1')).not.toThrow();
+    expect(() => stopTypingRefresh('sess-1')).not.toThrow();
+    await vi.advanceTimersByTimeAsync(0);
   });
 });

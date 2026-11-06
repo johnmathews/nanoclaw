@@ -15,6 +15,9 @@
  *     sessionMode alone would stamp threads=1 on every new wiring.
  *   - send_blocks: createSlackBridge hands the bridge a postBlocks that posts
  *     raw Block Kit through the adapter's web client.
+ *   - Working indicator: createSlackBridge asks the bridge for a 👀 reaction
+ *     on the user's message while the agent works (unthreaded chats have no
+ *     native typing status), limited to real Slack message timestamps.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -36,7 +39,7 @@ vi.mock('./chat-sdk-bridge.js', async (importOriginal) => ({
 }));
 
 import { resolveWiringDefaults } from './channel-defaults.js';
-import { SLACK_DEFAULTS, createSlackBridge } from './slack.js';
+import { SLACK_DEFAULTS, createSlackBridge, isSlackMessageTs } from './slack.js';
 
 type PostBlocks = (threadId: string, blocks: unknown[], fallbackText: string) => Promise<{ id?: string }>;
 
@@ -93,5 +96,29 @@ describe('send_blocks: createSlackBridge wires postBlocks', () => {
 
   it('rejects a non-Slack thread id', async () => {
     await expect(bridgePostBlocks()!('discord:C1:', [], 'x')).rejects.toThrow('non-Slack threadId');
+  });
+});
+
+describe('working indicator: 👀 on the user message in unthreaded chats', () => {
+  function bridgeWorkingReaction() {
+    createSlackBridge();
+    const opts = createChatSdkBridge.mock.calls.at(-1)?.[0] as
+      | { workingReaction?: { emoji: string; isMarkable?: (id: string) => boolean } }
+      | undefined;
+    return opts?.workingReaction;
+  }
+
+  it('asks the bridge for an eyes reaction', () => {
+    expect(bridgeWorkingReaction()?.emoji).toBe('eyes');
+  });
+
+  it('marks only real Slack message timestamps', () => {
+    const isMarkable = bridgeWorkingReaction()?.isMarkable;
+    expect(isMarkable).toBe(isSlackMessageTs);
+    expect(isSlackMessageTs('1794003907.745989')).toBe(true);
+    // Synthetic reaction rows and agent-scoped ids must never reach reactions.add.
+    expect(isSlackMessageTs('rxn-1794003907-abc123')).toBe(false);
+    expect(isSlackMessageTs('1794003968.076579:eed83246-277b-41ec-8430-793480b7633f')).toBe(false);
+    expect(isSlackMessageTs('')).toBe(false);
   });
 });

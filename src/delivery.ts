@@ -34,7 +34,7 @@ import { fanOutboundMessage } from './modules/cross-session-context/index.js';
 import { log } from './log.js';
 import { normalizeOptions } from './channels/ask-question.js';
 import { clearOutbox, readOutboxFiles, withExistingMailboxSession, writeSessionMessage } from './session-manager.js';
-import { pauseTypingRefreshAfterDelivery, setTypingAdapter } from './modules/typing/index.js';
+import { clearWorkingMarker, pauseTypingRefreshAfterDelivery, setTypingAdapter } from './modules/typing/index.js';
 import type { OutboundFile } from './channels/adapter.js';
 import type { PendingApproval, Session } from './types.js';
 import type { OutboundMessage } from './mailbox/index.js';
@@ -272,6 +272,35 @@ export interface ChannelDeliveryAdapter {
     status?: string,
     statusKind?: 'auto' | 'agent',
   ): Promise<void>;
+  markWorking?(
+    channelType: string,
+    platformId: string,
+    threadId: string | null,
+    messageId: string,
+    instance?: string,
+  ): Promise<void>;
+  clearWorking?(
+    channelType: string,
+    platformId: string,
+    threadId: string | null,
+    messageId: string,
+    instance?: string,
+  ): Promise<void>;
+}
+
+/**
+ * Fork: does this delivered row answer the user? Clears the working marker
+ * (Slack 👀). Edits and reactions are operations on earlier messages, not
+ * replies, so an agent reacting to the user must not clear it.
+ */
+export function isUserVisibleReply(kind: string, content: string): boolean {
+  if (kind === 'system' || kind === 'task_log') return false;
+  try {
+    const parsed = JSON.parse(content) as { operation?: unknown };
+    return !(parsed && typeof parsed === 'object' && 'operation' in parsed && parsed.operation);
+  } catch {
+    return true;
+  }
 }
 
 let deliveryAdapter: ChannelDeliveryAdapter | null = null;
@@ -464,6 +493,7 @@ async function drainSession(session: Session): Promise<void> {
       await clearAttemptRow(msg.id);
       if (msg.kind !== 'system' && msg.channelType !== 'agent') {
         pauseTypingRefreshAfterDelivery(session.id);
+        if (isUserVisibleReply(msg.kind, msg.content)) clearWorkingMarker(session.id);
         if (msg.kind !== 'task_log') {
           // Cross-session context: echo the delivered reply into the
           // conversation's recently active sibling sessions. Unawaited — the

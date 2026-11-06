@@ -124,6 +124,26 @@ export function createChannelDeliveryAdapter(): ChannelDeliveryAdapter {
       const adapter = getChannelAdapterExact(instance ?? channelType);
       await adapter?.setTyping?.(platformId, threadId, status, statusKind);
     },
+    async markWorking(
+      channelType: string,
+      platformId: string,
+      threadId: string | null,
+      messageId: string,
+      instance?: string,
+    ): Promise<void> {
+      const adapter = getChannelAdapterExact(instance ?? channelType);
+      await adapter?.markWorking?.(platformId, threadId, messageId);
+    },
+    async clearWorking(
+      channelType: string,
+      platformId: string,
+      threadId: string | null,
+      messageId: string,
+      instance?: string,
+    ): Promise<void> {
+      const adapter = getChannelAdapterExact(instance ?? channelType);
+      await adapter?.clearWorking?.(platformId, threadId, messageId);
+    },
   };
 }
 

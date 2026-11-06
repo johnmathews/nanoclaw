@@ -342,6 +342,41 @@ export interface PostBlocksResult {
  */
 export type PostBlocksFn = (threadId: string, blocks: unknown[], fallbackText: string) => Promise<PostBlocksResult>;
 
+export interface WorkingReactionConfig {
+  emoji: string;
+  isMarkable?: (messageId: string) => boolean;
+}
+
+/** How long the bridge remembers a working-marker reaction it placed or removed, to drop its echo. */
+export const WORKING_REACTION_ECHO_MS = 60_000;
+
+/**
+ * Remembers which messages the bridge itself just reacted to with the working
+ * emoji, so the platform's echo of that reaction is never routed to an agent
+ * as a user reaction (which would wake it, and could loop). Belt-and-braces
+ * over chat-sdk's own isMe filter, which needs the bot user id to be known.
+ */
+export class WorkingReactionEchoGuard {
+  private readonly until = new Map<string, number>();
+  constructor(
+    private readonly emoji: string,
+    private readonly now: () => number = Date.now,
+  ) {}
+  note(messageId: string): void {
+    this.prune();
+    this.until.set(messageId, this.now() + WORKING_REACTION_ECHO_MS);
+  }
+  isEcho(messageId: string | undefined, emoji: string): boolean {
+    if (!messageId || emoji !== this.emoji) return false;
+    const t = this.until.get(messageId);
+    return t !== undefined && t > this.now();
+  }
+  private prune(): void {
+    const now = this.now();
+    for (const [id, t] of this.until) if (t <= now) this.until.delete(id);
+  }
+}
+
 export interface ChatSdkBridgeConfig {
   adapter: Adapter;
   /**
@@ -382,6 +417,14 @@ export interface ChatSdkBridgeConfig {
    * `ChannelAdapter.defaults`.
    */
   defaults?: ChannelDefaults;
+  /**
+   * Fork: react to the inbound message while the agent works on it, and
+   * remove the reaction when the reply lands. Only in unthreaded chats
+   * (threadId null) — threaded chats keep the platform's native typing
+   * status. `isMarkable` filters out ids that are not real platform
+   * messages (e.g. synthetic reaction rows).
+   */
+  workingReaction?: WorkingReactionConfig;
   /**
    * Optional transform applied to outbound text/markdown before it reaches the
    * adapter. Used by channels that need to sanitize for a platform-specific
@@ -612,6 +655,8 @@ export function appendRawText(
 
 export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter {
   const { adapter } = config;
+  const workingReaction = config.workingReaction;
+  const echoGuard = workingReaction ? new WorkingReactionEchoGuard(workingReaction.emoji) : null;
   // The instance name becomes a webhook route segment (the route regex is
   // [^/?]+) and ':' is the state-namespace delimiter — reject anything that
   // would break either, at construction time rather than at first webhook.
@@ -819,6 +864,14 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
           try {
             const reactor = event.user as { userId?: string; fullName?: string; userName?: string } | undefined;
             const userId = reactor?.userId || '';
+            // Fork: drop the echo of our own working-marker reaction.
+            if (
+              echoGuard &&
+              (echoGuard.isEcho(event.messageId, String(event.emoji)) ||
+                echoGuard.isEcho(event.messageId, String(event.rawEmoji ?? '')))
+            ) {
+              return;
+            }
             // Self-reaction filter. chat-sdk exposes no bot-identity field
             // uniformly, so this relies on the SDK not firing onReaction for
             // the bot's own reactions (Slack does not). Skipping empty userId
@@ -1257,6 +1310,23 @@ export function createChatSdkBridge(config: ChatSdkBridgeConfig): ChannelAdapter
       const tid = threadId ?? platformId;
       await adapter.startTyping(tid);
     },
+
+    ...(workingReaction && echoGuard
+      ? {
+          async markWorking(platformId: string, threadId: string | null, messageId: string) {
+            if (threadId !== null) return; // threaded chats use the native status
+            if (workingReaction.isMarkable && !workingReaction.isMarkable(messageId)) return;
+            echoGuard.note(messageId);
+            await adapter.addReaction(platformId, messageId, workingReaction.emoji);
+          },
+          async clearWorking(platformId: string, threadId: string | null, messageId: string) {
+            if (threadId !== null) return;
+            if (workingReaction.isMarkable && !workingReaction.isMarkable(messageId)) return;
+            echoGuard.note(messageId);
+            await adapter.removeReaction(platformId, messageId, workingReaction.emoji);
+          },
+        }
+      : {}),
 
     async teardown() {
       gatewayAbort?.abort();

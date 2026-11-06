@@ -19,6 +19,7 @@
  */
 import fs from 'fs';
 
+import { log } from '../../log.js';
 import { heartbeatPath } from '../../session-manager.js';
 
 const TYPING_REFRESH_MS = 4000;
@@ -46,6 +47,25 @@ const POST_DELIVERY_PAUSE_MS = 10000;
 
 interface TypingAdapter {
   setTyping?(channelType: string, platformId: string, threadId: string | null, instance?: string): Promise<void>;
+  /**
+   * Fork: per-message "working" marker (Slack: a 👀 reaction on the inbound
+   * message). The adapter decides whether it applies — e.g. Slack only marks
+   * in unthreaded chats, where its native thread status has nowhere to show.
+   */
+  markWorking?(
+    channelType: string,
+    platformId: string,
+    threadId: string | null,
+    messageId: string,
+    instance?: string,
+  ): Promise<void>;
+  clearWorking?(
+    channelType: string,
+    platformId: string,
+    threadId: string | null,
+    messageId: string,
+    instance?: string,
+  ): Promise<void>;
 }
 
 interface TypingTarget {
@@ -58,6 +78,12 @@ interface TypingTarget {
   interval: NodeJS.Timeout;
   startedAt: number;
   pausedUntil: number; // epoch ms; 0 = not paused
+  /** Platform id of the inbound message that woke the agent (working-marker target). */
+  messageId: string | null;
+  /** Marker currently placed on messageId. */
+  marked: boolean;
+  /** Marker was cleared for messageId (reply delivered); never re-mark that message. */
+  settled: boolean;
 }
 
 let adapter: TypingAdapter | null = null;
@@ -87,6 +113,31 @@ async function triggerTyping(
   }
 }
 
+type MarkerAddress = Pick<TypingTarget, 'channelType' | 'platformId' | 'threadId' | 'instance'>;
+
+function logMarkerFailure(op: string, messageId: string, err: unknown): void {
+  // Best-effort like typing, but not silent: a missing scope or a bad id
+  // would otherwise leave the indicator dead with no trace.
+  log.warn(`Working marker ${op} failed`, { messageId, err: err instanceof Error ? err.message : String(err) });
+}
+
+/** Place the working marker once per inbound message. */
+function markIfNeeded(entry: TypingTarget): void {
+  if (!entry.messageId || entry.marked || entry.settled || !adapter?.markWorking) return;
+  entry.marked = true;
+  const messageId = entry.messageId;
+  adapter
+    .markWorking(entry.channelType, entry.platformId, entry.threadId, messageId, entry.instance)
+    .catch((err) => logMarkerFailure('add', messageId, err));
+}
+
+function clearMarker(addr: MarkerAddress, messageId: string | null, marked: boolean): void {
+  if (!messageId || !marked || !adapter?.clearWorking) return;
+  adapter
+    .clearWorking(addr.channelType, addr.platformId, addr.threadId, messageId, addr.instance)
+    .catch((err) => logMarkerFailure('remove', messageId, err));
+}
+
 function isHeartbeatFresh(agentGroupId: string, sessionId: string): boolean {
   const hbPath = heartbeatPath(agentGroupId, sessionId);
   try {
@@ -104,9 +155,19 @@ export function startTypingRefresh(
   platformId: string,
   threadId: string | null,
   instance?: string,
+  messageId?: string,
 ): void {
   const existing = typingRefreshers.get(sessionId);
   if (existing) {
+    // A new inbound message moves the working marker to it: clear the old
+    // message's marker (at its own address) before the address changes.
+    const nextMessageId = messageId ?? null;
+    if (nextMessageId !== existing.messageId) {
+      clearMarker({ ...existing }, existing.messageId, existing.marked);
+      existing.messageId = nextMessageId;
+      existing.marked = false;
+      existing.settled = false;
+    }
     // Already refreshing. Fire an immediate tick for the new inbound
     // event and reset the grace window — the new message restarts
     // the container-wake latency budget. Also clear any lingering
@@ -125,6 +186,7 @@ export function startTypingRefresh(
     existing.platformId = platformId;
     existing.threadId = threadId;
     existing.instance = instance;
+    markIfNeeded(existing);
     return;
   }
 
@@ -143,16 +205,18 @@ export function startTypingRefresh(
     const withinGrace = Date.now() - entry.startedAt < TYPING_GRACE_MS;
     if (withinGrace || isHeartbeatFresh(entry.agentGroupId, sessionId)) {
       triggerTyping(entry.channelType, entry.platformId, entry.threadId, entry.instance).catch(() => {});
+      markIfNeeded(entry);
       return;
     }
 
     // Out of grace AND heartbeat stale — agent is idle, stop refreshing.
     clearInterval(entry.interval);
     typingRefreshers.delete(sessionId);
+    clearMarker(entry, entry.messageId, entry.marked);
   }, TYPING_REFRESH_MS);
   // unref so a stale refresher can't hold the event loop alive.
   interval.unref();
-  typingRefreshers.set(sessionId, {
+  const entry: TypingTarget = {
     agentGroupId,
     channelType,
     platformId,
@@ -161,7 +225,12 @@ export function startTypingRefresh(
     interval,
     startedAt,
     pausedUntil: 0,
-  });
+    messageId: messageId ?? null,
+    marked: false,
+    settled: false,
+  };
+  typingRefreshers.set(sessionId, entry);
+  markIfNeeded(entry);
 }
 
 /**
@@ -176,9 +245,23 @@ export function pauseTypingRefreshAfterDelivery(sessionId: string): void {
   entry.pausedUntil = Date.now() + POST_DELIVERY_PAUSE_MS;
 }
 
+/**
+ * Clear the working marker because a reply reached the user. The refresher
+ * keeps running (the agent may still be working), but the same inbound
+ * message is never re-marked; the next inbound message gets a fresh marker.
+ */
+export function clearWorkingMarker(sessionId: string): void {
+  const entry = typingRefreshers.get(sessionId);
+  if (!entry) return;
+  clearMarker(entry, entry.messageId, entry.marked);
+  entry.marked = false;
+  entry.settled = true;
+}
+
 export function stopTypingRefresh(sessionId: string): void {
   const entry = typingRefreshers.get(sessionId);
   if (!entry) return;
   clearInterval(entry.interval);
   typingRefreshers.delete(sessionId);
+  clearMarker(entry, entry.messageId, entry.marked);
 }
