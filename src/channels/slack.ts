@@ -24,6 +24,11 @@ import { registerChannelAdapter } from './channel-registry.js';
 import { setSlackAuthorIsBotResolver } from './slack-a2a-guard.js';
 import { slackRawTextExtractor } from './slack-raw-text.js';
 
+/** A real Slack message timestamp (`1794003907.745989`), not a synthetic row id. */
+export function isSlackMessageTs(id: string): boolean {
+  return /^\d+\.\d+$/.test(id);
+}
+
 /**
  * Dedicated bot app on a threaded platform. Fork: both contexts default to
  * unthreaded, top-level replies (see the declaration below); upstream's group
@@ -252,6 +257,10 @@ export function createSlackBridge(options: SlackBridgeOptions = {}): ChannelAdap
     concurrency: 'concurrent',
     supportsThreads: true,
     defaults: SLACK_DEFAULTS,
+    // Fork: 👀 on the user's message while the agent works, in unthreaded
+    // chats. Slack's assistant.threads.setStatus only renders inside a thread
+    // (tested 2026-11-06: a top-level ts returns ok:true but shows nothing).
+    workingReaction: { emoji: 'eyes', isMarkable: isSlackMessageTs },
   });
   bridge.resolveChannelName = async (platformId: string) => {
     try {
