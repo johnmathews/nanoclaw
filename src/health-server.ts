@@ -2,7 +2,7 @@
  * HTTP `/health` endpoint.
  *
  * Ported from v1 (`src/health-server.ts`). Binds 127.0.0.1 only — the
- * webhook server on 0.0.0.0:3000 is what's exposed via Funnel; `/health`
+ * webhook server (loopback :3000 by default, forwarded by Funnel) is the public one; `/health`
  * stays loopback (probes + `/status` command, no public surface).
  */
 import http from 'http';

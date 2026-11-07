@@ -19,6 +19,7 @@ const envConfig = readEnvFile([
   'NANOCLAW_EGRESS_LOCKDOWN',
   'NANOCLAW_EGRESS_NETWORK',
   'WEBHOOK_PORT',
+  'WEBHOOK_HOST',
 ]);
 
 /**
@@ -115,6 +116,18 @@ export function getWebhookPort(): number {
     throw new Error(`Invalid WEBHOOK_PORT ${JSON.stringify(raw)}: expected an integer from 1 to 65535`);
   }
   return port;
+}
+
+// Fork patch (CLAUDE.md fork convention #12): the webhook listener binds
+// loopback by default. Tailscale Funnel / a local reverse proxy forwards to
+// 127.0.0.1, so nothing else on the LAN needs to reach the port. Set
+// WEBHOOK_HOST=0.0.0.0 to restore upstream's all-interfaces bind.
+export function getWebhookHost(): string {
+  const raw = (process.env.WEBHOOK_HOST || envConfig.WEBHOOK_HOST || '127.0.0.1').trim();
+  if (!/^[0-9A-Za-z.:-]+$/.test(raw)) {
+    throw new Error(`Invalid WEBHOOK_HOST ${JSON.stringify(raw)}: expected an IP address or hostname`);
+  }
+  return raw;
 }
 
 // Timezone for scheduled tasks, message formatting, etc.
