@@ -1,6 +1,9 @@
 import { normalizeGatewayApprovalSummary } from '../gateway-approval-summary.js';
 /** OneCLI typed configuration and supervised native approval adapter. */
-import { OneCLI, ApprovalClient, type ContainerConfig, type ApprovalRequest } from '@onecli-sh/sdk';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+import { OneCLI, OneCLIRequestError, ApprovalClient, type ContainerConfig, type ApprovalRequest } from '@onecli-sh/sdk';
 
 import { DATA_DIR } from '../config.js';
 import { combinedCaBundle, stageOnecliFile } from './onecli-files.js';
@@ -118,10 +121,52 @@ function monitorLease(signal: AbortSignal): Pick<GatewaySessionLease, 'onUnavail
   };
 }
 
+const onecliBin = process.env.ONECLI_BIN || 'onecli';
+
+/**
+ * Fork patch (CLAUDE.md fork convention #9): ensure the OneCLI agent exists,
+ * and give a *newly created* agent secret mode `all`.
+ *
+ * The gateway creates unknown agents in `selective` mode with no secrets
+ * assigned, so a new agent group's first credentialed call 401s even though
+ * the vault holds the credential. The SDK has no secret-mode setter, so this
+ * shells out to the pinned OneCLI CLI with the internal agent id the create
+ * response returns.
+ *
+ * Existing agents (409 on create) are never touched: an operator may have
+ * scoped one to `selective` on purpose. A failed mode switch is logged with
+ * the exact remedy and does not fail the session — the agent then behaves
+ * exactly as it did before this patch.
+ */
+export async function ensureAgentWithSecretMode(name: string, identifier: string): Promise<void> {
+  let agentId: string;
+  try {
+    agentId = (await onecli.createAgent({ name, identifier })).id;
+  } catch (err) {
+    if (err instanceof OneCLIRequestError && err.statusCode === 409) return;
+    throw err;
+  }
+  const args = ['agents', 'set-secret-mode', '--id', agentId, '--mode', 'all'];
+  try {
+    // Resolved at call time, not import time: modules that mock child_process
+    // without execFile import this file transitively.
+    await promisify(execFile)(onecliBin, args, { timeout: 15_000 });
+    log.info('OneCLI agent created with secret mode all', { agentGroupId: identifier, onecliAgentId: agentId });
+    /* eslint-disable-next-line no-catch-all/no-catch-all -- any CLI failure degrades to today's behaviour (selective, logged with remedy); it must not block the session */
+  } catch (err) {
+    log.error('OneCLI agent created but secret mode is still selective; credentialed calls will 401', {
+      agentGroupId: identifier,
+      onecliAgentId: agentId,
+      remedy: `${onecliBin} ${args.join(' ')}`,
+      err: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 async function ensureSession(input: GatewaySessionInput, signal: AbortSignal): Promise<GatewaySessionLease> {
   // The OneCLI agent identifier is always the agent group id — stable across
   // sessions and reversible via getAgentGroup() for approval routing.
-  await onecli.ensureAgent({ name: input.groupName, identifier: input.key.agentGroupId });
+  await ensureAgentWithSecretMode(input.groupName, input.key.agentGroupId);
   const config = await onecli.getContainerConfig({ agent: input.key.agentGroupId });
   log.info('OneCLI gateway applied', { agentGroupId: input.key.agentGroupId, sessionId: input.key.sessionId });
   return {

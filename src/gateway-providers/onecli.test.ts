@@ -5,21 +5,46 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { GatewayApprovalRequest, GatewaySessionInput } from './gateway-provider-registry.js';
 
-const sdk = vi.hoisted(() => ({
-  ensureAgent: vi.fn(async () => ({ created: false })),
-  getContainerConfig: vi.fn(async () => ({
-    env: { HTTPS_PROXY: 'http://host.docker.internal:15001' },
-    caCertificate: 'fixture-ca',
-    caCertificateContainerPath: '/tmp/onecli-ca.pem',
-  })),
-  startApproval: vi.fn(),
-  manualApproval: undefined as undefined | ((request: Record<string, unknown>) => Promise<'approve' | 'deny'>),
-  stopApproval: vi.fn(),
-}));
+const sdk = vi.hoisted(() => {
+  class OneCLIRequestError extends Error {
+    constructor(
+      message: string,
+      readonly requestData: { url: string; statusCode: number },
+    ) {
+      super(message);
+    }
+    get statusCode() {
+      return this.requestData.statusCode;
+    }
+  }
+  const conflict = () => new OneCLIRequestError('OneCLI returned 409 Conflict', { url: 'x', statusCode: 409 });
+  return {
+    OneCLIRequestError,
+    conflict,
+    // Default: the agent already exists (the common, every-session case).
+    createAgent: vi.fn(async (): Promise<{ id: string }> => {
+      throw conflict();
+    }),
+    execFile: vi.fn((_file: string, _args: string[], _opts: unknown, cb: (err: Error | null) => void) => cb(null)),
+    getContainerConfig: vi.fn(async () => ({
+      env: { HTTPS_PROXY: 'http://host.docker.internal:15001' },
+      caCertificate: 'fixture-ca',
+      caCertificateContainerPath: '/tmp/onecli-ca.pem',
+    })),
+    startApproval: vi.fn(),
+    manualApproval: undefined as undefined | ((request: Record<string, unknown>) => Promise<'approve' | 'deny'>),
+    stopApproval: vi.fn(),
+  };
+});
 
+vi.mock('node:child_process', async (original) => ({
+  ...(await original<typeof import('node:child_process')>()),
+  execFile: sdk.execFile,
+}));
 vi.mock('@onecli-sh/sdk', () => ({
+  OneCLIRequestError: sdk.OneCLIRequestError,
   OneCLI: class {
-    ensureAgent = sdk.ensureAgent;
+    createAgent = sdk.createAgent;
     getContainerConfig = sdk.getContainerConfig;
   },
   ApprovalClient: class {
@@ -54,7 +79,8 @@ vi.mock('../env.js', () => ({
   }),
 }));
 
-import { contributionFromConfig, withProviderEnv } from './onecli.js';
+import { contributionFromConfig, ensureAgentWithSecretMode, withProviderEnv } from './onecli.js';
+import { log } from '../log.js';
 import { getGatewayProviderRegistration } from './gateway-provider-registry.js';
 
 const provider = getGatewayProviderRegistration('onecli')!;
@@ -225,7 +251,8 @@ describe('OneCLI gateway package', () => {
     const controller = new AbortController();
     const lease = await provider.sessions.ensure(input('s1'), controller.signal);
 
-    expect(sdk.ensureAgent).toHaveBeenCalledWith({ name: 'Group One', identifier: 'g1' });
+    expect(sdk.createAgent).toHaveBeenCalledWith({ name: 'Group One', identifier: 'g1' });
+    expect(sdk.execFile).not.toHaveBeenCalled();
     expect(sdk.getContainerConfig).toHaveBeenCalledWith({ agent: 'g1' });
     expect(lease.contribution).toMatchObject({
       env: {
@@ -342,4 +369,52 @@ it.each(compatibilityFixtures)('preserves native OneCLI approval content: $name'
   });
   controller.abort();
   await subscription;
+});
+
+describe('ensureAgentWithSecretMode (fork convention #9)', () => {
+  beforeEach(() => {
+    sdk.execFile.mockClear();
+    vi.mocked(log.error).mockClear();
+  });
+
+  it('switches a newly created agent to secret mode all, by its OneCLI id', async () => {
+    sdk.createAgent.mockResolvedValueOnce({ id: 'onecli-agent-1' });
+    await ensureAgentWithSecretMode('New Group', 'ag-new');
+    expect(sdk.execFile).toHaveBeenCalledTimes(1);
+    expect(sdk.execFile.mock.calls[0][0]).toBe('onecli');
+    expect(sdk.execFile.mock.calls[0][1]).toEqual([
+      'agents',
+      'set-secret-mode',
+      '--id',
+      'onecli-agent-1',
+      '--mode',
+      'all',
+    ]);
+  });
+
+  it('never touches an existing agent (an operator may have scoped it to selective)', async () => {
+    await ensureAgentWithSecretMode('Paul Graham Essays', 'existing');
+    expect(sdk.execFile).not.toHaveBeenCalled();
+  });
+
+  it('logs the exact remedy and still resolves when the CLI fails', async () => {
+    sdk.createAgent.mockResolvedValueOnce({ id: 'onecli-agent-2' });
+    sdk.execFile.mockImplementationOnce((_f, _a, _o, cb) => cb(new Error('spawn onecli ENOENT')));
+    await expect(ensureAgentWithSecretMode('New Group', 'ag-new')).resolves.toBeUndefined();
+    expect(log.error).toHaveBeenCalledWith(
+      expect.stringContaining('selective'),
+      expect.objectContaining({
+        onecliAgentId: 'onecli-agent-2',
+        remedy: 'onecli agents set-secret-mode --id onecli-agent-2 --mode all',
+      }),
+    );
+  });
+
+  it('propagates create failures other than 409', async () => {
+    sdk.createAgent.mockRejectedValueOnce(
+      new sdk.OneCLIRequestError('OneCLI returned 500', { url: 'x', statusCode: 500 }),
+    );
+    await expect(ensureAgentWithSecretMode('New Group', 'ag-new')).rejects.toThrow('500');
+    expect(sdk.execFile).not.toHaveBeenCalled();
+  });
 });
